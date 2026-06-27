@@ -74,6 +74,49 @@ An `AutomationPolicy` contains:
 
 Policy activation is a behavior-changing control with effective position. Runtime mode remains immutable; a human-approved live run cannot become guarded automated live in place.
 
+## Fact taxonomy activated by this leaf
+
+Guarded automation activates an `automation.*` namespace for automation-policy and guardrail facts. These facts are authoritative only for automation eligibility and policy lifecycle. They do not replace `run.control.*`, `risk.*`, `execution.*`, `ledger.*`, `reconciliation.*`, `audit.*`, or `execution.approval.*` facts.
+
+Minimum automation-policy facts:
+
+- `automation.policy.registered`;
+- `automation.policy.activation_requested`;
+- `automation.policy.activated`;
+- `automation.policy.activation_rejected`;
+- `automation.policy.deactivated`;
+- `automation.policy.expired`;
+- `automation.policy.renewed`;
+- `automation.policy.renewal_rejected`;
+- `automation.policy.retired`;
+- `automation.policy.superseded`;
+- `automation.policy.scope_expansion_rejected`.
+
+Minimum approval-substitution and eligibility facts:
+
+- `automation.substitution.accepted`;
+- `automation.substitution.rejected`;
+- `automation.eligibility.accepted`;
+- `automation.eligibility.rejected`;
+- `automation.eligibility.expired`;
+- `automation.eligibility.superseded`;
+
+Minimum guardrail and rollout facts:
+
+- `automation.guardrail.breached`;
+- `automation.guardrail.cleared`;
+- `automation.guardrail.unknown`;
+- `automation.emergency_disable.accepted`;
+- `automation.rollback.started`;
+- `automation.rollback.completed`;
+- `automation.rollback.failed`;
+- `automation.rollout_limit.registered`;
+- `automation.rollout_limit.exhausted`;
+- `automation.evidence_renewal.required`;
+- `automation.evidence_renewal.overdue`.
+
+Policy activation/deactivation, emergency disable, rollback, and scope changes that alter runtime behavior still enter through accepted ordered `ControlOutcome`s under `run.control.*` and record effective positions. The `automation.*` facts record the automation authority's semantic decisions, eligibility, guardrail state, and rollout evidence. Logs, metrics, query projections, and incident notes are not substitutes for these facts.
+
 ## Approval substitution
 
 Guarded automation substitutes only the per-action `HumanExecutionApproval` requirement for actions inside policy scope. It does not substitute:
@@ -146,7 +189,7 @@ Renewal requires fresh evidence. Repeated manual renewal without meeting evidenc
 
 Automation requires:
 
-- policy-scope and eligibility decision logs;
+- policy-scope and eligibility decision facts plus diagnostic logs;
 - guardrail state and breach facts;
 - pre-submit check evidence;
 - limit utilization and exhaustion;
@@ -166,7 +209,7 @@ Metrics cannot approve automation. Audit must reconstruct why each automated act
 | **GA-E03 — Guardrail suite** | Stale data, unknown order, reconciliation blocker, limit breach, latency breach, quality degradation | Automation fails closed and opens required incident/control paths |
 | **GA-E04 — Kill-switch/rollback drill** | Overload, ambiguous order, emergency disable, run abort, child run | New automated work stops with non-conflated acknowledgement/fence evidence |
 | **GA-E05 — Promotion/renewal suite** | Insufficient evidence, expired renewal, scope increase, successful narrow rollout | Automation cannot activate or expand without reviewed evidence |
-| **GA-E06 — Audit/replay drill** | Automated action from signal/opportunity to ledger with faults | Reconstruction proves policy, gate evidence, adapter state, and accounting outcome |
+| **GA-E06 — Automation fact taxonomy/replay drill** | Policy lifecycle, eligibility accept/reject, substitution, guardrail breach/clear, emergency disable, rollback, renewal/expiry, automated action from signal/opportunity to ledger with faults | Reconstruction uses durable `automation.*`, `run.control.*`, risk/reservation/execution/ledger/reconciliation facts, not logs/projections, to prove why automation allowed or blocked the action |
 | **GA-E07 — Discovery negative suite** | High-ranked external opportunity without policy/risk/reservation | Discovery never becomes direct execution authority |
 
 ## Phase exit criteria
@@ -174,6 +217,7 @@ Metrics cannot approve automation. Audit must reconstruct why each automated act
 Guarded automation planning is complete when:
 
 - automation policy scope and approval substitution are exact;
+- automation-policy, eligibility, guardrail, rollout, and renewal decisions have durable `automation.*` fact taxonomy and replay semantics;
 - all existing risk/reservation/execution/accounting/reconciliation gates remain required;
 - guardrails, rollback, promotion, renewal, and audit are evidence-based;
 - mode separation prevents accidental automation in human-approved live or paper modes;

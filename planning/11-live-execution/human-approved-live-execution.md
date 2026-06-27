@@ -70,6 +70,19 @@ A `HumanExecutionApproval` is an immutable fact required only in `Human-approved
 
 Approval is applied after reservation. A pending approval is represented by the reservation/workflow, not by an executable intent. Live paper never uses this authority.
 
+Approval submit, reject, revoke, and expire actions are behavior-changing commands. They enter through the Phase 09 command gateway and must follow the Phase 03 command-admission lifecycle:
+
+```text
+approval command received
+  -> authenticated and authorized with stronger approval policy
+  -> admitted or admission-rejected
+  -> exactly one ordered ControlOutcome accepted or rejected
+  -> accepted outcome carries the approval behavior change and effective position
+  -> execution.approval.* fact is published from the approval authority at that ordered boundary
+```
+
+The approval command response is not approval truth. Request receipt, admission, accepted/rejected `ControlOutcome`, effective application, duplicate retry, timeout, and unknown outcome remain distinct. A deduplicated retry references the original `ControlOutcome` and cannot create a second approval/revocation/expiry. Rejected or failed-before-admission commands do not create valid approvals. Replay consumes the ordered `ControlOutcome` and linked `execution.approval.*` facts, not the original imperative request or a console/API projection.
+
 ## Executable live intent eligibility
 
 Execution planning may create a live intent only when:
@@ -128,6 +141,8 @@ Minimum approval facts:
 - `execution.approval.revoked`;
 - `execution.approval.expired`;
 - `execution.approval.superseded`;
+
+Each accepted/rejected/revoked/expired approval fact must reference the command identity, actor, anti-replay evidence, and the single ordered `ControlOutcome` that authorized or rejected the behavior-changing approval action. The fact records approval-domain semantics; the `ControlOutcome` records command ordering, effective position, idempotency, and replay barrier. No approval fact may appear as valid live-execution authority without that linkage.
 
 Minimum live execution fact extensions:
 
@@ -195,6 +210,7 @@ Increasing capital or venue scope requires new reviewed evidence and configurati
 Live execution must persist or reconstruct:
 
 - approval facts and anti-replay evidence;
+- linked approval command identities, deduplicated retry state, and exactly-one `ControlOutcome` references/effective positions;
 - live intent eligibility and publication;
 - adapter pre-submit checks;
 - local send commitments and idempotency keys;
@@ -241,7 +257,7 @@ Metrics are not execution truth.
 
 | Gate | Evidence | Pass condition |
 |---|---|---|
-| **HL-E01 — Approval authority suite** | Accepted/rejected/revoked/expired approvals, actor auth, anti-replay attempts | Only valid approvals can satisfy live intent eligibility; live paper never invokes approval |
+| **HL-E01 — Approval command/control suite** | Accepted/rejected/revoked/expired approval commands, actor auth, anti-replay attempts, duplicate retries, timeouts, effective positions | Only approval facts linked to exactly one ordered `ControlOutcome` can satisfy live intent eligibility; request receipt/API success is never approval truth; live paper never invokes approval |
 | **HL-E02 — Live intent eligibility suite** | Missing approval, stale reservation, expired risk, disabled adapter, revoked credential | No live intent exists unless all requirements are active and recoverable |
 | **HL-E03 — Pre-submit fence suite** | Kill-switch race, reservation expiry, approval revocation, stale market/account, reconciliation blocker | Adapter submits only after current boundary recheck passes |
 | **HL-E04 — Adapter idempotency/ambiguity suite** | Crash before/after send, lost ack, duplicate client ID, cancellation/fill race | No unsafe retry; unknown keeps worst-case reservation until reconciled |
@@ -255,6 +271,7 @@ Metrics are not execution truth.
 Phase 11B planning is complete when:
 
 - approval, live intent, adapter, credential, reservation, reconciliation, and ledger boundaries are unambiguous;
+- approval submit/reject/revoke/expire actions are bound to command gateway, exactly-one `ControlOutcome`, effective-position, idempotency, and replay semantics;
 - no live intent can exist before valid approval and accepted reservation;
 - pre-submit recheck and ambiguous-order handling are explicit;
 - credential isolation and redaction are testable;
