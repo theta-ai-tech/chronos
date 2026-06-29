@@ -24,6 +24,10 @@ Chronos must provide:
 8. Technology choices that can be justified by measured requirements and replaced behind stable contracts.
 9. Implementation gates based on reproducible evidence, not architectural intent.
 
+### On the role of low latency
+
+Low-latency rigor in Chronos is primarily a **demonstration and credibility goal**, not a source of trading edge. The initial strategies hold positions on a 1–5 minute horizon, at which microsecond-scale hot-path latency has negligible effect on signal validity or realized P&L. The value of the deterministic, allocation-controlled C++ hot path (see the Hot plane section and ADR-0001) is to demonstrate measurement discipline, determinism, and systems engineering to a standard a quantitative trading audience takes seriously — and to keep a clean path open to genuinely latency-sensitive strategies later. This document therefore holds the hot path to production-grade latency, tail, and allocation discipline as a deliberate objective in its own right, while being explicit that, at the current product horizon, that discipline is justified by credibility and future-proofing rather than by present-day microstructure alpha.
+
 ## Architecture principles
 
 ### Modular before distributed
@@ -1451,8 +1455,8 @@ This architecture does not:
 - operate an exchange or matching engine;
 - define profitable strategies or claim trading alpha;
 - choose the first venue;
-- choose exact languages for every component;
-- require C++ or Python at a boundary before measurement and prototyping;
+- choose exact languages for every non-hot-path component;
+- require a specific language at a non-hot-path component boundary before measurement and prototyping (the optimized-C++ hot path and the Python control plane are fixed product-goal constraints by ADR-0001, and are deliberately exempt from the measure-first selection rule; all other component languages remain evidence-driven);
 - define concrete event leaf schemas beyond the domain-model taxonomy;
 - choose storage, queue, IPC, web, telemetry, or deployment products;
 - require microservices, containers, Kubernetes, Kafka, or cloud hosting;
@@ -1469,14 +1473,14 @@ This architecture does not:
 
 The following decisions belong to later planning or evidence-driven ADRs:
 
-1. Exact engine, control-plane, and UI languages and their FFI/IPC boundary.
+1. UI language and framework, and the concrete FFI/IPC mechanism of the Python/C++ boundary. (The hot-path language is fixed to optimized C++ and the control plane to Python by ADR-0001; only the concrete boundary mechanism and the UI runtime remain open.)
 2. Whether the first engine and control plane share a process.
 3. Canonical schema-definition and generated-code mechanism.
 4. In-memory queue and dispatch implementation.
 5. Capture journal, normalized journal, snapshot, manifest, and catalog storage formats.
 6. Embedded database or file-store choices and transaction boundaries.
 7. Exact ID generation and deterministic derived-ID policy.
-8. Numeric representation, scale, overflow, and rounding implementation.
+8. Concrete fixed-point widths, per-listing scale exponents, and the exact rounding-mode policy per operation. (Fixed-point integer representation on the hot path is fixed by ADR-0003; the remaining choices are the specific integer widths, scales, and rounding modes.)
 9. First venue, source protocol, resumption, and sequencing rules.
 10. Feature window storage and cache design.
 11. Strategy loading, ABI/API, sandboxing, and upgrade mechanism.

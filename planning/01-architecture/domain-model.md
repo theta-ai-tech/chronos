@@ -542,9 +542,9 @@ Position and P&L are ordinarily projections, not independently mutable entities.
 
 | Value object | Required semantics |
 |---|---|
-| `Price` | Exact decimal or integer ticks plus listing-definition version; never an unqualified floating-point number. |
-| `Quantity` | Exact signed or unsigned amount with unit and listing-definition version. |
-| `Money` | Exact amount plus currency/asset. |
+| `Price` | Exact fixed-point integer in listing price-tick units (per ADR-0003) plus listing-definition version; never an unqualified floating-point number. |
+| `Quantity` | Exact signed or unsigned fixed-point integer in listing quantity-step units (per ADR-0003), with unit and listing-definition version. |
+| `Money` | Exact fixed-point integer amount (per ADR-0003) plus currency/asset; accounting may widen the integer width or scale but remains exact integer-based, never binary floating point. |
 | `Side` | Buy or sell for executable actions; signal direction may additionally express neutral. Abstention is a StrategyEvaluation outcome, never a side. |
 | `TimePoint` | Timestamp plus clock domain and precision. |
 | `Sequence` | Integer plus stream, epoch, and sequence-kind context. |
