@@ -1,1 +1,6 @@
 .DS_Store
+
+# C++ build output
+/build/
+/build-*/
+compile_commands.json

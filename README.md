@@ -27,6 +27,19 @@ paper-trade recommendations, with a measured, optimized-C++ hot path.
 
 Each module has a README declaring its owner, plane, language, and accepted dependencies.
 
+## Building
+
+The C++ hot path builds with CMake + Ninja:
+
+```sh
+cmake -S . -B build -G Ninja
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+See [`BUILDING.md`](BUILDING.md) for build profiles (Debug / Release / Benchmark), sanitizers,
+and options.
+
 ## Authoritative documents
 
 - **Architecture:** `planning/01-architecture/architecture.md`
