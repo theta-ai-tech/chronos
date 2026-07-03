@@ -37,8 +37,15 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-See [`BUILDING.md`](BUILDING.md) for build profiles (Debug / Release / Benchmark), sanitizers,
-and options.
+The Python application/research layer is managed with `uv`:
+
+```sh
+uv sync --group dev
+make python-check
+```
+
+See [`BUILDING.md`](BUILDING.md) for C++ build profiles (Debug / Release / Benchmark),
+sanitizers, Python tooling, and verification commands.
 
 ## Authoritative documents
 
