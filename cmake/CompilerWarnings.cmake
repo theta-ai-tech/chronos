@@ -3,6 +3,10 @@
 # by default, fatal (CHRONOS_WERROR).
 add_library(chronos_warnings INTERFACE)
 
+# GCC/Clang (incl. AppleClang) flag spelling only. These are the only compilers
+# Chronos targets (dev macOS + Linux bench host, ADR-0002). When/if another
+# toolchain (e.g. MSVC) is introduced, gate these with check_cxx_compiler_flag
+# rather than assuming support.
 set(_chronos_warnings
   -Wall
   -Wextra

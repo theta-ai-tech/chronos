@@ -11,6 +11,7 @@
 //   MICROTEST_MAIN
 //
 #include <cstdio>
+#include <exception>
 #include <functional>
 #include <string>
 #include <vector>
@@ -37,7 +38,18 @@ inline int run_all() {
   int total_failures = 0;
   for (const auto& test_case : registry()) {
     int case_failures = 0;
-    test_case.fn(case_failures);
+    // A test body that throws must be attributed to its case and counted as a
+    // failure, not allowed to std::terminate the whole run and abort the cases
+    // that follow.
+    try {
+      test_case.fn(case_failures);
+    } catch (const std::exception& e) {
+      ++case_failures;
+      std::printf("    threw std::exception: %s\n", e.what());
+    } catch (...) {
+      ++case_failures;
+      std::printf("    threw unknown exception\n");
+    }
     if (case_failures == 0) {
       std::printf("[ PASS ] %s\n", test_case.name.c_str());
     } else {

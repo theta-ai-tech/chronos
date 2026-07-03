@@ -4,3 +4,7 @@
 /build/
 /build-*/
 compile_commands.json
+
+# Local C++ tooling artifacts (clangd cache, per-user CMake presets)
+.cache/
+CMakeUserPresets.json

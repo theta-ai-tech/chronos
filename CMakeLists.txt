@@ -47,6 +47,14 @@ enable_testing()
 add_subdirectory(core)
 add_subdirectory(tests)
 
+# CMAKE_BUILD_TYPE is empty for multi-config generators (the profile is chosen
+# at build time, not configure time); report that instead of a blank field.
+if(CMAKE_BUILD_TYPE)
+  set(_chronos_profile "${CMAKE_BUILD_TYPE}")
+else()
+  set(_chronos_profile "multi-config")
+endif()
+
 message(STATUS
-  "Chronos ${PROJECT_VERSION} | profile=${CMAKE_BUILD_TYPE} "
+  "Chronos ${PROJECT_VERSION} | profile=${_chronos_profile} "
   "| werror=${CHRONOS_WERROR} | sanitize=${CHRONOS_SANITIZE}")
