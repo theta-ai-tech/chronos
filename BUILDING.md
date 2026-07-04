@@ -1,6 +1,10 @@
-# Building Chronos (C++)
+# Building Chronos
 
-The C++ hot path (`core/`) builds with CMake. This covers the toolchain added in **M0.2**.
+Chronos currently has two build surfaces:
+
+- The C++ hot path (`core/`) builds with CMake. This covers the toolchain added in **M0.2**.
+- The Python application/research layer is managed with `uv`. This covers the toolchain added in
+  **M0.3**.
 
 ## Prerequisites
 
@@ -9,11 +13,18 @@ The C++ hot path (`core/`) builds with CMake. This covers the toolchain added in
 | CMake | ≥ 3.24 (tested 4.3.1) | build configuration |
 | C++ compiler | C++20 (tested AppleClang 16) | Clang or GCC |
 | Ninja | tested 1.13.2 | recommended generator |
+| Python | ≥ 3.9 (tested 3.9.6) | Python runtime |
+| uv | tested 0.11.16 | Python dependency lock and tool runner |
+| make | POSIX make | aggregate local commands |
 
-No third-party libraries are fetched during the build (the test harness is vendored), so a
-configure + build works without network access.
+No third-party libraries are fetched during the C++ build (the test harness is vendored), so a
+C++ configure + build works without network access. Python tooling is resolved from `uv.lock`;
+the first `uv sync` needs access to the configured Python package index unless the packages are
+already cached.
 
 ## Quick start
+
+### C++
 
 ```sh
 cmake -S . -B build -G Ninja      # configure (Debug by default)
@@ -21,7 +32,17 @@ cmake --build build               # compile
 ctest --test-dir build --output-on-failure   # run tests
 ```
 
-## Build profiles
+### Python
+
+```sh
+uv sync --group dev
+make python-check
+```
+
+`make python-check` runs the locked test, lint, and format-check tools through `uv`; contributors
+do not need globally installed `pytest` or `ruff`.
+
+## C++ build profiles
 
 Select with `-DCMAKE_BUILD_TYPE=<profile>`:
 
@@ -36,7 +57,7 @@ cmake -S . -B build-bench -G Ninja -DCMAKE_BUILD_TYPE=Benchmark
 cmake --build build-bench
 ```
 
-## Options
+## C++ options
 
 | Option | Default | Effect |
 |---|---|---|
@@ -55,4 +76,12 @@ cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCHRONOS_SANITIZE=ON
 - `chronos_warnings` / `chronos_options` — shared CMake interface targets for the warning set
   and language standard / sanitizers.
 
-Real domain modules and a Python build (M0.3) arrive in later milestones.
+## What's here in M0.3
+
+- `pyproject.toml` — Python project metadata plus pytest and Ruff configuration.
+- `uv.lock` — locked dependency graph for Python dev tools.
+- `Makefile` — `make python-check` aggregate for the Python test/lint/format gate.
+- `python/chronos/` — placeholder Python package proving packaging/imports work.
+- `tests/python/` — pytest suite proving the package is installed through project metadata.
+
+Real domain modules and the Python↔C++ boundary (M0.4) arrive in later milestones.
