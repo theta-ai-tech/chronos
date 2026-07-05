@@ -16,3 +16,4 @@ explains what was done, why, and exactly how to verify it — in plain language.
 - [M0.1 — Monorepo skeleton](m0.1-monorepo-skeleton.md)
 - [M0.2 — C++ toolchain](m0.2-cpp-toolchain.md)
 - [M0.3 — Python toolchain](m0.3-python-toolchain.md)
+- [M0.4 — Python/C++ boundary](m0.4-python-cpp-boundary.md)
