@@ -50,7 +50,8 @@ make m0-gate-proof
 
 The proof command works on temporary copies of the repository and injects one representative
 violation per gate. It succeeds only when the C++ warning/build gate, C++ unit-test gate, Python
-unit-test gate, Python lint gate, and Python format gate each fail as expected.
+unit-test gate, Python lint gate, and Python format gate each fail with the expected failure
+signature.
 
 ## C++ build profiles
 

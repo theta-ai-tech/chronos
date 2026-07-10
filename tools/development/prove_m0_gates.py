@@ -25,6 +25,7 @@ class GateProof:
     name: str
     command: tuple[str, ...]
     mutate: Mutation
+    expected_output: tuple[str, ...]
 
 
 IGNORED_NAMES = {
@@ -91,11 +92,36 @@ def inject_python_format_failure(repo: Path) -> None:
 
 
 GATE_PROOFS = (
-    GateProof("cpp-warning-as-error", ("make", "cpp-build"), inject_cpp_warning_as_error),
-    GateProof("cpp-unit-test", ("make", "cpp-test"), inject_cpp_unit_failure),
-    GateProof("python-unit-test", ("make", "python-test"), inject_python_unit_failure),
-    GateProof("python-lint", ("make", "python-lint"), inject_python_lint_failure),
-    GateProof("python-format", ("make", "python-format"), inject_python_format_failure),
+    GateProof(
+        "cpp-warning-as-error",
+        ("make", "cpp-build"),
+        inject_cpp_warning_as_error,
+        ("unused_probe", "unused-variable", "-Werror"),
+    ),
+    GateProof(
+        "cpp-unit-test",
+        ("make", "cpp-test"),
+        inject_cpp_unit_failure,
+        ("CHECK failed: !chronos::engine_alive()", "RESULT FAIL"),
+    ),
+    GateProof(
+        "python-unit-test",
+        ("uv", "run", "--locked", "--group", "dev", "pytest", "tests/python/test_package.py"),
+        inject_python_unit_failure,
+        ("test_python_package_exposes_project_version", "9.9.9", "AssertionError"),
+    ),
+    GateProof(
+        "python-lint",
+        ("make", "python-lint"),
+        inject_python_lint_failure,
+        ("F821", "undefined_lint_probe"),
+    ),
+    GateProof(
+        "python-format",
+        ("make", "python-format"),
+        inject_python_format_failure,
+        ("Would reformat: tests/python/test_package.py",),
+    ),
 )
 
 
@@ -115,6 +141,7 @@ def run_expected_failure(repo: Path, proof: GateProof, verbose: bool) -> None:
 
     env = os.environ.copy()
     env.setdefault("UV_NO_PROGRESS", "1")
+    env.pop("VIRTUAL_ENV", None)
 
     completed = subprocess.run(
         proof.command,
@@ -128,6 +155,13 @@ def run_expected_failure(repo: Path, proof: GateProof, verbose: bool) -> None:
 
     if completed.returncode == 0:
         print(f"[FAIL] {proof.name}: representative violation passed unexpectedly")
+        print(completed.stdout)
+        raise SystemExit(1)
+
+    missing_output = [needle for needle in proof.expected_output if needle not in completed.stdout]
+    if missing_output:
+        print(f"[FAIL] {proof.name}: gate failed, but not with the expected signature")
+        print(f"missing output: {missing_output}")
         print(completed.stdout)
         raise SystemExit(1)
 
