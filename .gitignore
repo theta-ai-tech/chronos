@@ -1,1 +1,18 @@
 .DS_Store
+
+# C++ build output
+/build/
+/build-*/
+compile_commands.json
+
+# Local C++ tooling artifacts (clangd cache, per-user CMake presets)
+.cache/
+CMakeUserPresets.json
+
+# Python environments, caches, and local tooling state
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+/dist/
+*.py[cod]
