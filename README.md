@@ -41,11 +41,11 @@ The Python application/research layer is managed with `uv`:
 
 ```sh
 uv sync --group dev
-make python-check
+make m0-check
 ```
 
 See [`BUILDING.md`](BUILDING.md) for C++ build profiles (Debug / Release / Benchmark),
-sanitizers, Python tooling, and verification commands.
+sanitizers, Python tooling, boundary checks, and verification commands.
 
 ## Authoritative documents
 

@@ -36,11 +36,11 @@ ctest --test-dir build --output-on-failure   # run tests
 
 ```sh
 uv sync --group dev
-make python-check
+make m0-check
 ```
 
-`make python-check` runs the locked test, lint, and format-check tools through `uv`; contributors
-do not need globally installed `pytest` or `ruff`.
+`make m0-check` builds the C++ targets, runs CTest, then runs the locked Python test, lint, and
+format-check tools through `uv`; contributors do not need globally installed `pytest` or `ruff`.
 
 ## C++ build profiles
 
@@ -84,4 +84,14 @@ cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCHRONOS_SANITIZE=ON
 - `python/chronos/` — placeholder Python package proving packaging/imports work.
 - `tests/python/` — pytest suite proving the package is installed through project metadata.
 
-Real domain modules and the Python↔C++ boundary (M0.4) arrive in later milestones.
+## What's here in M0.4
+
+- `chronos_boundary` — shared C ABI library built from C++ for Python to load.
+- `chronos::round_trip_hello_event()` — native scaffold call returning a versioned hello-event
+  acknowledgement.
+- `python/chronos/boundary.py` — `ctypes` wrapper for the native boundary.
+- `tests/unit/boundary_test.cpp` and `tests/python/test_boundary.py` — C++ and Python coverage
+  proving the hello event crosses Python→C++→Python.
+- `make m0-check` — aggregate local gate for the current M0 scaffold.
+
+Real domain modules and canonical cross-boundary contracts arrive in later milestones.
