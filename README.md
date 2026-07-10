@@ -29,6 +29,13 @@ Each module has a README declaring its owner, plane, language, and accepted depe
 
 ## Building
 
+On a supported development machine with the prerequisites from [`BUILDING.md`](BUILDING.md), the
+M0 scaffold bootstraps, builds, tests, and runs the Python→C++ boundary round trip with one command:
+
+```sh
+make bootstrap
+```
+
 The C++ hot path builds with CMake + Ninja:
 
 ```sh
@@ -42,6 +49,12 @@ The Python application/research layer is managed with `uv`:
 ```sh
 uv sync --group dev
 make m0-check
+```
+
+To manually run the M0.4 Python→C++ hello-event round trip after building:
+
+```sh
+make m0-round-trip
 ```
 
 Pull requests and pushes to `master` run the same M0 gates in GitHub Actions. The CI workflow also
