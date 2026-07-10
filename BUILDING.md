@@ -42,6 +42,16 @@ make m0-check
 `make m0-check` builds the C++ targets, runs CTest, then runs the locked Python test, lint, and
 format-check tools through `uv`; contributors do not need globally installed `pytest` or `ruff`.
 
+To verify that CI gates fail when their checks are violated:
+
+```sh
+make m0-gate-proof
+```
+
+The proof command works on temporary copies of the repository and injects one representative
+violation per gate. It succeeds only when the C++ warning/build gate, C++ unit-test gate, Python
+unit-test gate, Python lint gate, and Python format gate each fail as expected.
+
 ## C++ build profiles
 
 Select with `-DCMAKE_BUILD_TYPE=<profile>`:
@@ -93,5 +103,12 @@ cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCHRONOS_SANITIZE=ON
 - `tests/unit/boundary_test.cpp` and `tests/python/test_boundary.py` — C++ and Python coverage
   proving the hello event crosses Python→C++→Python.
 - `make m0-check` — aggregate local gate for the current M0 scaffold.
+
+## What's here in M0.5
+
+- `.github/workflows/ci.yml` — GitHub Actions baseline for the M0 mixed-runtime scaffold.
+- `make m0-check` — positive CI gate: C++ build/test plus Python test/lint/format.
+- `make m0-gate-proof` — negative proof that representative violations fail their gates.
+- `tools/development/prove_m0_gates.py` — temporary-copy proof harness used by local and CI runs.
 
 Real domain modules and canonical cross-boundary contracts arrive in later milestones.
