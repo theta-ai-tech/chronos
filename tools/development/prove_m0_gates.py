@@ -73,6 +73,14 @@ def inject_cpp_unit_failure(repo: Path) -> None:
     )
 
 
+def inject_cpp_format_failure(repo: Path) -> None:
+    replace_once(
+        repo / "core/src/version.cpp",
+        "bool engine_alive() noexcept { return true; }",
+        "bool engine_alive() noexcept {return true;}",
+    )
+
+
 def inject_python_unit_failure(repo: Path) -> None:
     replace_once(
         repo / "tests/python/test_package.py",
@@ -82,7 +90,7 @@ def inject_python_unit_failure(repo: Path) -> None:
 
 
 def inject_python_lint_failure(repo: Path) -> None:
-    with (repo / "python/chronos/__init__.py").open("a", encoding="utf-8") as handle:
+    with (repo / "tools/development/run_m0_round_trip.py").open("a", encoding="utf-8") as handle:
         handle.write("\nundefined_lint_probe\n")
 
 
@@ -94,31 +102,37 @@ def inject_python_format_failure(repo: Path) -> None:
 GATE_PROOFS = (
     GateProof(
         "cpp-warning-as-error",
-        ("make", "cpp-build"),
+        ("make", "m0-check"),
         inject_cpp_warning_as_error,
         ("unused_probe", "unused-variable", "-Werror"),
     ),
     GateProof(
         "cpp-unit-test",
-        ("make", "cpp-test"),
+        ("make", "m0-check"),
         inject_cpp_unit_failure,
         ("CHECK failed: !chronos::engine_alive()", "RESULT FAIL"),
     ),
     GateProof(
+        "cpp-format",
+        ("make", "m0-check"),
+        inject_cpp_format_failure,
+        ("code should be clang-formatted", "core/src/version.cpp"),
+    ),
+    GateProof(
         "python-unit-test",
-        ("uv", "run", "--locked", "--group", "dev", "pytest", "tests/python/test_package.py"),
+        ("make", "m0-check"),
         inject_python_unit_failure,
         ("test_python_package_exposes_project_version", "9.9.9", "AssertionError"),
     ),
     GateProof(
         "python-lint",
-        ("make", "python-lint"),
+        ("make", "m0-check"),
         inject_python_lint_failure,
         ("F821", "undefined_lint_probe"),
     ),
     GateProof(
         "python-format",
-        ("make", "python-format"),
+        ("make", "m0-check"),
         inject_python_format_failure,
         ("Would reformat: tests/python/test_package.py",),
     ),
@@ -173,13 +187,19 @@ def run_expected_failure(repo: Path, proof: GateProof, verbose: bool) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--verbose", action="store_true", help="print command output")
+    parser.add_argument(
+        "--proof",
+        choices=[proof.name for proof in GATE_PROOFS],
+        help="run one proof (used by the CI matrix)",
+    )
     args = parser.parse_args()
 
     source = Path(__file__).resolve().parents[2]
 
     with tempfile.TemporaryDirectory(prefix="chronos-m0-gate-proof-") as tmp:
         root = Path(tmp)
-        for proof in GATE_PROOFS:
+        selected = [proof for proof in GATE_PROOFS if args.proof in (None, proof.name)]
+        for proof in selected:
             scenario_repo = root / proof.name
             copy_repo(source, scenario_repo)
             run_expected_failure(scenario_repo, proof, args.verbose)

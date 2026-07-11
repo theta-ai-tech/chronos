@@ -10,4 +10,4 @@ std::string round_trip_hello_event(std::string_view payload) {
   return response;
 }
 
-}  // namespace chronos
+} // namespace chronos

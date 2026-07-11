@@ -58,10 +58,10 @@ To verify that CI gates fail when their checks are violated:
 make m0-gate-proof
 ```
 
-The proof command works on temporary copies of the repository and injects one representative
-violation per gate. It succeeds only when the C++ warning/build gate, C++ unit-test gate, Python
-unit-test gate, Python lint gate, and Python format gate each fail with the expected failure
-signature.
+The proof command works on temporary copies of the repository and routes each representative
+violation through the real `make m0-check` CI entrypoint. CI runs the C++ warning/build, C++
+unit-test, C++ format, Python unit-test, Python lint, and Python format proofs as independent
+matrix jobs so one broken proof cannot mask the others.
 
 To run only the M0.4 boundary smoke check after the C++ library has been built:
 

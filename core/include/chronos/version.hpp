@@ -12,4 +12,4 @@ namespace chronos {
 // linked symbol from chronos_core to exercise.
 [[nodiscard]] bool engine_alive() noexcept;
 
-}  // namespace chronos
+} // namespace chronos

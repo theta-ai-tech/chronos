@@ -10,4 +10,4 @@ std::string_view version() noexcept { return CHRONOS_VERSION; }
 
 bool engine_alive() noexcept { return true; }
 
-}  // namespace chronos
+} // namespace chronos
