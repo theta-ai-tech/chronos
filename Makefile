@@ -14,7 +14,7 @@ cpp-test: cpp-build
 	ctest --test-dir build --output-on-failure
 
 cpp-format:
-	uv run --locked --group dev clang-format --dry-run --Werror $$(rg --files core tests -g '*.cpp' -g '*.hpp')
+	uv run --locked --group dev clang-format --dry-run --Werror $$(find core tests -type f \( -name '*.cpp' -o -name '*.hpp' \))
 
 cpp-check: cpp-format cpp-test
 
