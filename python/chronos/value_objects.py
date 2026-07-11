@@ -79,6 +79,11 @@ class DefinitionId(OpaqueId):
 
 
 @dataclass(frozen=True)
+class ClockDomainId(OpaqueId):
+    pass
+
+
+@dataclass(frozen=True)
 class StreamCursor:
     stream_id: StreamId
     stream_epoch: int
@@ -115,7 +120,7 @@ class VersionRef:
         _require_uint64("version", self.version, nonzero=True)
 
 
-class ClockDomain(Enum):
+class ClockClass(Enum):
     SOURCE_WALL = "source_wall"
     CHRONOS_WALL = "chronos_wall"
     MONOTONIC = "monotonic"
@@ -125,19 +130,22 @@ class ClockDomain(Enum):
 @dataclass(frozen=True)
 class TimePoint:
     nanoseconds: int
-    clock_domain: ClockDomain
+    clock_domain_id: ClockDomainId
+    clock_class: ClockClass
     precision_nanoseconds: int
 
     def __post_init__(self) -> None:
         _require_int64("time point", self.nanoseconds)
-        if not isinstance(self.clock_domain, ClockDomain):
-            raise TypeError("time point requires a ClockDomain")
+        if not isinstance(self.clock_domain_id, ClockDomainId):
+            raise TypeError("time point requires a ClockDomainId")
+        if not isinstance(self.clock_class, ClockClass):
+            raise TypeError("time point requires a ClockClass")
         _require_uint32("time precision", self.precision_nanoseconds, nonzero=True)
 
     def checked_compare(self, other: TimePoint) -> int:
         if not isinstance(other, TimePoint):
             raise TypeError("time comparison requires a TimePoint")
-        if self.clock_domain is not other.clock_domain:
+        if self.clock_domain_id != other.clock_domain_id:
             raise ContractValueError("time points in different clock domains are incomparable")
         return (self.nanoseconds > other.nanoseconds) - (self.nanoseconds < other.nanoseconds)
 

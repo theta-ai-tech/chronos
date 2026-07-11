@@ -38,9 +38,16 @@ public:
     std::size_t byte_index = 0;
     std::uint8_t high_nibble = 0;
     bool have_high_nibble = false;
-    for (const char character : value) {
-      if (character == '-') {
+    for (std::size_t input_index = 0; input_index < value.size();
+         ++input_index) {
+      const char character = value[input_index];
+      const bool separator = input_index == 8 || input_index == 13 ||
+                             input_index == 18 || input_index == 23;
+      if (separator) {
         continue;
+      }
+      if (character == '-') {
+        return std::nullopt;
       }
       const auto nibble = decode_hex(character);
       if (!nibble.has_value()) {
@@ -107,6 +114,7 @@ struct CanonicalInstrumentIdTag;
 struct ListingIdTag;
 struct ProducerIdTag;
 struct DefinitionIdTag;
+struct ClockDomainIdTag;
 
 using EventId = OpaqueId<EventIdTag>;
 using StreamId = OpaqueId<StreamIdTag>;
@@ -116,12 +124,10 @@ using CanonicalInstrumentId = OpaqueId<CanonicalInstrumentIdTag>;
 using ListingId = OpaqueId<ListingIdTag>;
 using ProducerId = OpaqueId<ProducerIdTag>;
 using DefinitionId = OpaqueId<DefinitionIdTag>;
+using ClockDomainId = OpaqueId<ClockDomainIdTag>;
 
-struct StreamCursor final {
-  StreamId stream_id;
-  std::uint64_t stream_epoch;
-  std::optional<std::uint64_t> last_consumed_sequence;
-
+class StreamCursor final {
+public:
   [[nodiscard]] static constexpr std::optional<StreamCursor>
   at_origin(StreamId stream_id, std::uint64_t stream_epoch) noexcept {
     if (stream_epoch == 0) {
@@ -140,16 +146,36 @@ struct StreamCursor final {
   }
 
   [[nodiscard]] constexpr bool is_origin() const noexcept {
-    return !last_consumed_sequence.has_value();
+    return !last_consumed_sequence_.has_value();
+  }
+
+  [[nodiscard]] constexpr StreamId stream_id() const noexcept {
+    return stream_id_;
+  }
+  [[nodiscard]] constexpr std::uint64_t stream_epoch() const noexcept {
+    return stream_epoch_;
+  }
+  [[nodiscard]] constexpr std::optional<std::uint64_t>
+  last_consumed_sequence() const noexcept {
+    return last_consumed_sequence_;
   }
 
   bool operator==(const StreamCursor &) const = default;
+
+private:
+  constexpr StreamCursor(
+      StreamId stream_id, std::uint64_t stream_epoch,
+      std::optional<std::uint64_t> last_consumed_sequence) noexcept
+      : stream_id_(stream_id), stream_epoch_(stream_epoch),
+        last_consumed_sequence_(last_consumed_sequence) {}
+
+  StreamId stream_id_;
+  std::uint64_t stream_epoch_;
+  std::optional<std::uint64_t> last_consumed_sequence_;
 };
 
-struct VersionRef final {
-  DefinitionId definition_id;
-  std::uint64_t version;
-
+class VersionRef final {
+public:
   [[nodiscard]] static constexpr std::optional<VersionRef>
   from(DefinitionId definition_id, std::uint64_t version) noexcept {
     if (version == 0) {
@@ -158,39 +184,89 @@ struct VersionRef final {
     return VersionRef{definition_id, version};
   }
 
+  [[nodiscard]] constexpr DefinitionId definition_id() const noexcept {
+    return definition_id_;
+  }
+  [[nodiscard]] constexpr std::uint64_t version() const noexcept {
+    return version_;
+  }
+
   auto operator<=>(const VersionRef &) const = default;
+
+private:
+  constexpr VersionRef(DefinitionId definition_id,
+                       std::uint64_t version) noexcept
+      : definition_id_(definition_id), version_(version) {}
+
+  DefinitionId definition_id_;
+  std::uint64_t version_;
 };
 
-enum class ClockDomain : std::uint8_t {
+enum class ClockClass : std::uint8_t {
   source_wall,
   chronos_wall,
   monotonic,
   replay_logical,
 };
 
-struct TimePoint final {
-  std::int64_t nanoseconds;
-  ClockDomain clock_domain;
-  std::uint32_t precision_nanoseconds;
+[[nodiscard]] constexpr bool is_valid(ClockClass value) noexcept {
+  switch (value) {
+  case ClockClass::source_wall:
+  case ClockClass::chronos_wall:
+  case ClockClass::monotonic:
+  case ClockClass::replay_logical:
+    return true;
+  }
+  return false;
+}
 
+class TimePoint final {
+public:
   [[nodiscard]] static constexpr std::optional<TimePoint>
-  from(std::int64_t nanoseconds, ClockDomain clock_domain,
-       std::uint32_t precision_nanoseconds) noexcept {
-    if (precision_nanoseconds == 0) {
+  from(std::int64_t nanoseconds, ClockDomainId clock_domain_id,
+       ClockClass clock_class, std::uint32_t precision_nanoseconds) noexcept {
+    if (!is_valid(clock_class) || precision_nanoseconds == 0) {
       return std::nullopt;
     }
-    return TimePoint{nanoseconds, clock_domain, precision_nanoseconds};
+    return TimePoint{nanoseconds, clock_domain_id, clock_class,
+                     precision_nanoseconds};
+  }
+
+  [[nodiscard]] constexpr std::int64_t nanoseconds() const noexcept {
+    return nanoseconds_;
+  }
+  [[nodiscard]] constexpr ClockDomainId clock_domain_id() const noexcept {
+    return clock_domain_id_;
+  }
+  [[nodiscard]] constexpr ClockClass clock_class() const noexcept {
+    return clock_class_;
+  }
+  [[nodiscard]] constexpr std::uint32_t precision_nanoseconds() const noexcept {
+    return precision_nanoseconds_;
   }
 
   bool operator==(const TimePoint &) const = default;
 
   [[nodiscard]] constexpr std::optional<std::strong_ordering>
   checked_compare(TimePoint other) const noexcept {
-    if (clock_domain != other.clock_domain) {
+    if (clock_domain_id_ != other.clock_domain_id_) {
       return std::nullopt;
     }
-    return nanoseconds <=> other.nanoseconds;
+    return nanoseconds_ <=> other.nanoseconds_;
   }
+
+private:
+  constexpr TimePoint(std::int64_t nanoseconds, ClockDomainId clock_domain_id,
+                      ClockClass clock_class,
+                      std::uint32_t precision_nanoseconds) noexcept
+      : nanoseconds_(nanoseconds), clock_domain_id_(clock_domain_id),
+        clock_class_(clock_class),
+        precision_nanoseconds_(precision_nanoseconds) {}
+
+  std::int64_t nanoseconds_;
+  ClockDomainId clock_domain_id_;
+  ClockClass clock_class_;
+  std::uint32_t precision_nanoseconds_;
 };
 
 enum class QualityStatus : std::uint8_t {
@@ -202,19 +278,46 @@ enum class QualityStatus : std::uint8_t {
   unavailable,
 };
 
-struct DataQuality final {
-  QualityStatus status;
-  std::uint32_t reason_code;
+[[nodiscard]] constexpr bool is_valid(QualityStatus value) noexcept {
+  switch (value) {
+  case QualityStatus::valid:
+  case QualityStatus::stale:
+  case QualityStatus::gapped:
+  case QualityStatus::recovering:
+  case QualityStatus::invalid:
+  case QualityStatus::unavailable:
+    return true;
+  }
+  return false;
+}
 
+class DataQuality final {
+public:
   [[nodiscard]] static constexpr std::optional<DataQuality>
   from(QualityStatus status, std::uint32_t reason_code) noexcept {
-    if ((status == QualityStatus::valid) != (reason_code == 0)) {
+    if (!is_valid(status) ||
+        (status == QualityStatus::valid) != (reason_code == 0)) {
       return std::nullopt;
     }
     return DataQuality{status, reason_code};
   }
 
+  [[nodiscard]] constexpr QualityStatus status() const noexcept {
+    return status_;
+  }
+  [[nodiscard]] constexpr std::uint32_t reason_code() const noexcept {
+    return reason_code_;
+  }
+
   bool operator==(const DataQuality &) const = default;
+
+private:
+  constexpr DataQuality(QualityStatus status,
+                        std::uint32_t reason_code) noexcept
+      : status_(status), reason_code_(reason_code) {}
+
+  QualityStatus status_;
+  std::uint32_t reason_code_;
 };
 
 static_assert(sizeof(EventId) == 16);
@@ -223,5 +326,9 @@ static_assert(std::is_trivially_copyable_v<StreamCursor>);
 static_assert(std::is_trivially_copyable_v<VersionRef>);
 static_assert(std::is_trivially_copyable_v<TimePoint>);
 static_assert(std::is_trivially_copyable_v<DataQuality>);
+static_assert(!std::is_aggregate_v<StreamCursor>);
+static_assert(!std::is_aggregate_v<VersionRef>);
+static_assert(!std::is_aggregate_v<TimePoint>);
+static_assert(!std::is_aggregate_v<DataQuality>);
 
 } // namespace chronos::contracts

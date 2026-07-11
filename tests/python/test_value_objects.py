@@ -1,7 +1,8 @@
 import pytest
 from chronos.value_objects import (
     CanonicalInstrumentId,
-    ClockDomain,
+    ClockClass,
+    ClockDomainId,
     ContractValueError,
     DataQuality,
     DefinitionId,
@@ -25,6 +26,10 @@ def test_opaque_ids_have_no_business_meaning_and_remain_strongly_typed() -> None
         EventId.parse("BTCUSDT")
     with pytest.raises(ContractValueError):
         EventId.parse("00000000-0000-0000-0000-000000000000")
+    with pytest.raises(ContractValueError):
+        EventId.parse("-18f1f6e-7d3a-7c4b-8a91-0123456789ab")
+    with pytest.raises(ContractValueError):
+        EventId.parse("018f1f6e-7d3a-7c4b-8a91-0123456789a-")
 
 
 def test_stream_cursor_distinguishes_origin_from_sequence_zero() -> None:
@@ -46,14 +51,16 @@ def test_version_ref_requires_positive_version() -> None:
 
 
 def test_time_points_compare_only_inside_one_clock_domain() -> None:
-    earlier = TimePoint(10, ClockDomain.CHRONOS_WALL, 1)
-    later = TimePoint(20, ClockDomain.CHRONOS_WALL, 1)
-    replay = TimePoint(20, ClockDomain.REPLAY_LOGICAL, 1)
+    domain = ClockDomainId.parse(IDENTITY)
+    other_domain = ClockDomainId.parse("018f1f6e-7d3a-7c4b-8a91-0123456789ac")
+    earlier = TimePoint(10, domain, ClockClass.MONOTONIC, 1)
+    later = TimePoint(20, domain, ClockClass.MONOTONIC, 1)
+    restarted = TimePoint(20, other_domain, ClockClass.MONOTONIC, 1)
     assert earlier.checked_compare(later) == -1
     with pytest.raises(ContractValueError):
-        earlier.checked_compare(replay)
+        earlier.checked_compare(restarted)
     with pytest.raises(ContractValueError):
-        TimePoint(10, ClockDomain.CHRONOS_WALL, 0)
+        TimePoint(10, domain, ClockClass.CHRONOS_WALL, 0)
 
 
 def test_data_quality_requires_reasons_for_non_valid_states() -> None:
