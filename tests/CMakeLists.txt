@@ -2,6 +2,7 @@
 add_executable(chronos_unit_tests
   unit/boundary_test.cpp
   unit/fixed_point_test.cpp
+  unit/value_objects_test.cpp
   unit/version_test.cpp)
 
 target_include_directories(chronos_unit_tests
