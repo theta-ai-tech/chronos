@@ -44,8 +44,12 @@ uv sync --group dev
 make m0-check
 ```
 
+Pull requests and pushes to `master` run the same M0 gates in GitHub Actions. The CI workflow also
+runs `make m0-gate-proof`, which injects representative violations into temporary copies of the
+repo and proves each gate fails when it should.
+
 See [`BUILDING.md`](BUILDING.md) for C++ build profiles (Debug / Release / Benchmark),
-sanitizers, Python tooling, boundary checks, and verification commands.
+sanitizers, Python tooling, boundary checks, CI gates, and verification commands.
 
 ## Authoritative documents
 
