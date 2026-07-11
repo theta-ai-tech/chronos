@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -18,7 +19,6 @@ class Step:
 
 REQUIRED_TOOLS = (
     ("make", "Install POSIX make."),
-    ("c++", "Install AppleClang 16.x or Clang 18.x."),
     ("cmake", "Install CMake 3.24 or newer."),
     ("ninja", "Install Ninja 1.11 or newer."),
     ("uv", "Install uv 0.11 or newer from https://docs.astral.sh/uv/."),
@@ -44,6 +44,9 @@ def repo_root() -> Path:
 
 def check_required_tools() -> None:
     missing = [(tool, hint) for tool, hint in REQUIRED_TOOLS if shutil.which(tool) is None]
+    compiler = selected_compiler()
+    if shutil.which(compiler) is None:
+        missing.append((compiler, "Set CXX to AppleClang 16.x or Clang 18.x."))
     if not missing:
         return
 
@@ -60,6 +63,19 @@ def parse_version(output: str) -> tuple[int, int, int]:
     return tuple(int(part or 0) for part in match.groups())
 
 
+def selected_compiler() -> str:
+    return os.environ.get("CXX", "c++")
+
+
+def compiler_policy_failure(output: str) -> str | None:
+    version = parse_version(output)
+    if "Apple clang version" in output and version[0] == 16:
+        return None
+    if "clang version" in output and "Apple clang" not in output and version[0] == 18:
+        return None
+    return f"unsupported compiler ({output.splitlines()[0]}); need AppleClang 16.x or Clang 18.x"
+
+
 def check_tool_versions() -> None:
     failures = []
     for name, command, minimum in MINIMUM_VERSIONS:
@@ -70,6 +86,12 @@ def check_tool_versions() -> None:
                 f"{name} {'.'.join(map(str, actual))} is too old; "
                 f"need {'.'.join(map(str, minimum))} or newer"
             )
+
+    compiler = selected_compiler()
+    completed = subprocess.run((compiler, "--version"), text=True, capture_output=True, check=True)
+    compiler_failure = compiler_policy_failure(completed.stdout or completed.stderr)
+    if compiler_failure is not None:
+        failures.append(compiler_failure)
 
     if sys.version_info < (3, 9):  # noqa: UP036 - bootstrap runs before project install
         failures.append(

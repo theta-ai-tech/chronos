@@ -32,3 +32,26 @@ def test_parse_version(output: str, expected: tuple[int, int, int]) -> None:
 def test_parse_version_rejects_unversioned_output() -> None:
     with pytest.raises(ValueError, match="could not parse version"):
         load_bootstrap_module().parse_version("unknown")
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "Apple clang version 16.0.0 (clang-1600.0.26.6)",
+        "Ubuntu clang version 18.1.3 (1ubuntu1)",
+    ],
+)
+def test_compiler_policy_accepts_supported_compilers(output: str) -> None:
+    assert load_bootstrap_module().compiler_policy_failure(output) is None
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "Apple clang version 15.0.0",
+        "Ubuntu clang version 17.0.6",
+        "g++ (Ubuntu 14.2.0) 14.2.0",
+    ],
+)
+def test_compiler_policy_rejects_unsupported_compilers(output: str) -> None:
+    assert "unsupported compiler" in load_bootstrap_module().compiler_policy_failure(output)
