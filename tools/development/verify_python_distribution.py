@@ -13,14 +13,17 @@ EXPECTED_SDIST_PATHS = {
     "pyproject.toml",
     "python/chronos/__init__.py",
     "python/chronos/boundary.py",
+    "python/chronos/contracts.py",
     "tests/python/test_boundary.py",
     "tests/python/test_bootstrap.py",
+    "tests/python/test_contracts_fixed_point.py",
     "tests/python/test_package.py",
     "tools/development/bootstrap_m0.py",
 }
 EXPECTED_WHEEL_PACKAGE_PATHS = {
     "chronos/__init__.py",
     "chronos/boundary.py",
+    "chronos/contracts.py",
 }
 EXPECTED_DIST_INFO_FILES = {"METADATA", "RECORD", "WHEEL"}
 

@@ -48,6 +48,7 @@ include(ProjectOptions)     # -> chronos_options (std + optional sanitizers)
 
 # --- Modules -----------------------------------------------------------------
 enable_testing()
+add_subdirectory(contracts)
 add_subdirectory(core)
 add_subdirectory(tests)
 
