@@ -249,7 +249,8 @@ public:
 
   [[nodiscard]] constexpr std::optional<std::strong_ordering>
   checked_compare(TimePoint other) const noexcept {
-    if (clock_domain_id_ != other.clock_domain_id_) {
+    if (clock_domain_id_ != other.clock_domain_id_ ||
+        clock_class_ != other.clock_class_) {
       return std::nullopt;
     }
     return nanoseconds_ <=> other.nanoseconds_;

@@ -56,9 +56,12 @@ def test_time_points_compare_only_inside_one_clock_domain() -> None:
     earlier = TimePoint(10, domain, ClockClass.MONOTONIC, 1)
     later = TimePoint(20, domain, ClockClass.MONOTONIC, 1)
     restarted = TimePoint(20, other_domain, ClockClass.MONOTONIC, 1)
+    contradictory = TimePoint(20, domain, ClockClass.REPLAY_LOGICAL, 1)
     assert earlier.checked_compare(later) == -1
     with pytest.raises(ContractValueError):
         earlier.checked_compare(restarted)
+    with pytest.raises(ContractValueError):
+        earlier.checked_compare(contradictory)
     with pytest.raises(ContractValueError):
         TimePoint(10, domain, ClockClass.CHRONOS_WALL, 0)
 

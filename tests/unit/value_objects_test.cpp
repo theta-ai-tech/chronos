@@ -52,8 +52,11 @@ TEST_CASE("time points compare only within one named clock domain") {
       TimePoint::from(20, domain, ClockClass::monotonic, 1).value();
   const auto restarted =
       TimePoint::from(20, other_domain, ClockClass::monotonic, 1).value();
+  const auto contradictory =
+      TimePoint::from(20, domain, ClockClass::replay_logical, 1).value();
   CHECK(earlier.checked_compare(later) == std::strong_ordering::less);
   CHECK(!earlier.checked_compare(restarted).has_value());
+  CHECK(!earlier.checked_compare(contradictory).has_value());
   CHECK(!TimePoint::from(10, domain, ClockClass::chronos_wall, 0).has_value());
   CHECK(!TimePoint::from(10, domain, static_cast<ClockClass>(255), 1)
              .has_value());

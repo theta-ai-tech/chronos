@@ -145,7 +145,10 @@ class TimePoint:
     def checked_compare(self, other: TimePoint) -> int:
         if not isinstance(other, TimePoint):
             raise TypeError("time comparison requires a TimePoint")
-        if self.clock_domain_id != other.clock_domain_id:
+        if (
+            self.clock_domain_id != other.clock_domain_id
+            or self.clock_class is not other.clock_class
+        ):
             raise ContractValueError("time points in different clock domains are incomparable")
         return (self.nanoseconds > other.nanoseconds) - (self.nanoseconds < other.nanoseconds)
 
