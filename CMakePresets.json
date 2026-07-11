@@ -1,0 +1,22 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {"major": 3, "minor": 24, "patch": 0},
+  "configurePresets": [
+    {"name": "debug", "generator": "Ninja", "binaryDir": "${sourceDir}/build-debug", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}},
+    {"name": "release", "inherits": "debug", "binaryDir": "${sourceDir}/build-release", "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}},
+    {"name": "benchmark", "inherits": "debug", "binaryDir": "${sourceDir}/build-benchmark", "cacheVariables": {"CMAKE_BUILD_TYPE": "Benchmark"}},
+    {"name": "sanitize", "inherits": "debug", "binaryDir": "${sourceDir}/build-sanitize", "cacheVariables": {"CHRONOS_SANITIZE": "ON", "CMAKE_BUILD_TYPE": "Debug"}}
+  ],
+  "buildPresets": [
+    {"name": "debug", "configurePreset": "debug"},
+    {"name": "release", "configurePreset": "release"},
+    {"name": "benchmark", "configurePreset": "benchmark"},
+    {"name": "sanitize", "configurePreset": "sanitize"}
+  ],
+  "testPresets": [
+    {"name": "debug", "configurePreset": "debug", "output": {"outputOnFailure": true}},
+    {"name": "release", "configurePreset": "release", "output": {"outputOnFailure": true}},
+    {"name": "benchmark", "configurePreset": "benchmark", "output": {"outputOnFailure": true}},
+    {"name": "sanitize", "configurePreset": "sanitize", "output": {"outputOnFailure": true}}
+  ]
+}

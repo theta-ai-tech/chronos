@@ -11,6 +11,8 @@ project(Chronos
   DESCRIPTION "Local-first, replay-first crypto decision and research engine"
   LANGUAGES CXX)
 
+include(cmake/ToolchainPolicy.cmake)
+
 # --- Guard rails -------------------------------------------------------------
 if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
   message(FATAL_ERROR
@@ -33,10 +35,12 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(BuildTypes)
 
 get_property(_chronos_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
-if(NOT _chronos_multi_config AND NOT CMAKE_BUILD_TYPE)
-  set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+if(NOT _chronos_multi_config)
+  if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+  endif()
+  set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release Benchmark)
 endif()
-set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release Benchmark)
 
 # --- Shared interface targets ------------------------------------------------
 include(CompilerWarnings)   # -> chronos_warnings
