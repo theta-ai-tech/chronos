@@ -10,7 +10,9 @@ target_include_directories(chronos_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 set_target_properties(chronos_core PROPERTIES
-  POSITION_INDEPENDENT_CODE ON)
+  POSITION_INDEPENDENT_CODE ON
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES)
 
 target_compile_definitions(chronos_core
   PRIVATE CHRONOS_VERSION="${PROJECT_VERSION}")
@@ -23,7 +25,12 @@ add_library(chronos_boundary SHARED
   src/boundary_c_api.cpp)
 
 set_target_properties(chronos_boundary PROPERTIES
-  OUTPUT_NAME chronos_boundary)
+  OUTPUT_NAME chronos_boundary
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES)
+
+target_compile_definitions(chronos_boundary
+  PRIVATE CHRONOS_BOUNDARY_BUILD)
 
 target_link_libraries(chronos_boundary
   PUBLIC  chronos_options
