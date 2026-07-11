@@ -23,6 +23,14 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["python/chronos"]
 
+[tool.hatch.build.targets.sdist]
+include = [
+  "/README.md",
+  "/pyproject.toml",
+  "/python/chronos",
+  "/tests/python",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
 addopts = [

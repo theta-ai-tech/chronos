@@ -1,4 +1,4 @@
-.PHONY: bootstrap module-stubs-check cpp-build cpp-test cpp-check cpp-profiles-check python-test python-lint python-format python-check m0-round-trip m0-check m0-gate-proof
+.PHONY: bootstrap module-stubs-check cpp-build cpp-test cpp-check cpp-profiles-check python-build python-test python-lint python-format python-check m0-round-trip m0-check m0-gate-proof
 
 bootstrap:
 	python3 tools/development/bootstrap_m0.py
@@ -18,6 +18,9 @@ cpp-check: cpp-test
 cpp-profiles-check:
 	python3 tools/development/verify_cpp_profiles.py
 
+python-build:
+	uv run --locked --group dev python tools/development/verify_python_distribution.py
+
 python-test: cpp-build
 	uv run --locked --group dev pytest
 
@@ -27,7 +30,7 @@ python-lint:
 python-format:
 	uv run --locked --group dev ruff format --check .
 
-python-check: python-test python-lint python-format
+python-check: python-build python-test python-lint python-format
 
 m0-round-trip: cpp-build
 	uv run --locked --group dev python tools/development/run_m0_round_trip.py
