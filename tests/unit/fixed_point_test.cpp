@@ -18,7 +18,10 @@ TEST_CASE("fixed-point values preserve exact type-scoped equality") {
   CHECK(Price::from_units(42, 7) != Price::from_units(42, 8));
   CHECK(Quantity::from_units(42, 7) == Quantity::from_units(42, 7));
   CHECK(Money::from_units(-7, 9) == Money::from_units(-7, 9));
-  CHECK(Price::from_units(1, 7) < Price::from_units(2, 7));
+  const auto lower = Price::from_units(1, 7).value();
+  const auto higher = Price::from_units(2, 7).value();
+  CHECK(lower.checked_compare(higher) == std::strong_ordering::less);
+  CHECK(!lower.checked_compare(Price::from_units(2, 8).value()).has_value());
   CHECK(!Price::from_units(1, 0).has_value());
 }
 

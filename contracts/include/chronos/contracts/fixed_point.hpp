@@ -70,7 +70,15 @@ public:
     return definition_ref_;
   }
 
-  auto operator<=>(const FixedPoint &) const = default;
+  bool operator==(const FixedPoint &) const = default;
+
+  [[nodiscard]] constexpr std::optional<std::strong_ordering>
+  checked_compare(FixedPoint other) const noexcept {
+    if (definition_ref_ != other.definition_ref_) {
+      return std::nullopt;
+    }
+    return units_ <=> other.units_;
+  }
 
   [[nodiscard]] constexpr std::optional<FixedPoint>
   checked_add(FixedPoint other) const noexcept {
