@@ -63,7 +63,13 @@ def main() -> int:
         wheel = next(output.glob("*.whl"))
 
         with tarfile.open(sdist, "r:gz") as archive:
-            sdist_paths = {member.name for member in archive.getmembers()}
+            members = archive.getmembers()
+            non_files = sorted(member.name for member in members if not member.isfile())
+            if non_files:
+                raise RuntimeError(
+                    f"{sdist.name} contains non-regular archive members: {', '.join(non_files)}"
+                )
+            sdist_paths = {member.name for member in members}
         with zipfile.ZipFile(wheel) as archive:
             wheel_paths = set(archive.namelist())
 
