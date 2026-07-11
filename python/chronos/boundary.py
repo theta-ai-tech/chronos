@@ -10,6 +10,9 @@ _BOUNDARY_LIBRARY_ENV = "CHRONOS_BOUNDARY_LIBRARY"
 _STATUS_OK = 0
 _STATUS_INVALID_ARGUMENT = 1
 _STATUS_OUTPUT_TOO_SMALL = 2
+_STATUS_INPUT_TOO_LARGE = 3
+_STATUS_RESOURCE_EXHAUSTED = 4
+_STATUS_INTERNAL_ERROR = 5
 
 
 class BoundaryLibraryNotFound(RuntimeError):
@@ -79,9 +82,17 @@ class ChronosBoundary:
             ctypes.POINTER(ctypes.c_size_t),
         ]
         self._round_trip.restype = ctypes.c_int
+        self._max_payload = self._library.chronos_boundary_max_hello_payload_bytes
+        self._max_payload.argtypes = []
+        self._max_payload.restype = ctypes.c_size_t
 
     def round_trip_hello_event(self, payload: str) -> str:
         request = payload.encode("utf-8")
+        max_payload = self._max_payload()
+        if len(request) > max_payload:
+            raise BoundaryCallError(
+                f"hello event payload is {len(request)} bytes; maximum is {max_payload}"
+            )
         capacity = max(len(request) + 64, 256)
 
         while True:
@@ -102,6 +113,12 @@ class ChronosBoundary:
                 continue
             if status == _STATUS_INVALID_ARGUMENT:
                 raise BoundaryCallError("native boundary rejected the hello event arguments")
+            if status == _STATUS_INPUT_TOO_LARGE:
+                raise BoundaryCallError("native boundary rejected an oversized hello event")
+            if status == _STATUS_RESOURCE_EXHAUSTED:
+                raise BoundaryCallError("native boundary exhausted resources")
+            if status == _STATUS_INTERNAL_ERROR:
+                raise BoundaryCallError("native boundary failed internally")
             raise BoundaryCallError(f"native boundary returned unknown status {status}")
 
 

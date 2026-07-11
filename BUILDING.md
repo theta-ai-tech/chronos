@@ -125,6 +125,8 @@ cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCHRONOS_SANITIZE=ON
 - `chronos_boundary` — shared C ABI library built from C++ for Python to load.
 - `chronos::round_trip_hello_event()` — native scaffold call returning a versioned hello-event
   acknowledgement.
+- The C ABI accepts at most 4096 UTF-8 payload bytes, contains exceptions as status codes, and
+  exports only the two documented C entry points.
 - `python/chronos/boundary.py` — `ctypes` wrapper for the native boundary.
 - `tests/unit/boundary_test.cpp` and `tests/python/test_boundary.py` — C++ and Python coverage
   proving the hello event crosses Python→C++→Python.
