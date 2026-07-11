@@ -10,17 +10,14 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
        AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 18
        AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 19)
   set(_chronos_supported_compiler TRUE)
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
-       AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14
-       AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15)
-  set(_chronos_supported_compiler TRUE)
 endif()
 
 if(NOT _chronos_supported_compiler)
   message(FATAL_ERROR
     "Unsupported C++ compiler: ${CMAKE_CXX_COMPILER_ID} "
     "${CMAKE_CXX_COMPILER_VERSION}. "
-    "Chronos M0.2 supports AppleClang 16.x, Clang 18.x, or GCC 14.x.")
+    "Chronos M0.2 supports the pinned Clang 18.x toolchain or "
+    "AppleClang 16.x for macOS development.")
 endif()
 
 message(STATUS
