@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.27,<2"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -16,12 +16,21 @@ dependencies = []
 
 [dependency-groups]
 dev = [
+  "hatchling==1.27.0",
   "pytest>=8.3,<9",
   "ruff>=0.8,<1",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["python/chronos"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/README.md",
+  "/pyproject.toml",
+  "/python/chronos",
+  "/tests/python",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]

@@ -1,4 +1,6 @@
 .DS_Store
+/journal.html
+/.claude/worktrees/
 
 # C++ build output
 /build/

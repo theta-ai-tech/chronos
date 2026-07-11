@@ -115,6 +115,7 @@ cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCHRONOS_SANITIZE=ON
 
 - `pyproject.toml` — Python project metadata plus pytest and Ruff configuration.
 - `uv.lock` — locked dependency graph for Python dev tools.
+- `make python-build` — builds the sdist and wheel and rejects local/worktree/build leakage.
 - `Makefile` — `make python-check` aggregate for the Python test/lint/format gate.
 - `python/chronos/` — placeholder Python package proving packaging/imports work.
 - `tests/python/` — pytest suite proving the package is installed through project metadata.
