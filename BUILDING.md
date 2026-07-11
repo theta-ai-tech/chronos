@@ -8,6 +8,13 @@ Chronos currently has two build surfaces:
 
 ## Prerequisites
 
+### Supported machines
+
+- macOS 15 on Apple silicon with Xcode Command Line Tools / AppleClang 16.x.
+- Ubuntu 24.04 x86_64 with Clang 18.x (the CI build-of-record environment).
+
+Other hosts are unsupported until they are added to the checked toolchain and bootstrap tests.
+
 | Tool | Version used | Notes |
 |---|---|---|
 | CMake | ≥ 3.24 (tested 4.3.1) | build configuration |
@@ -22,6 +29,28 @@ C++ configure + build works without network access. Python tooling is resolved f
 the first `uv sync` needs access to the configured Python package index unless the packages are
 already cached.
 
+For a new macOS machine:
+
+```sh
+xcode-select --install
+brew install cmake ninja uv
+git clone git@github.com:theta-ai-tech/chronos.git
+cd chronos
+make bootstrap
+```
+
+For a new Ubuntu 24.04 machine:
+
+```sh
+sudo apt-get update
+sudo apt-get install --yes clang-18 cmake ninja-build make python3 pipx git
+pipx install uv==0.11.16
+export PATH="$HOME/.local/bin:$PATH"
+git clone git@github.com:theta-ai-tech/chronos.git
+cd chronos
+CC=clang-18 CXX=clang++-18 make bootstrap
+```
+
 ## Quick start
 
 ### One-command M0 bootstrap
@@ -30,9 +59,9 @@ already cached.
 make bootstrap
 ```
 
-This checks required host tools, syncs locked Python dev dependencies, configures and builds the
-C++ targets, runs C++ and Python tests, runs Ruff lint/format gates, and executes the M0.4
-Python→C++ hello-event round trip.
+This checks required host tools and minimum versions, syncs locked Python dev dependencies, runs
+the canonical `m0-check` build/quality gate, and executes the M0.4 Python-to-C++ hello-event
+round trip.
 
 ### C++
 
