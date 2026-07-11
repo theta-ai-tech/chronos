@@ -1,4 +1,4 @@
-.PHONY: bootstrap module-stubs-check cpp-build cpp-test cpp-check python-test python-lint python-format python-check m0-round-trip m0-check m0-gate-proof
+.PHONY: bootstrap module-stubs-check cpp-build cpp-test cpp-check cpp-profiles-check python-test python-lint python-format python-check m0-round-trip m0-check m0-gate-proof
 
 bootstrap:
 	python3 tools/development/bootstrap_m0.py
@@ -14,6 +14,9 @@ cpp-test: cpp-build
 	ctest --test-dir build --output-on-failure
 
 cpp-check: cpp-test
+
+cpp-profiles-check:
+	python3 tools/development/verify_cpp_profiles.py
 
 python-test: cpp-build
 	uv run --locked --group dev pytest

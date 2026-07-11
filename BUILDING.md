@@ -11,7 +11,7 @@ Chronos currently has two build surfaces:
 | Tool | Version used | Notes |
 |---|---|---|
 | CMake | ≥ 3.24 (tested 4.3.1) | build configuration |
-| C++ compiler | C++20 (tested AppleClang 16) | Clang or GCC |
+| C++ compiler | Clang 18.x (canonical), AppleClang 16.x (macOS development) | enforced by CMake |
 | Ninja | tested 1.13.2 | recommended generator |
 | Python | ≥ 3.9 (tested 3.9.6) | Python runtime |
 | uv | tested 0.11.16 | Python dependency lock and tool runner |
@@ -83,6 +83,14 @@ Select with `-DCMAKE_BUILD_TYPE=<profile>`:
 cmake -S . -B build-bench -G Ninja -DCMAKE_BUILD_TYPE=Benchmark
 cmake --build build-bench
 ```
+
+Checked-in CMake presets provide the supported single-config builds. Run
+`cmake --list-presets` to inspect them, or `make cpp-profiles-check` to build and test all
+four presets plus Debug, Release, and Benchmark through Ninja Multi-Config.
+
+CI installs and selects `clang++-18` explicitly before running the complete profile verifier.
+AppleClang 16.x is accepted for local macOS development so contributors can use the platform
+toolchain, but Clang 18.x is the pinned build-of-record compiler.
 
 ## C++ options
 
