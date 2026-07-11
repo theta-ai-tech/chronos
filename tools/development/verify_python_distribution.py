@@ -16,6 +16,7 @@ EXPECTED_SDIST_PATHS = {
     "tests/python/test_boundary.py",
     "tests/python/test_bootstrap.py",
     "tests/python/test_package.py",
+    "tools/development/bootstrap_m0.py",
 }
 EXPECTED_WHEEL_PACKAGE_PATHS = {
     "chronos/__init__.py",
