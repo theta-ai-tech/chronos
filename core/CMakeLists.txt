@@ -18,7 +18,7 @@ target_compile_definitions(chronos_core
   PRIVATE CHRONOS_VERSION="${PROJECT_VERSION}")
 
 target_link_libraries(chronos_core
-  PUBLIC  chronos_options
+  PUBLIC  chronos_contracts chronos_options
   PRIVATE chronos_warnings)
 
 add_library(chronos_boundary SHARED

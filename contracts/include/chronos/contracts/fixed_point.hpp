@@ -1,0 +1,147 @@
+#pragma once
+
+#include <compare>
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <type_traits>
+
+namespace chronos::contracts {
+
+using AmountUnits = std::int64_t;
+
+static_assert(sizeof(AmountUnits) == 8);
+
+enum class RoundingMode : std::uint8_t {
+  toward_zero,
+  toward_negative,
+  toward_positive,
+  nearest_ties_to_even,
+};
+
+class DecimalScale final {
+public:
+  static constexpr std::uint8_t kMaxExponent = 18;
+
+  [[nodiscard]] static constexpr std::optional<DecimalScale>
+  from_exponent(std::uint8_t exponent) noexcept {
+    if (exponent > kMaxExponent) {
+      return std::nullopt;
+    }
+    return DecimalScale(exponent);
+  }
+
+  [[nodiscard]] constexpr std::uint8_t exponent() const noexcept {
+    return exponent_;
+  }
+
+  [[nodiscard]] constexpr AmountUnits denominator() const noexcept {
+    AmountUnits result = 1;
+    for (std::uint8_t index = 0; index < exponent_; ++index) {
+      result *= 10;
+    }
+    return result;
+  }
+
+  auto operator<=>(const DecimalScale &) const = default;
+
+private:
+  explicit constexpr DecimalScale(std::uint8_t exponent) noexcept
+      : exponent_(exponent) {}
+
+  std::uint8_t exponent_;
+};
+
+template <typename Tag> class FixedPoint final {
+public:
+  using units_type = AmountUnits;
+
+  explicit constexpr FixedPoint(AmountUnits units) noexcept : units_(units) {}
+
+  [[nodiscard]] constexpr AmountUnits units() const noexcept { return units_; }
+
+  auto operator<=>(const FixedPoint &) const = default;
+
+  [[nodiscard]] constexpr std::optional<FixedPoint>
+  checked_add(FixedPoint other) const noexcept {
+    AmountUnits result{};
+    if (__builtin_add_overflow(units_, other.units_, &result)) {
+      return std::nullopt;
+    }
+    return FixedPoint(result);
+  }
+
+  [[nodiscard]] constexpr std::optional<FixedPoint>
+  checked_subtract(FixedPoint other) const noexcept {
+    AmountUnits result{};
+    if (__builtin_sub_overflow(units_, other.units_, &result)) {
+      return std::nullopt;
+    }
+    return FixedPoint(result);
+  }
+
+private:
+  AmountUnits units_;
+};
+
+struct PriceTag;
+struct QuantityTag;
+struct MoneyTag;
+
+using Price = FixedPoint<PriceTag>;
+using Quantity = FixedPoint<QuantityTag>;
+using Money = FixedPoint<MoneyTag>;
+
+static_assert(sizeof(Price) == sizeof(AmountUnits));
+static_assert(sizeof(Quantity) == sizeof(AmountUnits));
+static_assert(sizeof(Money) == sizeof(AmountUnits));
+static_assert(std::is_trivially_copyable_v<Price>);
+static_assert(std::is_trivially_copyable_v<Quantity>);
+static_assert(std::is_trivially_copyable_v<Money>);
+
+[[nodiscard]] constexpr std::optional<AmountUnits>
+checked_multiply_divide(AmountUnits value, AmountUnits multiplier,
+                        AmountUnits divisor, RoundingMode rounding) noexcept {
+  if (divisor <= 0) {
+    return std::nullopt;
+  }
+
+  const __int128 product = static_cast<__int128>(value) * multiplier;
+  __int128 quotient = product / divisor;
+  const __int128 remainder = product % divisor;
+
+  if (remainder != 0) {
+    const bool negative = product < 0;
+    switch (rounding) {
+    case RoundingMode::toward_zero:
+      break;
+    case RoundingMode::toward_negative:
+      if (negative) {
+        --quotient;
+      }
+      break;
+    case RoundingMode::toward_positive:
+      if (!negative) {
+        ++quotient;
+      }
+      break;
+    case RoundingMode::nearest_ties_to_even: {
+      const __int128 magnitude = remainder < 0 ? -remainder : remainder;
+      const __int128 twice_remainder = magnitude * 2;
+      if (twice_remainder > divisor ||
+          (twice_remainder == divisor && quotient % 2 != 0)) {
+        quotient += negative ? -1 : 1;
+      }
+      break;
+    }
+    }
+  }
+
+  if (quotient < std::numeric_limits<AmountUnits>::min() ||
+      quotient > std::numeric_limits<AmountUnits>::max()) {
+    return std::nullopt;
+  }
+  return static_cast<AmountUnits>(quotient);
+}
+
+} // namespace chronos::contracts
