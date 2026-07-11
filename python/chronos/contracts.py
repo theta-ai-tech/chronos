@@ -38,24 +38,33 @@ class DecimalScale:
 @dataclass(frozen=True)
 class _FixedPoint:
     units: int
+    definition_ref: int
 
     def __post_init__(self) -> None:
         if isinstance(self.units, bool) or not isinstance(self.units, int):
             raise TypeError("fixed-point units must be an integer")
         if not MIN_AMOUNT_UNITS <= self.units <= MAX_AMOUNT_UNITS:
             raise ContractValueError("fixed-point units exceed signed 64-bit range")
+        if isinstance(self.definition_ref, bool) or not isinstance(self.definition_ref, int):
+            raise TypeError("unit definition reference must be an integer")
+        if not 1 <= self.definition_ref <= 2**64 - 1:
+            raise ContractValueError(
+                "unit definition reference must be a nonzero unsigned 64-bit value"
+            )
 
     def checked_add(self, other: object) -> _FixedPoint:
         self._require_same_type(other)
-        return type(self)(self.units + other.units)
+        return type(self)(self.units + other.units, self.definition_ref)
 
     def checked_subtract(self, other: object) -> _FixedPoint:
         self._require_same_type(other)
-        return type(self)(self.units - other.units)
+        return type(self)(self.units - other.units, self.definition_ref)
 
     def _require_same_type(self, other: object) -> None:
         if type(other) is not type(self):
             raise TypeError("fixed-point arithmetic requires matching amount types")
+        if other.definition_ref != self.definition_ref:
+            raise ContractValueError("fixed-point arithmetic requires matching unit definitions")
 
 
 @dataclass(frozen=True)
@@ -79,6 +88,8 @@ def checked_multiply_divide(
     for name, operand in (("value", value), ("multiplier", multiplier), ("divisor", divisor)):
         if isinstance(operand, bool) or not isinstance(operand, int):
             raise TypeError(f"{name} must be an integer")
+        if not MIN_AMOUNT_UNITS <= operand <= MAX_AMOUNT_UNITS:
+            raise ContractValueError(f"{name} exceeds signed 64-bit range")
     if divisor <= 0:
         raise ContractValueError("divisor must be positive")
     if not isinstance(rounding, RoundingMode):

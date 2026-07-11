@@ -13,16 +13,19 @@ from chronos.contracts import (
 
 
 def test_amounts_are_exact_type_scoped_signed_64_bit_values() -> None:
-    assert Price(42) == Price(42)
-    assert Price(42) != Price(43)
-    assert Price(42) != Quantity(42)
-    assert Money(MIN_AMOUNT_UNITS).units == MIN_AMOUNT_UNITS
-    assert Money(MAX_AMOUNT_UNITS).units == MAX_AMOUNT_UNITS
+    assert Price(42, 7) == Price(42, 7)
+    assert Price(42, 7) != Price(43, 7)
+    assert Price(42, 7) != Price(42, 8)
+    assert Price(42, 7) != Quantity(42, 7)
+    assert Money(MIN_AMOUNT_UNITS, 9).units == MIN_AMOUNT_UNITS
+    assert Money(MAX_AMOUNT_UNITS, 9).units == MAX_AMOUNT_UNITS
 
     with pytest.raises((TypeError, ContractValueError)):
-        Price(1.0)  # type: ignore[arg-type]
+        Price(1.0, 7)  # type: ignore[arg-type]
     with pytest.raises(ContractValueError):
-        Quantity(MAX_AMOUNT_UNITS + 1)
+        Quantity(MAX_AMOUNT_UNITS + 1, 7)
+    with pytest.raises(ContractValueError):
+        Price(1, 0)
 
 
 def test_scale_is_explicit_and_bounded() -> None:
@@ -33,12 +36,14 @@ def test_scale_is_explicit_and_bounded() -> None:
 
 
 def test_checked_arithmetic_rejects_overflow_and_cross_type_operations() -> None:
-    assert Price(7).checked_add(Price(5)) == Price(12)
-    assert Money(7).checked_subtract(Money(5)) == Money(2)
+    assert Price(7, 1).checked_add(Price(5, 1)) == Price(12, 1)
+    assert Money(7, 2).checked_subtract(Money(5, 2)) == Money(2, 2)
     with pytest.raises(ContractValueError):
-        Price(MAX_AMOUNT_UNITS).checked_add(Price(1))
+        Price(MAX_AMOUNT_UNITS, 1).checked_add(Price(1, 1))
     with pytest.raises(TypeError):
-        Price(1).checked_add(Quantity(1))  # type: ignore[arg-type]
+        Price(1, 1).checked_add(Quantity(1, 1))  # type: ignore[arg-type]
+    with pytest.raises(ContractValueError):
+        Price(1, 1).checked_add(Price(1, 2))
 
 
 @pytest.mark.parametrize(
@@ -73,3 +78,5 @@ def test_multiply_divide_rejects_invalid_or_out_of_range_results() -> None:
         checked_multiply_divide(MAX_AMOUNT_UNITS, 2, 1, RoundingMode.TOWARD_ZERO)
     with pytest.raises(ContractValueError):
         checked_multiply_divide(1, 1, 0, RoundingMode.TOWARD_ZERO)
+    with pytest.raises(ContractValueError):
+        checked_multiply_divide(MAX_AMOUNT_UNITS + 1, 0, 1, RoundingMode.TOWARD_ZERO)

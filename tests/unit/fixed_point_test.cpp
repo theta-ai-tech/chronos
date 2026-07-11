@@ -13,11 +13,13 @@ using chronos::contracts::Quantity;
 using chronos::contracts::RoundingMode;
 
 TEST_CASE("fixed-point values preserve exact type-scoped equality") {
-  CHECK(Price{42} == Price{42});
-  CHECK(Price{42} != Price{43});
-  CHECK(Quantity{42} == Quantity{42});
-  CHECK(Money{-7} == Money{-7});
-  CHECK(Price{1} < Price{2});
+  CHECK(Price::from_units(42, 7) == Price::from_units(42, 7));
+  CHECK(Price::from_units(42, 7) != Price::from_units(43, 7));
+  CHECK(Price::from_units(42, 7) != Price::from_units(42, 8));
+  CHECK(Quantity::from_units(42, 7) == Quantity::from_units(42, 7));
+  CHECK(Money::from_units(-7, 9) == Money::from_units(-7, 9));
+  CHECK(Price::from_units(1, 7) < Price::from_units(2, 7));
+  CHECK(!Price::from_units(1, 0).has_value());
 }
 
 TEST_CASE("decimal scale is bounded and exact") {
@@ -33,10 +35,19 @@ TEST_CASE("decimal scale is bounded and exact") {
 TEST_CASE("checked addition and subtraction reject overflow") {
   constexpr auto maximum = std::numeric_limits<std::int64_t>::max();
   constexpr auto minimum = std::numeric_limits<std::int64_t>::min();
-  CHECK(Price{7}.checked_add(Price{5}) == Price{12});
-  CHECK(Money{7}.checked_subtract(Money{5}) == Money{2});
-  CHECK(!Price{maximum}.checked_add(Price{1}).has_value());
-  CHECK(!Quantity{minimum}.checked_subtract(Quantity{1}).has_value());
+  const auto price = Price::from_units(7, 1).value();
+  const auto money = Money::from_units(7, 2).value();
+  CHECK(price.checked_add(Price::from_units(5, 1).value()) ==
+        Price::from_units(12, 1));
+  CHECK(money.checked_subtract(Money::from_units(5, 2).value()) ==
+        Money::from_units(2, 2));
+  CHECK(!Price::from_units(maximum, 1)
+             ->checked_add(Price::from_units(1, 1).value())
+             .has_value());
+  CHECK(!Quantity::from_units(minimum, 1)
+             ->checked_subtract(Quantity::from_units(1, 1).value())
+             .has_value());
+  CHECK(!price.checked_add(Price::from_units(5, 2).value()).has_value());
 }
 
 TEST_CASE("multiply-divide applies every declared rounding direction") {

@@ -7,8 +7,8 @@
 - **Plane:** Inherits `contracts/` plane.
 - **Language:** Inherits `contracts/` language policy.
 - **Public API:** `chronos/contracts/fixed_point.hpp` and `chronos.contracts` expose
-  signed 64-bit `Price`, `Quantity`, and `Money` units, bounded `DecimalScale`,
-  declared `RoundingMode`, and checked arithmetic.
+  signed 64-bit `Price`, `Quantity`, and `Money` units bound to opaque unit-definition
+  references, bounded `DecimalScale`, declared `RoundingMode`, and checked arithmetic.
 - **Failure semantics:** Invalid scales, division, and overflow fail explicitly
   (`std::nullopt` in C++, `ContractValueError` in Python); values never saturate or wrap.
 - **Purpose:** Canonical envelopes, identities, and value-object semantics.

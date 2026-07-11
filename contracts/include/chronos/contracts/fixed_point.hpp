@@ -55,33 +55,54 @@ private:
 template <typename Tag> class FixedPoint final {
 public:
   using units_type = AmountUnits;
+  using definition_ref_type = std::uint64_t;
 
-  explicit constexpr FixedPoint(AmountUnits units) noexcept : units_(units) {}
+  [[nodiscard]] static constexpr std::optional<FixedPoint>
+  from_units(AmountUnits units, definition_ref_type definition_ref) noexcept {
+    if (definition_ref == 0) {
+      return std::nullopt;
+    }
+    return FixedPoint(units, definition_ref);
+  }
 
   [[nodiscard]] constexpr AmountUnits units() const noexcept { return units_; }
+  [[nodiscard]] constexpr definition_ref_type definition_ref() const noexcept {
+    return definition_ref_;
+  }
 
   auto operator<=>(const FixedPoint &) const = default;
 
   [[nodiscard]] constexpr std::optional<FixedPoint>
   checked_add(FixedPoint other) const noexcept {
+    if (definition_ref_ != other.definition_ref_) {
+      return std::nullopt;
+    }
     AmountUnits result{};
     if (__builtin_add_overflow(units_, other.units_, &result)) {
       return std::nullopt;
     }
-    return FixedPoint(result);
+    return FixedPoint(result, definition_ref_);
   }
 
   [[nodiscard]] constexpr std::optional<FixedPoint>
   checked_subtract(FixedPoint other) const noexcept {
+    if (definition_ref_ != other.definition_ref_) {
+      return std::nullopt;
+    }
     AmountUnits result{};
     if (__builtin_sub_overflow(units_, other.units_, &result)) {
       return std::nullopt;
     }
-    return FixedPoint(result);
+    return FixedPoint(result, definition_ref_);
   }
 
 private:
+  explicit constexpr FixedPoint(AmountUnits units,
+                                definition_ref_type definition_ref) noexcept
+      : units_(units), definition_ref_(definition_ref) {}
+
   AmountUnits units_;
+  definition_ref_type definition_ref_;
 };
 
 struct PriceTag;
@@ -92,9 +113,9 @@ using Price = FixedPoint<PriceTag>;
 using Quantity = FixedPoint<QuantityTag>;
 using Money = FixedPoint<MoneyTag>;
 
-static_assert(sizeof(Price) == sizeof(AmountUnits));
-static_assert(sizeof(Quantity) == sizeof(AmountUnits));
-static_assert(sizeof(Money) == sizeof(AmountUnits));
+static_assert(sizeof(Price) == 16);
+static_assert(sizeof(Quantity) == 16);
+static_assert(sizeof(Money) == 16);
 static_assert(std::is_trivially_copyable_v<Price>);
 static_assert(std::is_trivially_copyable_v<Quantity>);
 static_assert(std::is_trivially_copyable_v<Money>);
