@@ -1,4 +1,7 @@
-.PHONY: cpp-build cpp-test cpp-check python-test python-lint python-format python-check m0-check m0-gate-proof
+.PHONY: bootstrap cpp-build cpp-test cpp-check python-test python-lint python-format python-check m0-round-trip m0-check m0-gate-proof
+
+bootstrap:
+	python3 tools/development/bootstrap_m0.py
 
 cpp-build:
 	cmake -S . -B build -G Ninja
@@ -19,6 +22,9 @@ python-format:
 	uv run --locked --group dev ruff format --check .
 
 python-check: python-test python-lint python-format
+
+m0-round-trip: cpp-build
+	uv run --locked --group dev python tools/development/run_m0_round_trip.py
 
 m0-check: cpp-check python-check
 

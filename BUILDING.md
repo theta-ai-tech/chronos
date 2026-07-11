@@ -24,6 +24,16 @@ already cached.
 
 ## Quick start
 
+### One-command M0 bootstrap
+
+```sh
+make bootstrap
+```
+
+This checks required host tools, syncs locked Python dev dependencies, configures and builds the
+C++ targets, runs C++ and Python tests, runs Ruff lint/format gates, and executes the M0.4
+Python→C++ hello-event round trip.
+
 ### C++
 
 ```sh
@@ -52,6 +62,12 @@ The proof command works on temporary copies of the repository and injects one re
 violation per gate. It succeeds only when the C++ warning/build gate, C++ unit-test gate, Python
 unit-test gate, Python lint gate, and Python format gate each fail with the expected failure
 signature.
+
+To run only the M0.4 boundary smoke check after the C++ library has been built:
+
+```sh
+make m0-round-trip
+```
 
 ## C++ build profiles
 
@@ -111,5 +127,13 @@ cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCHRONOS_SANITIZE=ON
 - `make m0-check` — positive CI gate: C++ build/test plus Python test/lint/format.
 - `make m0-gate-proof` — negative proof that representative violations fail their gates.
 - `tools/development/prove_m0_gates.py` — temporary-copy proof harness used by local and CI runs.
+
+## What's here in M0.6
+
+- `make bootstrap` — one command to sync, build, test, lint, format-check, and run the boundary
+  round trip on a supported machine.
+- `make m0-round-trip` — targeted manual smoke check for the M0.4 Python→C++ boundary.
+- `tools/development/bootstrap_m0.py` — bootstrap orchestration with missing-tool diagnostics.
+- `tools/development/run_m0_round_trip.py` — explicit hello-event runner for docs and manual tests.
 
 Real domain modules and canonical cross-boundary contracts arrive in later milestones.
