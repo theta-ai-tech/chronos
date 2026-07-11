@@ -9,6 +9,9 @@
 - **Public API:** `chronos/contracts/fixed_point.hpp` and `chronos.contracts` expose
   signed 64-bit `Price`, `Quantity`, and `Money` units bound to opaque unit-definition
   references, bounded `DecimalScale`, declared `RoundingMode`, and checked arithmetic.
+- **M1.2 value objects:** `chronos/contracts/value_objects.hpp` and
+  `chronos.value_objects` expose strongly typed opaque IDs, `StreamCursor`, `VersionRef`,
+  clock-qualified `TimePoint`, and `DataQuality`.
 - **Failure semantics:** Invalid scales, division, and overflow fail explicitly
   (`std::nullopt` in C++, `ContractValueError` in Python); values never saturate or wrap.
 - **Purpose:** Canonical envelopes, identities, and value-object semantics.
