@@ -12,18 +12,18 @@ inline constexpr std::size_t kMaxHelloPayloadBytes = 4096;
 // through C++ so Python can prove the native core is callable.
 [[nodiscard]] std::string round_trip_hello_event(std::string_view payload);
 
-}  // namespace chronos
+} // namespace chronos
 
 extern "C" {
 
 #if defined(_WIN32)
-#  if defined(CHRONOS_BOUNDARY_BUILD)
-#    define CHRONOS_BOUNDARY_EXPORT __declspec(dllexport)
-#  else
-#    define CHRONOS_BOUNDARY_EXPORT __declspec(dllimport)
-#  endif
+#if defined(CHRONOS_BOUNDARY_BUILD)
+#define CHRONOS_BOUNDARY_EXPORT __declspec(dllexport)
 #else
-#  define CHRONOS_BOUNDARY_EXPORT __attribute__((visibility("default")))
+#define CHRONOS_BOUNDARY_EXPORT __declspec(dllimport)
+#endif
+#else
+#define CHRONOS_BOUNDARY_EXPORT __attribute__((visibility("default")))
 #endif
 
 // Status codes for the C ABI. Kept as integers so Python can bind them through
@@ -39,8 +39,6 @@ CHRONOS_BOUNDARY_EXPORT std::size_t
 chronos_boundary_max_hello_payload_bytes() noexcept;
 
 CHRONOS_BOUNDARY_EXPORT int chronos_boundary_hello_event_round_trip(
-    const char* input, std::size_t input_len,
-    char* output, std::size_t output_capacity,
-    std::size_t* output_len) noexcept;
-
+    const char *input, std::size_t input_len, char *output,
+    std::size_t output_capacity, std::size_t *output_len) noexcept;
 }

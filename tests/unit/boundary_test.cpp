@@ -20,7 +20,8 @@ TEST_CASE("C ABI reports required output size when the buffer is too small") {
       "hello event", 11, output.data(), output.size(), &output_len);
 
   CHECK(status == CHRONOS_BOUNDARY_OUTPUT_TOO_SMALL);
-  CHECK(output_len == std::string_view("chronos.boundary.v0|hello_ack|hello event").size());
+  CHECK(output_len ==
+        std::string_view("chronos.boundary.v0|hello_ack|hello event").size());
 }
 
 TEST_CASE("C ABI writes the hello response bytes") {
@@ -47,18 +48,18 @@ TEST_CASE("C ABI rejects a non-empty null input") {
 }
 
 TEST_CASE("C ABI requires an output-length pointer") {
-  CHECK(chronos_boundary_hello_event_round_trip(
-            "", 0, nullptr, 0, nullptr) ==
+  CHECK(chronos_boundary_hello_event_round_trip("", 0, nullptr, 0, nullptr) ==
         CHRONOS_BOUNDARY_INVALID_ARGUMENT);
 }
 
 TEST_CASE("C ABI supports a null-output size query") {
   std::size_t output_len = 0;
-  const int status = chronos_boundary_hello_event_round_trip(
-      "", 0, nullptr, 0, &output_len);
+  const int status =
+      chronos_boundary_hello_event_round_trip("", 0, nullptr, 0, &output_len);
 
   CHECK(status == CHRONOS_BOUNDARY_OUTPUT_TOO_SMALL);
-  CHECK(output_len == std::string_view("chronos.boundary.v0|hello_ack|").size());
+  CHECK(output_len ==
+        std::string_view("chronos.boundary.v0|hello_ack|").size());
 }
 
 TEST_CASE("C ABI accepts an exact-capacity output buffer") {

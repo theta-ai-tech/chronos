@@ -1,4 +1,4 @@
-.PHONY: bootstrap module-stubs-check cpp-build cpp-test cpp-check cpp-profiles-check python-build python-test python-lint python-format python-check m0-round-trip m0-check m0-gate-proof
+.PHONY: bootstrap module-stubs-check cpp-build cpp-test cpp-format cpp-check cpp-profiles-check python-build python-test python-lint python-format python-check m0-round-trip m0-check m0-gate-proof
 
 bootstrap:
 	python3 tools/development/bootstrap_m0.py
@@ -13,7 +13,10 @@ cpp-build:
 cpp-test: cpp-build
 	ctest --test-dir build --output-on-failure
 
-cpp-check: cpp-test
+cpp-format:
+	uv run --locked --group dev clang-format --dry-run --Werror $$(find core tests -type f \( -name '*.cpp' -o -name '*.hpp' \))
+
+cpp-check: cpp-format cpp-test
 
 cpp-profiles-check:
 	python3 tools/development/verify_cpp_profiles.py
@@ -38,4 +41,4 @@ m0-round-trip: cpp-build
 m0-check: module-stubs-check cpp-check python-check
 
 m0-gate-proof:
-	uv run --locked --group dev python tools/development/prove_m0_gates.py
+	uv run --locked --group dev python tools/development/prove_m0_gates.py $$(test -z "$(PROOF)" || printf '%s' '--proof $(PROOF)')
