@@ -6,36 +6,52 @@ import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
-FORBIDDEN_PARTS = {".claude", ".git", ".venv", "build", "dist", "__pycache__"}
-REQUIRED_SDIST_SUFFIXES = {
+EXPECTED_SDIST_PATHS = {
+    ".gitignore",
     "README.md",
+    "PKG-INFO",
     "pyproject.toml",
     "python/chronos/__init__.py",
     "python/chronos/boundary.py",
+    "tests/python/test_boundary.py",
+    "tests/python/test_package.py",
 }
-REQUIRED_WHEEL_SUFFIXES = {
+EXPECTED_WHEEL_PACKAGE_PATHS = {
     "chronos/__init__.py",
     "chronos/boundary.py",
 }
+EXPECTED_DIST_INFO_FILES = {"METADATA", "RECORD", "WHEEL"}
 
 
-def reject_unexpected(paths: set[str], artifact: Path) -> None:
-    failures = []
-    for path in paths:
-        parts = PurePosixPath(path).parts
-        if FORBIDDEN_PARTS.intersection(parts) or parts[-1] == "journal.html":
-            failures.append(path)
-        if any(part.endswith((".o", ".a", ".so", ".dylib", ".dll")) for part in parts):
-            failures.append(path)
-    if failures:
-        joined = "\n- ".join(sorted(set(failures)))
-        raise RuntimeError(f"{artifact.name} contains forbidden paths:\n- {joined}")
+def require_exact_paths(actual: set[str], expected: set[str], artifact: Path) -> None:
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - expected)
+    if missing or unexpected:
+        detail = []
+        if missing:
+            detail.append(f"missing: {', '.join(missing)}")
+        if unexpected:
+            detail.append(f"unexpected: {', '.join(unexpected)}")
+        raise RuntimeError(f"{artifact.name} content mismatch ({'; '.join(detail)})")
 
 
-def require_suffixes(paths: set[str], artifact: Path, required: set[str]) -> None:
-    missing = [suffix for suffix in sorted(required) if not any(p.endswith(suffix) for p in paths)]
-    if missing:
-        raise RuntimeError(f"{artifact.name} is missing required content: {', '.join(missing)}")
+def normalized_sdist_paths(paths: set[str], artifact: Path) -> set[str]:
+    roots = {PurePosixPath(path).parts[0] for path in paths}
+    if len(roots) != 1:
+        raise RuntimeError(f"{artifact.name} must contain exactly one archive root")
+    return {str(PurePosixPath(*PurePosixPath(path).parts[1:])) for path in paths}
+
+
+def verify_wheel_paths(paths: set[str], artifact: Path) -> None:
+    package_paths = {path for path in paths if ".dist-info/" not in path}
+    require_exact_paths(package_paths, EXPECTED_WHEEL_PACKAGE_PATHS, artifact)
+
+    metadata_paths = {PurePosixPath(path) for path in paths if ".dist-info/" in path}
+    metadata_roots = {path.parent for path in metadata_paths}
+    if len(metadata_roots) != 1 or not next(iter(metadata_roots)).name.endswith(".dist-info"):
+        raise RuntimeError(f"{artifact.name} must contain exactly one dist-info directory")
+    metadata_names = {path.name for path in metadata_paths}
+    require_exact_paths(metadata_names, EXPECTED_DIST_INFO_FILES, artifact)
 
 
 def main() -> int:
@@ -51,10 +67,8 @@ def main() -> int:
         with zipfile.ZipFile(wheel) as archive:
             wheel_paths = set(archive.namelist())
 
-        reject_unexpected(sdist_paths, sdist)
-        reject_unexpected(wheel_paths, wheel)
-        require_suffixes(sdist_paths, sdist, REQUIRED_SDIST_SUFFIXES)
-        require_suffixes(wheel_paths, wheel, REQUIRED_WHEEL_SUFFIXES)
+        require_exact_paths(normalized_sdist_paths(sdist_paths, sdist), EXPECTED_SDIST_PATHS, sdist)
+        verify_wheel_paths(wheel_paths, wheel)
 
     print("Python sdist and wheel contents are clean.", flush=True)
     return 0
