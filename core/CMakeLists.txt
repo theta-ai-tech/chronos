@@ -2,7 +2,7 @@
 #
 # M0.2 adds `chronos_core`; M0.4 adds a tiny shared boundary library so Python
 # can prove it can invoke C++ without introducing domain logic yet.
-add_library(chronos_core
+add_library(chronos_core STATIC
   src/boundary.cpp
   src/version.cpp)
 
