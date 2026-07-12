@@ -1,5 +1,7 @@
 # adapters/sdk/
 
+> **Submodule owner stub (M0.1).** Implemented beginning in M2.1.
+
 The C++ adapter SDK defines venue-neutral lifecycle, health, capability
 negotiation, resource bounds, and source-adapter contracts. Concrete adapters
 must publish a valid immutable capability manifest and pass negotiation before

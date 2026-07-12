@@ -1,5 +1,7 @@
 # adapters/market_data/
 
+> **Submodule owner stub (M0.1).** Implemented beginning in M2.1.
+
 Contains concrete public market-data source adapters. The initial Bybit adapter
 implements the shared SDK and currently exposes its capability/lifecycle shell;
 transport connectivity lands in M2.2.
