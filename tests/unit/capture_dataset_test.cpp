@@ -167,4 +167,35 @@ TEST_CASE("capture dataset publication follows the crash-safe sync order") {
     CHECK(failed_writer->seal().failure == market_data::DatasetFailure::Io);
     CHECK(!std::filesystem::exists(failed_path));
   }
+
+  const auto uncertain_path =
+      temporary_dataset("dataset-publication-unconfirmed");
+  RecordingPersistence uncertain;
+  uncertain.fail_at = 5;
+  auto uncertain_writer = market_data::CaptureDatasetWriter::create(
+      uncertain_path, context(), &uncertain);
+  CHECK(uncertain_writer->append(*event.event) ==
+        market_data::DatasetFailure::None);
+  const auto uncertain_result = uncertain_writer->seal();
+  CHECK(uncertain_result.failure ==
+        market_data::DatasetFailure::PublicationUnconfirmed);
+  CHECK(uncertain_result.manifest.has_value());
+  CHECK(std::filesystem::exists(uncertain_path));
+  CHECK(market_data::read_capture_dataset(uncertain_path).ok());
+  CHECK(uncertain_writer->seal().failure ==
+        market_data::DatasetFailure::AlreadySealed);
+  std::filesystem::remove_all(uncertain_path);
+}
+
+TEST_CASE("capture dataset rejects encoded records beyond the reader bound") {
+  const auto path = temporary_dataset("dataset-record-bound");
+  auto large_context = context();
+  large_context.maximum_retained_payload_bytes = 8U * 1024U * 1024U;
+  auto recorder = sdk::SourceCaptureRecorder::create(large_context);
+  std::vector<std::byte> payload(large_context.maximum_retained_payload_bytes,
+                                 std::byte{'x'});
+  const auto event = recorder->capture(input(40, payload));
+  auto writer = market_data::CaptureDatasetWriter::create(path, large_context);
+  CHECK(writer->append(*event.event) ==
+        market_data::DatasetFailure::InvalidRecord);
 }

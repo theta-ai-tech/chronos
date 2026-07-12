@@ -288,7 +288,8 @@ DatasetFailure CaptureDatasetWriter::append(const sdk::SourceEvent &event) {
       event.capture_sequence() != state_->last + 1)
     return DatasetFailure::SequenceMismatch;
   auto record = encode_record(event);
-  if (record.size() > std::numeric_limits<std::uint32_t>::max())
+  if (record.size() > kMaximumRecordBytes ||
+      record.size() > std::numeric_limits<std::uint32_t>::max())
     return DatasetFailure::InvalidRecord;
   std::vector<std::byte> framed;
   put_unsigned(framed, static_cast<std::uint32_t>(record.size()));
@@ -384,8 +385,11 @@ DatasetSealResult CaptureDatasetWriter::seal() {
   auto parent = state_->destination.parent_path();
   if (parent.empty())
     parent = ".";
-  if (!state_->persistence.sync_directory(parent))
-    return {.failure = DatasetFailure::Io};
+  if (!state_->persistence.sync_directory(parent)) {
+    state_->sealed = true;
+    return {.manifest = std::move(manifest),
+            .failure = DatasetFailure::PublicationUnconfirmed};
+  }
   state_->sealed = true;
   return {.manifest = std::move(manifest)};
 }

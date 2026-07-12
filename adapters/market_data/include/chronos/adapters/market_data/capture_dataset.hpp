@@ -74,6 +74,7 @@ enum class DatasetFailure {
   IntegrityMismatch,
   SequenceMismatch,
   AlreadySealed,
+  PublicationUnconfirmed,
 };
 
 struct DatasetSealResult final {
