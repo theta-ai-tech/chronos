@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -14,6 +15,8 @@ enum class WebSocketMessageKind { Text, Binary, Ping, Pong, Close };
 struct WebSocketMessage final {
   WebSocketMessageKind kind{WebSocketMessageKind::Text};
   std::vector<std::byte> payload;
+  std::int64_t monotonic_receive_time_nanoseconds{};
+  bool fragmented{};
 };
 
 enum class TransportFailure {
@@ -31,6 +34,7 @@ enum class TransportFailure {
   UnsupportedFrame,
   Protocol,
   SubscriptionRejected,
+  CaptureHandoff,
 };
 
 template <typename T> struct TransportResult final {

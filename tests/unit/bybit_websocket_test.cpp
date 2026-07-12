@@ -176,21 +176,26 @@ TEST_CASE("frame assembler preserves data around interleaved control frames") {
   const auto second = bytes("lo");
   auto result = assembler.feed({.kind = market_data::WebSocketMessageKind::Text,
                                 .payload = first,
+                                .monotonic_receive_time_nanoseconds = 111,
                                 .frame_complete = true,
                                 .message_continues = true});
   CHECK(!result.message.has_value());
   result = assembler.feed({.kind = market_data::WebSocketMessageKind::Ping,
                            .payload = ping,
+                           .monotonic_receive_time_nanoseconds = 222,
                            .frame_complete = true,
                            .message_continues = false});
   CHECK(result.message.has_value());
   CHECK(result.message->kind == market_data::WebSocketMessageKind::Ping);
+  CHECK(result.message->monotonic_receive_time_nanoseconds == 222);
   result = assembler.feed({.kind = market_data::WebSocketMessageKind::Text,
                            .payload = second,
+                           .monotonic_receive_time_nanoseconds = 333,
                            .frame_complete = true,
                            .message_continues = false});
   CHECK(result.message.has_value());
   CHECK(result.message->payload == bytes("hello"));
+  CHECK(result.message->monotonic_receive_time_nanoseconds == 111);
 }
 
 TEST_CASE(

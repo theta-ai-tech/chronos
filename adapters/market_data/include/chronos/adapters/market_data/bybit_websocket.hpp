@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -37,8 +38,11 @@ parse_bybit_control_response(std::string_view payload);
 
 class BybitWebSocketSession final {
 public:
+  using MessageObserver = std::function<bool(const WebSocketMessage &)>;
+
   explicit BybitWebSocketSession(std::unique_ptr<WebSocketTransport> transport =
-                                     make_curl_websocket_transport());
+                                     make_curl_websocket_transport(),
+                                 MessageObserver observer = {});
 
   [[nodiscard]] TransportResult<bool>
   connect_and_subscribe(const BybitSubscription &subscription,
@@ -52,7 +56,10 @@ public:
   void close() noexcept;
 
 private:
+  [[nodiscard]] bool observe(const WebSocketMessage &message) const;
+
   std::unique_ptr<WebSocketTransport> transport_;
+  MessageObserver observer_;
   std::deque<WebSocketMessage> early_messages_;
   bool early_message_overflowed_{};
   bool subscribed_{};

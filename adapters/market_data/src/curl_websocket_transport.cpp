@@ -198,6 +198,10 @@ public:
       const auto assembled = assembler_->feed(
           {.kind = *kind,
            .payload = std::span<const std::byte>(buffer.data(), received),
+           .monotonic_receive_time_nanoseconds =
+               std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+                   .count(),
            .frame_complete = metadata->bytesleft == 0,
            .message_continues = (metadata->flags & CURLWS_CONT) != 0});
       if (assembled.failure != FrameAssemblyFailure::None) {

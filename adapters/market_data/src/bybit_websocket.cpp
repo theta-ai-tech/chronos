@@ -349,8 +349,8 @@ std::string bybit_subscription_message(const BybitSubscription &value) {
 }
 
 BybitWebSocketSession::BybitWebSocketSession(
-    std::unique_ptr<WebSocketTransport> transport)
-    : transport_(std::move(transport)) {}
+    std::unique_ptr<WebSocketTransport> transport, MessageObserver observer)
+    : transport_(std::move(transport)), observer_(std::move(observer)) {}
 
 TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
     const BybitSubscription &subscription, std::chrono::milliseconds timeout,
@@ -397,6 +397,11 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
       transport_->close();
       return {.failure = response.failure, .detail = response.detail};
     }
+    if (!observe(response.value)) {
+      transport_->close();
+      return {.failure = TransportFailure::CaptureHandoff,
+              .detail = "source capture handoff rejected ingress message"};
+    }
     if (response.value.kind != WebSocketMessageKind::Text) {
       retain_early(std::move(response.value));
       continue;
@@ -431,7 +436,13 @@ BybitWebSocketSession::receive(std::chrono::milliseconds timeout) {
     early_messages_.pop_front();
     return {.value = std::move(message)};
   }
-  return transport_->receive(timeout);
+  auto result = transport_->receive(timeout);
+  if (result.ok() && !observe(result.value)) {
+    transport_->close();
+    return {.failure = TransportFailure::CaptureHandoff,
+            .detail = "source capture handoff rejected ingress message"};
+  }
+  return result;
 }
 
 TransportResult<std::size_t>
@@ -445,6 +456,10 @@ BybitWebSocketSession::send_heartbeat(std::chrono::milliseconds timeout) {
 
 bool BybitWebSocketSession::early_message_overflowed() const noexcept {
   return early_message_overflowed_;
+}
+
+bool BybitWebSocketSession::observe(const WebSocketMessage &message) const {
+  return !observer_ || observer_(message);
 }
 
 void BybitWebSocketSession::close() noexcept {

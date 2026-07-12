@@ -196,5 +196,8 @@ cmake --build build-ws --target chronos_bybit_probe
 ```
 
 The probe exits successfully only after one public session receives both an
-`orderbook.50.BTCUSDT` frame and a `publicTrade.BTCUSDT` frame. It performs no
-authentication, order entry, normalization, or live decision processing.
+`orderbook.50.BTCUSDT` frame and a `publicTrade.BTCUSDT` frame. Beginning with
+M2.3, it also requires the acknowledgement and every observed market frame to
+pass through immutable source capture with contiguous capture sequence and a
+complete SHA-256 digest. It performs no authentication, order entry,
+normalization, or live decision processing.
