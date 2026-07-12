@@ -68,6 +68,30 @@ std::filesystem::path temporary_dataset(std::string_view name) {
   std::filesystem::remove_all(path.string() + ".partial");
   return path;
 }
+
+class RecordingPersistence final : public market_data::DatasetPersistence {
+public:
+  bool sync_file(const std::filesystem::path &) override {
+    calls.push_back("file");
+    return calls.size() != fail_at;
+  }
+  bool sync_directory(const std::filesystem::path &) override {
+    calls.push_back("directory");
+    return calls.size() != fail_at;
+  }
+  bool publish_directory(const std::filesystem::path &staging,
+                         const std::filesystem::path &destination) override {
+    calls.push_back("publish");
+    if (calls.size() == fail_at)
+      return false;
+    std::error_code error;
+    std::filesystem::rename(staging, destination, error);
+    return !error;
+  }
+
+  std::size_t fail_at{};
+  std::vector<std::string> calls;
+};
 } // namespace
 
 TEST_CASE("capture dataset seals and rereads deterministically") {
@@ -114,4 +138,33 @@ TEST_CASE("capture dataset rejects sequence gaps and corruption") {
   CHECK(market_data::read_capture_dataset(path).failure ==
         market_data::DatasetFailure::IntegrityMismatch);
   std::filesystem::remove_all(path);
+}
+
+TEST_CASE("capture dataset publication follows the crash-safe sync order") {
+  const auto path = temporary_dataset("dataset-publication");
+  auto recorder = sdk::SourceCaptureRecorder::create(context());
+  const auto payload = bytes("durable evidence");
+  const auto event = recorder->capture(input(30, payload));
+  RecordingPersistence persistence;
+  auto writer =
+      market_data::CaptureDatasetWriter::create(path, context(), &persistence);
+  CHECK(writer->append(*event.event) == market_data::DatasetFailure::None);
+  CHECK(writer->seal().manifest.has_value());
+  const std::vector<std::string> expected_calls{"file", "file", "directory",
+                                                "publish", "directory"};
+  CHECK(persistence.calls == expected_calls);
+  std::filesystem::remove_all(path);
+
+  for (std::size_t fail_at = 1; fail_at <= 4; ++fail_at) {
+    const auto failed_path = temporary_dataset("dataset-publication-fail-" +
+                                               std::to_string(fail_at));
+    RecordingPersistence failing;
+    failing.fail_at = fail_at;
+    auto failed_writer = market_data::CaptureDatasetWriter::create(
+        failed_path, context(), &failing);
+    CHECK(failed_writer->append(*event.event) ==
+          market_data::DatasetFailure::None);
+    CHECK(failed_writer->seal().failure == market_data::DatasetFailure::Io);
+    CHECK(!std::filesystem::exists(failed_path));
+  }
 }

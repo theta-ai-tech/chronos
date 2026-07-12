@@ -15,13 +15,30 @@ struct CaptureDatasetManifest final {
   std::string records_sha256;
   sdk::CaptureSessionId capture_session_id;
   sdk::CapturePartitionId capture_partition_id;
+  contracts::RuntimeId runtime_id;
+  std::optional<sdk::SourceConnectionId> connection_id;
+  std::optional<sdk::SourceSubscriptionId> subscription_id;
   std::string adapter_id;
   std::string adapter_version;
   std::string build_version;
   std::string venue;
+  sdk::EnvironmentClass environment{sdk::EnvironmentClass::Test};
+  sdk::EndpointClass endpoint{sdk::EndpointClass::PublicMarketData};
+  sdk::SourceTrustClass trust_class{
+      sdk::SourceTrustClass::PublicUnauthenticated};
+  std::string framing_version;
   std::string static_configuration_version;
   std::string capability_manifest_version;
   std::string schema_policy_version;
+  sdk::DataClassification data_classification{
+      sdk::DataClassification::PublicMarketData};
+  sdk::AccessRestriction access_restriction{
+      sdk::AccessRestriction::ChronosInternal};
+  std::string dataset_class{"raw_source_capture"};
+  bool replay_admissible{};
+  std::uint64_t records_bytes{};
+  std::uint64_t maximum_retained_payload_bytes{};
+  std::uint64_t maximum_source_events{};
   std::uint64_t record_count{};
   std::uint64_t first_capture_sequence{};
   std::uint64_t last_capture_sequence{};
@@ -74,11 +91,23 @@ struct DatasetReadResult final {
   }
 };
 
+class DatasetPersistence {
+public:
+  virtual ~DatasetPersistence() = default;
+  [[nodiscard]] virtual bool sync_file(const std::filesystem::path &path) = 0;
+  [[nodiscard]] virtual bool
+  sync_directory(const std::filesystem::path &path) = 0;
+  [[nodiscard]] virtual bool
+  publish_directory(const std::filesystem::path &staging,
+                    const std::filesystem::path &destination) = 0;
+};
+
 class CaptureDatasetWriter final {
 public:
   [[nodiscard]] static std::optional<CaptureDatasetWriter>
   create(std::filesystem::path destination,
-         const sdk::SourceCaptureContext &context);
+         const sdk::SourceCaptureContext &context,
+         DatasetPersistence *persistence = nullptr);
   CaptureDatasetWriter(CaptureDatasetWriter &&) noexcept;
   CaptureDatasetWriter &operator=(CaptureDatasetWriter &&) noexcept;
   ~CaptureDatasetWriter();

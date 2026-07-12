@@ -11,11 +11,16 @@
 #include <system_error>
 #include <utility>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 namespace chronos::adapters::market_data {
 namespace {
 constexpr std::string_view kFormat = "chronos-source-capture-v1";
-constexpr std::uint64_t kMaximumRecordBytes = 64U * 1024U * 1024U;
-constexpr std::uint64_t kMaximumDatasetBytes = 1024U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumRecordBytes = 8U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumDatasetBytes = 64U * 1024U * 1024U;
+constexpr std::uint64_t kMaximumManifestBytes = 16U * 1024U;
+constexpr std::uint64_t kMaximumRecords = 1'000'000U;
 constexpr std::array<std::byte, 8> kMagic{
     std::byte{'C'}, std::byte{'H'}, std::byte{'R'}, std::byte{'S'},
     std::byte{'R'}, std::byte{'C'}, std::byte{'0'}, std::byte{'1'}};
@@ -103,6 +108,10 @@ std::vector<std::byte> encode_record(const sdk::SourceEvent &event) {
   return out;
 }
 
+std::string optional_id(const auto &value) {
+  return value ? value->to_string() : "none";
+}
+
 std::string manifest_body(const CaptureDatasetManifest &manifest) {
   std::ostringstream out;
   out << "format=" << manifest.format_version << '\n'
@@ -111,15 +120,33 @@ std::string manifest_body(const CaptureDatasetManifest &manifest) {
       << '\n'
       << "capture_partition_id=" << manifest.capture_partition_id.to_string()
       << '\n'
+      << "runtime_id=" << manifest.runtime_id.to_string() << '\n'
+      << "connection_id=" << optional_id(manifest.connection_id) << '\n'
+      << "subscription_id=" << optional_id(manifest.subscription_id) << '\n'
       << "adapter_id=" << manifest.adapter_id << '\n'
       << "adapter_version=" << manifest.adapter_version << '\n'
       << "build_version=" << manifest.build_version << '\n'
       << "venue=" << manifest.venue << '\n'
+      << "environment=" << static_cast<unsigned>(manifest.environment) << '\n'
+      << "endpoint=" << static_cast<unsigned>(manifest.endpoint) << '\n'
+      << "trust_class=" << static_cast<unsigned>(manifest.trust_class) << '\n'
+      << "framing_version=" << manifest.framing_version << '\n'
       << "static_configuration_version="
       << manifest.static_configuration_version << '\n'
       << "capability_manifest_version=" << manifest.capability_manifest_version
       << '\n'
       << "schema_policy_version=" << manifest.schema_policy_version << '\n'
+      << "data_classification="
+      << static_cast<unsigned>(manifest.data_classification) << '\n'
+      << "access_restriction="
+      << static_cast<unsigned>(manifest.access_restriction) << '\n'
+      << "dataset_class=" << manifest.dataset_class << '\n'
+      << "replay_admissible="
+      << static_cast<unsigned>(manifest.replay_admissible) << '\n'
+      << "records_bytes=" << manifest.records_bytes << '\n'
+      << "maximum_retained_payload_bytes="
+      << manifest.maximum_retained_payload_bytes << '\n'
+      << "maximum_source_events=" << manifest.maximum_source_events << '\n'
       << "record_count=" << manifest.record_count << '\n'
       << "first_capture_sequence=" << manifest.first_capture_sequence << '\n'
       << "last_capture_sequence=" << manifest.last_capture_sequence << '\n';
@@ -130,14 +157,47 @@ bool safe_manifest_value(std::string_view value) {
   return !value.empty() &&
          value.find_first_of("\r\n=") == std::string_view::npos;
 }
+
+class PosixDatasetPersistence final : public DatasetPersistence {
+public:
+  bool sync_file(const std::filesystem::path &path) override {
+    const auto descriptor = open(path.c_str(), O_RDONLY);
+    if (descriptor < 0)
+      return false;
+    const auto result = fsync(descriptor) == 0;
+    close(descriptor);
+    return result;
+  }
+  bool sync_directory(const std::filesystem::path &path) override {
+    const auto descriptor = open(path.c_str(), O_RDONLY | O_DIRECTORY);
+    if (descriptor < 0)
+      return false;
+    const auto result = fsync(descriptor) == 0;
+    close(descriptor);
+    return result;
+  }
+  bool publish_directory(const std::filesystem::path &staging,
+                         const std::filesystem::path &destination) override {
+    std::error_code error;
+    std::filesystem::rename(staging, destination, error);
+    return !error;
+  }
+};
+
+DatasetPersistence &default_persistence() {
+  static PosixDatasetPersistence persistence;
+  return persistence;
+}
 } // namespace
 
 struct CaptureDatasetWriter::State final {
-  explicit State(sdk::SourceCaptureContext value) : context(std::move(value)) {}
+  State(sdk::SourceCaptureContext value, DatasetPersistence &persistence_value)
+      : context(std::move(value)), persistence(persistence_value) {}
 
   std::filesystem::path destination;
   std::filesystem::path partial;
   sdk::SourceCaptureContext context;
+  DatasetPersistence &persistence;
   std::ofstream records;
   std::uint64_t count{};
   std::uint64_t first{};
@@ -161,7 +221,8 @@ CaptureDatasetWriter::~CaptureDatasetWriter() {
 
 std::optional<CaptureDatasetWriter>
 CaptureDatasetWriter::create(std::filesystem::path destination,
-                             const sdk::SourceCaptureContext &context) {
+                             const sdk::SourceCaptureContext &context,
+                             DatasetPersistence *persistence) {
   if (destination.empty() || std::filesystem::exists(destination) ||
       !safe_manifest_value(context.adapter_id) ||
       !safe_manifest_value(context.adapter_version) ||
@@ -169,9 +230,14 @@ CaptureDatasetWriter::create(std::filesystem::path destination,
       !safe_manifest_value(context.venue) ||
       !safe_manifest_value(context.static_configuration_version) ||
       !safe_manifest_value(context.capability_manifest_version) ||
-      !safe_manifest_value(context.schema_policy_version))
+      !safe_manifest_value(context.schema_policy_version) ||
+      context.maximum_retained_payload_bytes == 0 ||
+      context.maximum_retained_payload_bytes > kMaximumRecordBytes ||
+      context.maximum_source_events == 0 ||
+      context.maximum_source_events > kMaximumRecords)
     return std::nullopt;
-  auto state = std::make_unique<State>(context);
+  auto state = std::make_unique<State>(
+      context, persistence ? *persistence : default_persistence());
   state->destination = std::move(destination);
   state->partial = state->destination;
   state->partial += ".partial";
@@ -198,12 +264,27 @@ DatasetFailure CaptureDatasetWriter::append(const sdk::SourceEvent &event) {
       event.context().adapter_version != state_->context.adapter_version ||
       event.context().build_version != state_->context.build_version ||
       event.context().venue != state_->context.venue ||
+      event.context().environment != state_->context.environment ||
+      event.context().endpoint != state_->context.endpoint ||
+      event.context().trust_class != state_->context.trust_class ||
+      event.runtime_id() != state_->context.runtime_id ||
+      event.connection_id() != state_->context.connection_id ||
+      event.subscription_id() != state_->context.subscription_id ||
+      event.context().framing_version != state_->context.framing_version ||
       event.context().static_configuration_version !=
           state_->context.static_configuration_version ||
       event.context().capability_manifest_version !=
           state_->context.capability_manifest_version ||
       event.context().schema_policy_version !=
           state_->context.schema_policy_version ||
+      event.context().data_classification !=
+          state_->context.data_classification ||
+      event.context().access_restriction !=
+          state_->context.access_restriction ||
+      event.context().maximum_retained_payload_bytes !=
+          state_->context.maximum_retained_payload_bytes ||
+      event.context().maximum_source_events !=
+          state_->context.maximum_source_events ||
       event.capture_sequence() != state_->last + 1)
     return DatasetFailure::SequenceMismatch;
   auto record = encode_record(event);
@@ -231,6 +312,14 @@ DatasetSealResult CaptureDatasetWriter::seal() {
   if (state_->count == 0 || !state_->records)
     return {.failure = state_->count == 0 ? DatasetFailure::InvalidRecord
                                           : DatasetFailure::Io};
+  std::error_code size_error;
+  const auto records_size =
+      std::filesystem::file_size(state_->partial / "records.bin", size_error);
+  if (size_error || records_size > kMaximumDatasetBytes ||
+      state_->count > kMaximumRecords)
+    return {.failure = DatasetFailure::InvalidRecord};
+  if (!state_->persistence.sync_file(state_->partial / "records.bin"))
+    return {.failure = DatasetFailure::Io};
   std::ifstream records_input(state_->partial / "records.bin",
                               std::ios::binary);
   std::vector<char> record_chars(
@@ -248,15 +337,30 @@ DatasetSealResult CaptureDatasetWriter::seal() {
       .records_sha256 = hex(records_digest),
       .capture_session_id = state_->context.capture_session_id,
       .capture_partition_id = state_->context.capture_partition_id,
+      .runtime_id = state_->context.runtime_id,
+      .connection_id = state_->context.connection_id,
+      .subscription_id = state_->context.subscription_id,
       .adapter_id = state_->context.adapter_id,
       .adapter_version = state_->context.adapter_version,
       .build_version = state_->context.build_version,
       .venue = state_->context.venue,
+      .environment = state_->context.environment,
+      .endpoint = state_->context.endpoint,
+      .trust_class = state_->context.trust_class,
+      .framing_version = state_->context.framing_version,
       .static_configuration_version =
           state_->context.static_configuration_version,
       .capability_manifest_version =
           state_->context.capability_manifest_version,
       .schema_policy_version = state_->context.schema_policy_version,
+      .data_classification = state_->context.data_classification,
+      .access_restriction = state_->context.access_restriction,
+      .dataset_class = "raw_source_capture",
+      .replay_admissible = false,
+      .records_bytes = records_size,
+      .maximum_retained_payload_bytes =
+          state_->context.maximum_retained_payload_bytes,
+      .maximum_source_events = state_->context.maximum_source_events,
       .record_count = state_->count,
       .first_capture_sequence = state_->first,
       .last_capture_sequence = state_->last};
@@ -272,9 +376,15 @@ DatasetSealResult CaptureDatasetWriter::seal() {
   manifest_file.close();
   if (!manifest_file)
     return {.failure = DatasetFailure::Io};
-  std::error_code error;
-  std::filesystem::rename(state_->partial, state_->destination, error);
-  if (error)
+  if (!state_->persistence.sync_file(state_->partial / "manifest.txt") ||
+      !state_->persistence.sync_directory(state_->partial) ||
+      !state_->persistence.publish_directory(state_->partial,
+                                             state_->destination))
+    return {.failure = DatasetFailure::Io};
+  auto parent = state_->destination.parent_path();
+  if (parent.empty())
+    parent = ".";
+  if (!state_->persistence.sync_directory(parent))
     return {.failure = DatasetFailure::Io};
   state_->sealed = true;
   return {.manifest = std::move(manifest)};
@@ -282,6 +392,11 @@ DatasetSealResult CaptureDatasetWriter::seal() {
 
 DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
   DatasetReadResult result;
+  std::error_code manifest_size_error;
+  const auto manifest_size = std::filesystem::file_size(
+      directory / "manifest.txt", manifest_size_error);
+  if (manifest_size_error || manifest_size > kMaximumManifestBytes)
+    return {.failure = DatasetFailure::InvalidManifest};
   std::ifstream manifest_file(directory / "manifest.txt", std::ios::binary);
   std::map<std::string, std::string> values;
   std::string line;
@@ -297,13 +412,27 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
                             "records_sha256",
                             "capture_session_id",
                             "capture_partition_id",
+                            "runtime_id",
+                            "connection_id",
+                            "subscription_id",
                             "adapter_id",
                             "adapter_version",
                             "build_version",
                             "venue",
+                            "environment",
+                            "endpoint",
+                            "trust_class",
+                            "framing_version",
                             "static_configuration_version",
                             "capability_manifest_version",
                             "schema_policy_version",
+                            "data_classification",
+                            "access_restriction",
+                            "dataset_class",
+                            "replay_admissible",
+                            "records_bytes",
+                            "maximum_retained_payload_bytes",
+                            "maximum_source_events",
                             "record_count",
                             "first_capture_sequence",
                             "last_capture_sequence"};
@@ -316,6 +445,7 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
       sdk::CaptureSessionId::parse(values["capture_session_id"]);
   const auto partition =
       sdk::CapturePartitionId::parse(values["capture_partition_id"]);
+  const auto runtime = contracts::RuntimeId::parse(values["runtime_id"]);
   const auto parse_u64 =
       [&values](const char *key) -> std::optional<std::uint64_t> {
     std::uint64_t value{};
@@ -329,9 +459,56 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
   const auto count = parse_u64("record_count");
   const auto first = parse_u64("first_capture_sequence");
   const auto last = parse_u64("last_capture_sequence");
-  if (!session || !partition || !count || !first || !last || *count == 0 ||
+  const auto environment = parse_u64("environment");
+  const auto endpoint = parse_u64("endpoint");
+  const auto trust_class = parse_u64("trust_class");
+  const auto classification = parse_u64("data_classification");
+  const auto restriction = parse_u64("access_restriction");
+  const auto replay_admissible = parse_u64("replay_admissible");
+  const auto records_bytes = parse_u64("records_bytes");
+  const auto maximum_payload = parse_u64("maximum_retained_payload_bytes");
+  const auto maximum_events = parse_u64("maximum_source_events");
+  const auto parse_optional_connection =
+      [&values]() -> std::optional<std::optional<sdk::SourceConnectionId>> {
+    if (values["connection_id"] == "none")
+      return std::optional<sdk::SourceConnectionId>{};
+    const auto value = sdk::SourceConnectionId::parse(values["connection_id"]);
+    return value ? std::optional<std::optional<sdk::SourceConnectionId>>(*value)
+                 : std::nullopt;
+  };
+  const auto parse_optional_subscription =
+      [&values]() -> std::optional<std::optional<sdk::SourceSubscriptionId>> {
+    if (values["subscription_id"] == "none")
+      return std::optional<sdk::SourceSubscriptionId>{};
+    const auto value =
+        sdk::SourceSubscriptionId::parse(values["subscription_id"]);
+    return value
+               ? std::optional<std::optional<sdk::SourceSubscriptionId>>(*value)
+               : std::nullopt;
+  };
+  const auto connection = parse_optional_connection();
+  const auto subscription = parse_optional_subscription();
+  if (!session || !partition || !runtime || !connection || !subscription ||
+      !count || !first || !last || !environment || !endpoint || !trust_class ||
+      !classification || !restriction || !replay_admissible || !records_bytes ||
+      !maximum_payload || !maximum_events || *maximum_payload == 0 ||
+      *maximum_payload > kMaximumRecordBytes || *maximum_events == 0 ||
+      *maximum_events > kMaximumRecords || *count == 0 ||
+      *count > kMaximumRecords ||
+      *environment >
+          static_cast<std::uint64_t>(sdk::EnvironmentClass::Production) ||
+      *endpoint >
+          static_cast<std::uint64_t>(sdk::EndpointClass::PublicMarketData) ||
+      *trust_class > static_cast<std::uint64_t>(
+                         sdk::SourceTrustClass::PublicUnauthenticated) ||
+      *classification > static_cast<std::uint64_t>(
+                            sdk::DataClassification::PublicMarketData) ||
+      *restriction >
+          static_cast<std::uint64_t>(sdk::AccessRestriction::ChronosInternal) ||
       values["format"] != kFormat || !parse_hex(values["dataset_id"]) ||
-      !parse_hex(values["records_sha256"]))
+      !parse_hex(values["records_sha256"]) ||
+      values["dataset_class"] != "raw_source_capture" ||
+      *replay_admissible != 0)
     return {.failure = DatasetFailure::InvalidManifest};
   CaptureDatasetManifest manifest{
       .format_version = values["format"],
@@ -339,13 +516,28 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
       .records_sha256 = values["records_sha256"],
       .capture_session_id = *session,
       .capture_partition_id = *partition,
+      .runtime_id = *runtime,
+      .connection_id = *connection,
+      .subscription_id = *subscription,
       .adapter_id = values["adapter_id"],
       .adapter_version = values["adapter_version"],
       .build_version = values["build_version"],
       .venue = values["venue"],
+      .environment = static_cast<sdk::EnvironmentClass>(*environment),
+      .endpoint = static_cast<sdk::EndpointClass>(*endpoint),
+      .trust_class = static_cast<sdk::SourceTrustClass>(*trust_class),
+      .framing_version = values["framing_version"],
       .static_configuration_version = values["static_configuration_version"],
       .capability_manifest_version = values["capability_manifest_version"],
       .schema_policy_version = values["schema_policy_version"],
+      .data_classification =
+          static_cast<sdk::DataClassification>(*classification),
+      .access_restriction = static_cast<sdk::AccessRestriction>(*restriction),
+      .dataset_class = values["dataset_class"],
+      .replay_admissible = false,
+      .records_bytes = *records_bytes,
+      .maximum_retained_payload_bytes = *maximum_payload,
+      .maximum_source_events = *maximum_events,
       .record_count = *count,
       .first_capture_sequence = *first,
       .last_capture_sequence = *last};
@@ -361,7 +553,8 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
   std::error_code size_error;
   const auto file_size =
       std::filesystem::file_size(directory / "records.bin", size_error);
-  if (size_error || file_size > kMaximumDatasetBytes)
+  if (size_error || file_size > kMaximumDatasetBytes ||
+      file_size != manifest.records_bytes)
     return {.failure = DatasetFailure::InvalidRecord};
   std::vector<char> chars((std::istreambuf_iterator<char>(records_file)), {});
   if (records_file.bad())

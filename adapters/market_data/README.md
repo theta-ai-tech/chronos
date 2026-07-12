@@ -14,9 +14,13 @@ gapped continuity after every unproven reconnect. It does not allocate the
 normalized stream epochs owned by the later stream authority.
 
 M2.5 adds a versioned immutable capture-dataset format. A writer accepts one
-capture session/partition in contiguous capture order, seals `records.bin` and
-`manifest.txt` through an atomic directory publish, and assigns the dataset a
-canonical SHA-256 identity. The reader verifies the manifest, file and payload
+capture session/partition in contiguous capture order, synchronizes both files
+and staging metadata before an atomic directory publish, synchronizes the
+parent directory, and assigns the dataset a canonical SHA-256 identity. The
+manifest retains the complete capture context and declares
+`dataset_class=raw_source_capture` with `replay_admissible=false`; M3.4 owns the
+replay-class manifest that can admit it to a run. The reader verifies file-size
+bounds plus the manifest, file and payload
 digests, record bounds, enum values, and sequence continuity before returning
 records. Normalization and replay-class selection remain M3 concerns.
 
