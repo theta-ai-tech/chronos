@@ -471,6 +471,10 @@ BybitWebSocketSession::send_heartbeat(std::chrono::milliseconds timeout) {
   return transport_->send_text("{\"op\":\"ping\"}", timeout);
 }
 
+bool BybitWebSocketSession::capture_enabled() const noexcept {
+  return static_cast<bool>(observer_);
+}
+
 bool BybitWebSocketSession::early_message_overflowed() const noexcept {
   return early_message_overflowed_;
 }

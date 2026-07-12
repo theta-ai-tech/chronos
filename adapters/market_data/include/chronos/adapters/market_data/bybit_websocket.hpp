@@ -36,7 +36,22 @@ enum class BybitControlResponse {
 [[nodiscard]] BybitControlResponse
 parse_bybit_control_response(std::string_view payload);
 
-class BybitWebSocketSession final {
+class BybitSession {
+public:
+  virtual ~BybitSession() = default;
+  [[nodiscard]] virtual TransportResult<bool>
+  connect_and_subscribe(const BybitSubscription &subscription,
+                        std::chrono::milliseconds timeout,
+                        std::size_t maximum_message_bytes) = 0;
+  [[nodiscard]] virtual TransportResult<WebSocketMessage>
+  receive(std::chrono::milliseconds timeout) = 0;
+  [[nodiscard]] virtual TransportResult<std::size_t>
+  send_heartbeat(std::chrono::milliseconds timeout) = 0;
+  [[nodiscard]] virtual bool capture_enabled() const noexcept = 0;
+  virtual void close() noexcept = 0;
+};
+
+class BybitWebSocketSession final : public BybitSession {
 public:
   using MessageObserver = std::function<bool(const WebSocketMessage &)>;
 
@@ -47,13 +62,14 @@ public:
   [[nodiscard]] TransportResult<bool>
   connect_and_subscribe(const BybitSubscription &subscription,
                         std::chrono::milliseconds timeout,
-                        std::size_t maximum_message_bytes);
+                        std::size_t maximum_message_bytes) override;
   [[nodiscard]] TransportResult<WebSocketMessage>
-  receive(std::chrono::milliseconds timeout);
+  receive(std::chrono::milliseconds timeout) override;
   [[nodiscard]] TransportResult<std::size_t>
-  send_heartbeat(std::chrono::milliseconds timeout);
+  send_heartbeat(std::chrono::milliseconds timeout) override;
+  [[nodiscard]] bool capture_enabled() const noexcept override;
   [[nodiscard]] bool early_message_overflowed() const noexcept;
-  void close() noexcept;
+  void close() noexcept override;
 
 private:
   [[nodiscard]] bool observe(const WebSocketMessage &message) const;

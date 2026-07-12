@@ -201,3 +201,14 @@ M2.3, it also requires the acknowledgement and every observed market frame to
 pass through immutable source capture with contiguous capture sequence and a
 complete SHA-256 digest. It performs no authentication, order entry,
 normalization, or live decision processing.
+
+To exercise M2.4 against two real source sessions, run:
+
+```sh
+./build-ws/adapters/chronos_bybit_reconnect_probe BTCUSDT production
+```
+
+The reconnect probe requires both L2 and trade traffic before and after a
+forced connection boundary. It exits zero only when the second session has a
+different capture-session identity, source-session epoch advances from 1 to 2,
+and continuity remains explicitly `gapped` pending later snapshot/stream proof.
