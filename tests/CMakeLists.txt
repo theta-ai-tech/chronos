@@ -1,6 +1,7 @@
 # tests/ — C++ test targets (M0.2 adds the first unit-test executable).
 add_executable(chronos_unit_tests
   unit/boundary_test.cpp
+  unit/event_envelope_test.cpp
   unit/fixed_point_test.cpp
   unit/state_lineage_test.cpp
   unit/value_objects_test.cpp
