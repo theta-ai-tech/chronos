@@ -23,9 +23,10 @@ Other hosts are unsupported until they are added to the checked toolchain and bo
 | Python | ≥ 3.9 (tested 3.9.6) | Python runtime |
 | uv | tested 0.11.16 | Python dependency lock and tool runner |
 | make | POSIX make | aggregate local commands |
+| libcurl | >= 7.86 with WebSocket support | Bybit public `wss` transport |
 
-No third-party libraries are fetched during the C++ build (the test harness is vendored), so a
-C++ configure + build works without network access. Python tooling is resolved from `uv.lock`;
+No third-party libraries are fetched during the C++ build; libcurl must already be installed, and
+the test harness is vendored. Python tooling is resolved from `uv.lock`;
 the first `uv sync` needs access to the configured Python package index unless the packages are
 already cached.
 
@@ -33,7 +34,7 @@ For a new macOS machine:
 
 ```sh
 xcode-select --install
-brew install cmake ninja uv
+brew install cmake ninja uv curl
 git clone git@github.com:theta-ai-tech/chronos.git
 cd chronos
 make bootstrap
@@ -43,7 +44,7 @@ For a new Ubuntu 24.04 machine:
 
 ```sh
 sudo apt-get update
-sudo apt-get install --yes clang-18 cmake ninja-build make python3 pipx git
+sudo apt-get install --yes clang-18 cmake ninja-build make python3 pipx git libcurl4-openssl-dev
 pipx install uv==0.11.16
 export PATH="$HOME/.local/bin:$PATH"
 git clone git@github.com:theta-ai-tech/chronos.git
