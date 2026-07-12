@@ -59,7 +59,12 @@ std::chrono::steady_clock::time_point SteadyRecoveryScheduler::now() const {
 }
 
 void SteadyRecoveryScheduler::sleep_for(std::chrono::milliseconds delay) {
-  std::this_thread::sleep_for(delay);
+  constexpr auto polling_interval = std::chrono::milliseconds(25);
+  while (delay.count() > 0 && !cancelled()) {
+    const auto slice = std::min(delay, polling_interval);
+    std::this_thread::sleep_for(slice);
+    delay -= slice;
+  }
 }
 
 bool SteadyRecoveryScheduler::cancelled() const noexcept {
@@ -126,6 +131,7 @@ RecoveryRecord BybitReconnectController::recover(RecoveryCause cause) {
     session_->close();
     session_.reset();
   }
+  health_.capture_session_id.reset();
   health_.connection = sdk::ConnectionState::ReconnectWait;
   set_all_health(sdk::HealthState::Recovering);
   health_.scopes[static_cast<std::size_t>(sdk::HealthScope::Continuity)] =
@@ -142,12 +148,14 @@ RecoveryRecord
 BybitReconnectController::connect_with_policy(RecoveryCause cause,
                                               bool initial) {
   const auto started = scheduler_.now();
+  const auto deadline = started + policy_.maximum_elapsed;
   TransportFailure last_failure = TransportFailure::None;
   for (std::uint32_t attempt = 1; attempt <= policy_.retry.maximum_attempts;
        ++attempt) {
     if (scheduler_.cancelled()) {
       health_.connection = sdk::ConnectionState::Closed;
       set_all_health(sdk::HealthState::Unknown);
+      health_.capture_session_id.reset();
       return {.disposition = RecoveryDisposition::Cancelled,
               .cause = cause,
               .attempts = attempt - 1,
@@ -190,14 +198,45 @@ BybitReconnectController::connect_with_policy(RecoveryCause cause,
     }
     health_.connection = sdk::ConnectionState::Connecting;
     set_all_health(sdk::HealthState::Starting);
+    const auto remaining =
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline -
+                                                              scheduler_.now());
+    if (remaining.count() <= 0) {
+      session_.reset();
+      health_.connection = sdk::ConnectionState::Failed;
+      set_all_health(sdk::HealthState::Failed);
+      health_.capture_session_id.reset();
+      return {.disposition = RecoveryDisposition::ElapsedTimeExhausted,
+              .cause = cause,
+              .attempts = attempt - 1,
+              .last_failure = last_failure};
+    }
     auto connected = session_->connect_and_subscribe(
-        subscription_, policy_.connection_timeout,
-        policy_.maximum_message_bytes);
+        subscription_, std::min(policy_.connection_timeout, remaining),
+        policy_.maximum_message_bytes,
+        [this] { return scheduler_.cancelled(); });
+    if (scheduler_.cancelled()) {
+      session_->close();
+      session_.reset();
+      health_.connection = sdk::ConnectionState::Closed;
+      set_all_health(sdk::HealthState::Unknown);
+      health_.capture_session_id.reset();
+      return {.disposition = RecoveryDisposition::Cancelled,
+              .cause = cause,
+              .attempts = attempt,
+              .last_failure = connected.failure};
+    }
     if (connected.ok()) {
       ++health_.source_session_epoch;
       health_.capture_session_id = *capture_session_id;
-      health_.connection = sdk::ConnectionState::Active;
-      set_all_health(sdk::HealthState::Healthy);
+      // An acknowledgement proves transport/subscription setup, not source
+      // readiness. M3 promotes the session after qualifying channel evidence.
+      health_.connection = sdk::ConnectionState::Connecting;
+      set_all_health(sdk::HealthState::Starting);
+      health_.scopes[static_cast<std::size_t>(sdk::HealthScope::Transport)] =
+          sdk::HealthState::Healthy;
+      health_.scopes[static_cast<std::size_t>(sdk::HealthScope::Subscription)] =
+          sdk::HealthState::Healthy;
       health_.scopes[static_cast<std::size_t>(sdk::HealthScope::Capture)] =
           session_->capture_enabled() ? sdk::HealthState::Healthy
                                       : sdk::HealthState::Unknown;
@@ -232,6 +271,9 @@ BybitReconnectController::connect_with_policy(RecoveryCause cause,
               .last_failure = last_failure};
     }
     if (attempt == policy_.retry.maximum_attempts) {
+      health_.connection = sdk::ConnectionState::Failed;
+      set_all_health(sdk::HealthState::Failed);
+      health_.capture_session_id.reset();
       return {.disposition = RecoveryDisposition::AttemptsExhausted,
               .cause = cause,
               .attempts = attempt,
@@ -239,12 +281,24 @@ BybitReconnectController::connect_with_policy(RecoveryCause cause,
     }
     const auto delay = backoff(attempt);
     if (scheduler_.now() - started + delay > policy_.maximum_elapsed) {
+      health_.connection = sdk::ConnectionState::Failed;
+      set_all_health(sdk::HealthState::Failed);
+      health_.capture_session_id.reset();
       return {.disposition = RecoveryDisposition::ElapsedTimeExhausted,
               .cause = cause,
               .attempts = attempt,
               .last_failure = last_failure};
     }
     scheduler_.sleep_for(delay);
+    if (scheduler_.cancelled()) {
+      health_.connection = sdk::ConnectionState::Closed;
+      set_all_health(sdk::HealthState::Unknown);
+      health_.capture_session_id.reset();
+      return {.disposition = RecoveryDisposition::Cancelled,
+              .cause = cause,
+              .attempts = attempt,
+              .last_failure = last_failure};
+    }
   }
   return {.disposition = RecoveryDisposition::AttemptsExhausted,
           .cause = cause,
@@ -278,6 +332,7 @@ void BybitReconnectController::stop() noexcept {
   health_.connection = sdk::ConnectionState::Closed;
   set_all_health(sdk::HealthState::Unknown);
   health_.continuity_proven = false;
+  health_.capture_session_id.reset();
 }
 
 const SourceSessionHealth &BybitReconnectController::health() const noexcept {

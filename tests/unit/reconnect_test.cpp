@@ -22,8 +22,13 @@ public:
 
   market_data::TransportResult<bool>
   connect_and_subscribe(const market_data::BybitSubscription &,
-                        std::chrono::milliseconds, std::size_t) override {
+                        std::chrono::milliseconds timeout, std::size_t,
+                        const std::function<bool()> &cancelled = {}) override {
     ++connect_calls;
+    timeouts.push_back(timeout);
+    if (cancelled && cancelled()) {
+      return {.failure = market_data::TransportFailure::Closed};
+    }
     return failure_ == market_data::TransportFailure::None
                ? market_data::TransportResult<bool>{.value = true}
                : market_data::TransportResult<bool>{.failure = failure_,
@@ -45,6 +50,7 @@ public:
   void close() noexcept override { closed = true; }
 
   int connect_calls{};
+  std::vector<std::chrono::milliseconds> timeouts;
   bool closed{};
 
 private:
@@ -147,6 +153,8 @@ TEST_CASE("initial connection opens one source-session epoch") {
   CHECK(controller->health().source_session_epoch == 1);
   CHECK(controller->health().at(sdk::HealthScope::Transport) ==
         sdk::HealthState::Healthy);
+  CHECK(controller->health().at(sdk::HealthScope::SourceSession) ==
+        sdk::HealthState::Starting);
   CHECK(controller->health().at(sdk::HealthScope::Continuity) ==
         sdk::HealthState::Starting);
   CHECK(!controller->health().continuity_proven);
@@ -236,6 +244,8 @@ TEST_CASE("attempt, elapsed, and cancellation bounds are explicit") {
       identities);
   CHECK(attempts->start().disposition ==
         market_data::RecoveryDisposition::AttemptsExhausted);
+  CHECK(attempts->health().connection == sdk::ConnectionState::Failed);
+  CHECK(!attempts->health().capture_session_id.has_value());
 
   auto short_policy = policy();
   short_policy.maximum_elapsed = 40ms;

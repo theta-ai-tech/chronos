@@ -42,7 +42,8 @@ public:
   [[nodiscard]] virtual TransportResult<bool>
   connect_and_subscribe(const BybitSubscription &subscription,
                         std::chrono::milliseconds timeout,
-                        std::size_t maximum_message_bytes) = 0;
+                        std::size_t maximum_message_bytes,
+                        const std::function<bool()> &cancelled = {}) = 0;
   [[nodiscard]] virtual TransportResult<WebSocketMessage>
   receive(std::chrono::milliseconds timeout) = 0;
   [[nodiscard]] virtual TransportResult<std::size_t>
@@ -62,7 +63,8 @@ public:
   [[nodiscard]] TransportResult<bool>
   connect_and_subscribe(const BybitSubscription &subscription,
                         std::chrono::milliseconds timeout,
-                        std::size_t maximum_message_bytes) override;
+                        std::size_t maximum_message_bytes,
+                        const std::function<bool()> &cancelled = {}) override;
   [[nodiscard]] TransportResult<WebSocketMessage>
   receive(std::chrono::milliseconds timeout) override;
   [[nodiscard]] TransportResult<std::size_t>
