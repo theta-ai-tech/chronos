@@ -4,6 +4,8 @@ import pytest
 from chronos.event_envelope import (
     RESERVED_EVENT_NAMESPACES,
     AcceptanceClass,
+    Applicability,
+    EffectivePositionPolicy,
     EventEnvelope,
     EventTypeRegistration,
     ProducerRef,
@@ -20,8 +22,10 @@ from chronos.value_objects import (
     DecisionId,
     DefinitionId,
     EventId,
+    ListingId,
     ProducerId,
     QualityStatus,
+    RunId,
     RuntimeId,
     StateViewId,
     TimePoint,
@@ -45,16 +49,19 @@ def registration() -> EventTypeRegistration:
     return EventTypeRegistration(
         event_type="source.capture.payload_captured",
         semantic_owner=identity(AuthorityId, "a6"),
+        envelope_version=1,
+        schema_version=version("a3", 2),
+        authorized_producers=(identity(ProducerId, "a4"),),
         root_observation=True,
-        run_scoped=False,
-        ordered=False,
+        run_scope=Applicability.OPTIONAL,
+        event_position=Applicability.OPTIONAL,
         run_input_eligible=False,
-        requires_source_event=False,
-        requires_subjects=False,
-        mode_sensitive=False,
-        requires_effective_position=False,
-        requires_integrity=False,
-        requires_receive_time=False,
+        source_event=Applicability.OPTIONAL,
+        subjects=Applicability.OPTIONAL,
+        mode=Applicability.OPTIONAL,
+        effective_position=EffectivePositionPolicy.OPTIONAL,
+        integrity=Applicability.OPTIONAL,
+        receive_time=Applicability.OPTIONAL,
     )
 
 
@@ -102,7 +109,8 @@ def test_reserved_taxonomy_accepts_only_canonical_names() -> None:
     assert event_namespace("market.book.snapshot_applied") == "market.book"
     assert event_namespace("execution.fill.accepted") == "execution.fill"
     assert is_valid_event_type("source.capture.payload_captured")
-    assert is_valid_event_type("run.input.event_selected")
+    assert is_valid_event_type("run.input.selection.event_selected")
+    assert not is_valid_event_type("market.book.snapshot_applied")
     assert not is_valid_event_type("unknown.payload_captured")
     assert not is_valid_event_type("market.book..snapshot")
     assert not is_valid_event_type("market.book.Snapshot")
@@ -159,3 +167,44 @@ def test_registry_enforces_owner_and_derived_causation() -> None:
     derived = replace(registration(), root_observation=False)
     with pytest.raises(ContractValueError):
         replace(valid_envelope(), registration=derived)
+
+
+def test_registry_pins_versions_producers_and_allows_optional_subjects() -> None:
+    with pytest.raises(ContractValueError):
+        updated(valid_envelope(), schema_version=version("ae", 9))
+    unauthorized = replace(
+        valid_envelope().producer,
+        component_id=identity(ProducerId, "ae"),
+    )
+    with pytest.raises(ContractValueError):
+        updated(valid_envelope(), producer=unauthorized)
+    assert updated(valid_envelope(), subject_refs=(identity(ListingId, "a9"),)).subject_refs
+
+
+def test_effective_position_depends_on_acceptance_disposition() -> None:
+    policy = replace(
+        registration(),
+        run_scope=Applicability.REQUIRED,
+        effective_position=EffectivePositionPolicy.ACCEPTED_TRANSITION_ONLY,
+    )
+    accepted = replace(
+        valid_envelope(),
+        registration=policy,
+        run_id=identity(RunId, "a8"),
+        acceptance_class=AcceptanceClass.ACCEPTED_TRANSITION,
+        effective_position=12,
+    )
+    assert accepted.effective_position == 12
+    with pytest.raises(ContractValueError):
+        replace(
+            accepted,
+            registration=policy,
+            acceptance_class=AcceptanceClass.ACCEPTED_REJECTION,
+        )
+    rejected = replace(
+        accepted,
+        registration=policy,
+        acceptance_class=AcceptanceClass.ACCEPTED_REJECTION,
+        effective_position=None,
+    )
+    assert rejected.effective_position is None

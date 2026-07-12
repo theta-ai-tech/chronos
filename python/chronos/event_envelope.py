@@ -68,11 +68,12 @@ def event_namespace(event_type: str) -> Optional[str]:  # noqa: UP045 - Python 3
 
 def is_valid_event_type(event_type: str) -> bool:
     namespace = event_namespace(event_type)
+    suffix = event_type[len(namespace) + 1 :] if namespace is not None else ""
     return (
         namespace is not None
         and not event_type.endswith(".")
         and ".." not in event_type
-        and event_type.count(".") >= 2
+        and "." in suffix
         and all(
             character.isascii()
             and (character.islower() or character.isdigit() or character in "_.")
@@ -94,6 +95,19 @@ class RunMode(Enum):
     BACKTEST = "backtest"
     LIVE_READ_ONLY = "live_read_only"
     LIVE_PAPER = "live_paper"
+
+
+class Applicability(Enum):
+    FORBIDDEN = "forbidden"
+    OPTIONAL = "optional"
+    REQUIRED = "required"
+
+
+class EffectivePositionPolicy(Enum):
+    FORBIDDEN = "forbidden"
+    OPTIONAL = "optional"
+    REQUIRED = "required"
+    ACCEPTED_TRANSITION_ONLY = "accepted_transition_only"
 
 
 @dataclass(frozen=True)
@@ -124,21 +138,32 @@ class ProducerRef:
 class EventTypeRegistration:
     event_type: str
     semantic_owner: AuthorityId
+    envelope_version: int
+    schema_version: VersionRef
+    authorized_producers: tuple[ProducerId, ...]
     root_observation: bool
-    run_scoped: bool
-    ordered: bool
+    run_scope: Applicability
+    event_position: Applicability
     run_input_eligible: bool
-    requires_source_event: bool
-    requires_subjects: bool
-    mode_sensitive: bool
-    requires_effective_position: bool
-    requires_integrity: bool
-    requires_receive_time: bool
+    source_event: Applicability
+    subjects: Applicability
+    mode: Applicability
+    effective_position: EffectivePositionPolicy
+    integrity: Applicability
+    receive_time: Applicability
 
     def __post_init__(self) -> None:
         if not is_valid_event_type(self.event_type):
             raise ContractValueError("registered event type is outside the stable taxonomy")
         _require_type("semantic owner", self.semantic_owner, AuthorityId)
+        _require_positive_uint32("registered envelope version", self.envelope_version)
+        _require_type("registered schema version", self.schema_version, VersionRef)
+        if not self.authorized_producers or any(
+            not isinstance(producer, ProducerId) for producer in self.authorized_producers
+        ):
+            raise ContractValueError("registration requires authorized producers")
+        if len(set(self.authorized_producers)) != len(self.authorized_producers):
+            raise ContractValueError("authorized producers must be unique")
 
 
 @dataclass(frozen=True)
@@ -182,6 +207,12 @@ class EventEnvelope:
         if self.semantic_owner != registration.semantic_owner:
             raise ContractValueError("semantic owner does not match its registry entry")
         _require_type("producer", self.producer, ProducerRef)
+        if self.envelope_version != registration.envelope_version:
+            raise ContractValueError("envelope version is unsupported by the registry entry")
+        if self.schema_version != registration.schema_version:
+            raise ContractValueError("schema version does not match the registry entry")
+        if self.producer.component_id not in registration.authorized_producers:
+            raise ContractValueError("producer is not authorized for this event type")
         _require_type("acceptance class", self.acceptance_class, AcceptanceClass)
         _require_optional_type("run ID", self.run_id, RunId)
         _require_optional_type("mode", self.mode, RunMode)
@@ -207,17 +238,22 @@ class EventEnvelope:
 
     def _validate_registration(self, registration: EventTypeRegistration) -> None:
         checks = (
-            (registration.run_scoped, self.run_id is not None),
-            (registration.ordered, self.event_position is not None),
-            (registration.requires_source_event, self.source_event_id is not None),
-            (registration.requires_subjects, self.subject_refs is not None),
-            (registration.mode_sensitive, self.mode is not None),
-            (registration.requires_effective_position, self.effective_position is not None),
-            (registration.requires_integrity, self.integrity is not None),
-            (registration.requires_receive_time, self.chronos_receive_time is not None),
+            (registration.run_scope, self.run_id is not None),
+            (registration.event_position, self.event_position is not None),
+            (registration.source_event, self.source_event_id is not None),
+            (registration.subjects, self.subject_refs is not None),
+            (registration.mode, self.mode is not None),
+            (registration.integrity, self.integrity is not None),
+            (registration.receive_time, self.chronos_receive_time is not None),
         )
-        if any(required != present for required, present in checks):
+        if any(not _valid_presence(policy, present) for policy, present in checks):
             raise ContractValueError("event fields do not match registry applicability")
+        if not _valid_effective_position(
+            registration.effective_position,
+            self.acceptance_class,
+            self.effective_position is not None,
+        ):
+            raise ContractValueError("effective position violates its registry policy")
         if not registration.root_observation and self.causation_refs is None:
             raise ContractValueError("derived events require direct causation")
 
@@ -281,6 +317,30 @@ def _require_type(name: str, value: object, expected: type) -> None:
 def _require_optional_type(name: str, value: object, expected: type) -> None:
     if value is not None:
         _require_type(name, value, expected)
+
+
+def _valid_presence(policy: Applicability, present: bool) -> bool:
+    if policy is Applicability.FORBIDDEN:
+        return not present
+    if policy is Applicability.OPTIONAL:
+        return True
+    if policy is Applicability.REQUIRED:
+        return present
+    raise TypeError("field applicability must be an Applicability")
+
+
+def _valid_effective_position(
+    policy: EffectivePositionPolicy, acceptance_class: AcceptanceClass, present: bool
+) -> bool:
+    if policy is EffectivePositionPolicy.FORBIDDEN:
+        return not present
+    if policy is EffectivePositionPolicy.OPTIONAL:
+        return True
+    if policy is EffectivePositionPolicy.REQUIRED:
+        return present
+    if policy is EffectivePositionPolicy.ACCEPTED_TRANSITION_ONLY:
+        return present == (acceptance_class is AcceptanceClass.ACCEPTED_TRANSITION)
+    raise TypeError("effective-position policy must be an EffectivePositionPolicy")
 
 
 def _require_positive_uint32(name: str, value: int) -> None:

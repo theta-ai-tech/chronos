@@ -68,7 +68,8 @@ is_valid_event_type(std::string_view event_type) noexcept {
     }
     previous_dot = character == '.';
   }
-  return std::count(event_type.begin(), event_type.end(), '.') >= 2;
+  const auto suffix = event_type.substr(namespace_name->size() + 1);
+  return suffix.find('.') != std::string_view::npos;
 }
 
 using SubjectRef = std::variant<CanonicalInstrumentId, ListingId>;
@@ -136,19 +137,31 @@ struct ProducerRef final {
   bool operator==(const ProducerRef &) const = default;
 };
 
+enum class Applicability : std::uint8_t { forbidden, optional, required };
+
+enum class EffectivePositionPolicy : std::uint8_t {
+  forbidden,
+  optional,
+  required,
+  accepted_transition_only,
+};
+
 struct EventTypeRegistration final {
   std::string event_type;
   AuthorityId semantic_owner;
+  std::uint32_t envelope_version;
+  VersionRef schema_version;
+  std::vector<ProducerId> authorized_producers;
   bool root_observation;
-  bool run_scoped;
-  bool ordered;
+  Applicability run_scope;
+  Applicability event_position;
   bool run_input_eligible;
-  bool requires_source_event;
-  bool requires_subjects;
-  bool mode_sensitive;
-  bool requires_effective_position;
-  bool requires_integrity;
-  bool requires_receive_time;
+  Applicability source_event;
+  Applicability subjects;
+  Applicability mode;
+  EffectivePositionPolicy effective_position;
+  Applicability integrity;
+  Applicability receive_time;
 };
 
 struct EventEnvelopeDraft final {
@@ -188,21 +201,31 @@ public:
     if (!is_valid_event_type(registration.event_type) ||
         draft.event_type != registration.event_type ||
         draft.semantic_owner != registration.semantic_owner ||
-        draft.envelope_version == 0 || !is_valid(draft.acceptance_class) ||
+        draft.envelope_version != registration.envelope_version ||
+        draft.schema_version != registration.schema_version ||
+        std::find(registration.authorized_producers.begin(),
+                  registration.authorized_producers.end(),
+                  draft.producer.component_id) ==
+            registration.authorized_producers.end() ||
+        !is_valid(draft.acceptance_class) ||
         (draft.mode.has_value() && !is_valid(*draft.mode))) {
       return std::nullopt;
     }
-    if (registration.run_scoped != draft.run_id.has_value() ||
-        registration.ordered != draft.event_position.has_value() ||
-        registration.requires_source_event !=
-            draft.source_event_id.has_value() ||
-        registration.requires_subjects != draft.subject_refs.has_value() ||
-        registration.mode_sensitive != draft.mode.has_value() ||
-        registration.requires_effective_position !=
-            draft.effective_position.has_value() ||
-        registration.requires_integrity != draft.integrity.has_value() ||
-        registration.requires_receive_time !=
-            draft.chronos_receive_time.has_value()) {
+    if (!valid_registration(registration) ||
+        !valid_presence(registration.run_scope, draft.run_id.has_value()) ||
+        !valid_presence(registration.event_position,
+                        draft.event_position.has_value()) ||
+        !valid_presence(registration.source_event,
+                        draft.source_event_id.has_value()) ||
+        !valid_presence(registration.subjects,
+                        draft.subject_refs.has_value()) ||
+        !valid_presence(registration.mode, draft.mode.has_value()) ||
+        !valid_effective_position(registration.effective_position,
+                                  draft.acceptance_class,
+                                  draft.effective_position.has_value()) ||
+        !valid_presence(registration.integrity, draft.integrity.has_value()) ||
+        !valid_presence(registration.receive_time,
+                        draft.chronos_receive_time.has_value())) {
       return std::nullopt;
     }
     if (!registration.root_observation && !draft.causation_refs.has_value()) {
@@ -253,8 +276,14 @@ public:
   [[nodiscard]] const ProducerRef &producer() const noexcept {
     return draft_.producer;
   }
+  [[nodiscard]] AcceptanceClass acceptance_class() const noexcept {
+    return draft_.acceptance_class;
+  }
   [[nodiscard]] const std::optional<RunId> &run_id() const noexcept {
     return draft_.run_id;
+  }
+  [[nodiscard]] const std::optional<RunMode> &mode() const noexcept {
+    return draft_.mode;
   }
   [[nodiscard]] const std::optional<EventPosition> &
   event_position() const noexcept {
@@ -263,6 +292,10 @@ public:
   [[nodiscard]] const std::optional<std::uint64_t> &
   run_input_sequence() const noexcept {
     return draft_.run_input_sequence;
+  }
+  [[nodiscard]] const std::optional<std::uint64_t> &
+  effective_position() const noexcept {
+    return draft_.effective_position;
   }
   [[nodiscard]] const std::optional<StateLineage> &
   state_lineage() const noexcept {
@@ -275,6 +308,10 @@ public:
   [[nodiscard]] const std::optional<std::vector<CausationRef>> &
   causation_refs() const noexcept {
     return draft_.causation_refs;
+  }
+  [[nodiscard]] const std::optional<std::vector<CorrelationId>> &
+  correlation_refs() const noexcept {
+    return draft_.correlation_refs;
   }
   [[nodiscard]] const std::optional<std::vector<SubjectRef>> &
   subject_refs() const noexcept {
@@ -291,6 +328,10 @@ public:
   [[nodiscard]] const TimePoint &accept_time() const noexcept {
     return draft_.accept_time;
   }
+  [[nodiscard]] const std::optional<TimePoint> &
+  recoverability_handoff_time() const noexcept {
+    return draft_.recoverability_handoff_time;
+  }
   [[nodiscard]] const std::optional<TimePoint> &record_time() const noexcept {
     return draft_.record_time;
   }
@@ -300,11 +341,57 @@ public:
   [[nodiscard]] const std::vector<std::uint8_t> &payload() const noexcept {
     return draft_.payload;
   }
+  [[nodiscard]] const std::optional<IntegrityId> &integrity() const noexcept {
+    return draft_.integrity;
+  }
 
   bool operator==(const EventEnvelope &) const = default;
 
 private:
   explicit EventEnvelope(EventEnvelopeDraft draft) : draft_(std::move(draft)) {}
+
+  [[nodiscard]] static bool
+  valid_registration(const EventTypeRegistration &registration) noexcept {
+    if (registration.envelope_version == 0 ||
+        registration.authorized_producers.empty()) {
+      return false;
+    }
+    auto producers = registration.authorized_producers;
+    std::sort(producers.begin(), producers.end());
+    return std::adjacent_find(producers.begin(), producers.end()) ==
+           producers.end();
+  }
+
+  [[nodiscard]] static constexpr bool
+  valid_presence(Applicability applicability, bool present) noexcept {
+    switch (applicability) {
+    case Applicability::forbidden:
+      return !present;
+    case Applicability::optional:
+      return true;
+    case Applicability::required:
+      return present;
+    }
+    return false;
+  }
+
+  [[nodiscard]] static constexpr bool
+  valid_effective_position(EffectivePositionPolicy policy,
+                           AcceptanceClass acceptance_class,
+                           bool present) noexcept {
+    switch (policy) {
+    case EffectivePositionPolicy::forbidden:
+      return !present;
+    case EffectivePositionPolicy::optional:
+      return true;
+    case EffectivePositionPolicy::required:
+      return present;
+    case EffectivePositionPolicy::accepted_transition_only:
+      return present ==
+             (acceptance_class == AcceptanceClass::accepted_transition);
+    }
+    return false;
+  }
 
   [[nodiscard]] static bool validate_optional_refs(
       EventId event_id,

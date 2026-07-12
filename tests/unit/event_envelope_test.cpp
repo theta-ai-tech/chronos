@@ -60,16 +60,20 @@ EventTypeRegistration registration() {
   return EventTypeRegistration{
       .event_type = "source.capture.payload_captured",
       .semantic_owner = id<AuthorityId>("018f1f6e-7d3a-7c4b-8a91-0123456789a6"),
+      .envelope_version = 1,
+      .schema_version = version("018f1f6e-7d3a-7c4b-8a91-0123456789a3", 2),
+      .authorized_producers = {id<ProducerId>(
+          "018f1f6e-7d3a-7c4b-8a91-0123456789a4")},
       .root_observation = true,
-      .run_scoped = false,
-      .ordered = false,
+      .run_scope = Applicability::optional,
+      .event_position = Applicability::optional,
       .run_input_eligible = false,
-      .requires_source_event = false,
-      .requires_subjects = false,
-      .mode_sensitive = false,
-      .requires_effective_position = false,
-      .requires_integrity = false,
-      .requires_receive_time = false,
+      .source_event = Applicability::optional,
+      .subjects = Applicability::optional,
+      .mode = Applicability::optional,
+      .effective_position = EffectivePositionPolicy::optional,
+      .integrity = Applicability::optional,
+      .receive_time = Applicability::optional,
   };
 }
 } // namespace
@@ -79,7 +83,8 @@ TEST_CASE("reserved event taxonomy accepts only canonical names") {
   CHECK(event_namespace("market.book.snapshot_applied") == "market.book");
   CHECK(event_namespace("execution.fill.accepted") == "execution.fill");
   CHECK(is_valid_event_type("source.capture.payload_captured"));
-  CHECK(is_valid_event_type("run.input.event_selected"));
+  CHECK(is_valid_event_type("run.input.selection.event_selected"));
+  CHECK(!is_valid_event_type("market.book.snapshot_applied"));
   CHECK(!is_valid_event_type("unknown.payload_captured"));
   CHECK(!is_valid_event_type("market.book..snapshot"));
   CHECK(!is_valid_event_type("market.book.Snapshot"));
@@ -120,6 +125,15 @@ TEST_CASE("registry enforces owner and required stable semantics") {
   CHECK(!EventEnvelope::from(derived, std::move(draft)).has_value());
 
   CHECK(!EventPosition::from(id<StreamId>(), 0, 1).has_value());
+
+  draft = valid_draft();
+  draft.schema_version = version("018f1f6e-7d3a-7c4b-8a91-0123456789ae", 9);
+  CHECK(!EventEnvelope::from(registration(), std::move(draft)).has_value());
+
+  draft = valid_draft();
+  draft.producer.component_id =
+      id<ProducerId>("018f1f6e-7d3a-7c4b-8a91-0123456789ae");
+  CHECK(!EventEnvelope::from(registration(), std::move(draft)).has_value());
 }
 
 TEST_CASE("envelope validates causation and typed subjects") {
@@ -136,9 +150,35 @@ TEST_CASE("envelope validates causation and typed subjects") {
   draft.subject_refs =
       std::vector<SubjectRef>{id<CanonicalInstrumentId>(), id<ListingId>()};
   auto subject_registration = registration();
-  subject_registration.requires_subjects = true;
+  subject_registration.subjects = Applicability::required;
   CHECK(
       EventEnvelope::from(subject_registration, std::move(draft)).has_value());
+
+  draft = valid_draft();
+  draft.subject_refs = std::vector<SubjectRef>{id<ListingId>()};
+  CHECK(EventEnvelope::from(registration(), std::move(draft)).has_value());
+}
+
+TEST_CASE("effective position follows acceptance disposition") {
+  auto policy = registration();
+  policy.run_scope = Applicability::required;
+  policy.effective_position = EffectivePositionPolicy::accepted_transition_only;
+  auto draft = valid_draft();
+  draft.run_id = id<RunId>();
+  draft.acceptance_class = AcceptanceClass::accepted_transition;
+  draft.effective_position = 12;
+  const auto accepted = EventEnvelope::from(policy, draft).value();
+  CHECK(accepted.acceptance_class() == AcceptanceClass::accepted_transition);
+  CHECK(accepted.effective_position() == 12);
+  CHECK(!accepted.mode().has_value());
+  CHECK(!accepted.correlation_refs().has_value());
+  CHECK(!accepted.recoverability_handoff_time().has_value());
+  CHECK(!accepted.integrity().has_value());
+
+  draft.acceptance_class = AcceptanceClass::accepted_rejection;
+  CHECK(!EventEnvelope::from(policy, draft).has_value());
+  draft.effective_position = std::nullopt;
+  CHECK(EventEnvelope::from(policy, std::move(draft)).has_value());
 }
 
 TEST_CASE("causation references preserve their identity kind") {
@@ -163,8 +203,8 @@ TEST_CASE("lineage fields agree instead of inventing positions") {
   draft.run_input_sequence = 7;
   draft.state_lineage = lineage;
   auto run_registration = registration();
-  run_registration.run_scoped = true;
-  run_registration.ordered = true;
+  run_registration.run_scope = Applicability::required;
+  run_registration.event_position = Applicability::required;
   run_registration.run_input_eligible = true;
   CHECK(EventEnvelope::from(run_registration, draft).has_value());
   draft.run_input_sequence = 8;
