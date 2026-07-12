@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -34,11 +35,19 @@ constexpr int CHRONOS_BOUNDARY_OUTPUT_TOO_SMALL = 2;
 constexpr int CHRONOS_BOUNDARY_INPUT_TOO_LARGE = 3;
 constexpr int CHRONOS_BOUNDARY_RESOURCE_EXHAUSTED = 4;
 constexpr int CHRONOS_BOUNDARY_INTERNAL_ERROR = 5;
+constexpr int CHRONOS_BOUNDARY_INVALID_CONTRACT = 6;
 
 CHRONOS_BOUNDARY_EXPORT std::size_t
 chronos_boundary_max_hello_payload_bytes() noexcept;
 
 CHRONOS_BOUNDARY_EXPORT int chronos_boundary_hello_event_round_trip(
     const char *input, std::size_t input_len, char *output,
+    std::size_t output_capacity, std::size_t *output_len) noexcept;
+
+CHRONOS_BOUNDARY_EXPORT std::size_t
+chronos_boundary_max_contract_frame_bytes() noexcept;
+
+CHRONOS_BOUNDARY_EXPORT int chronos_boundary_contract_round_trip(
+    const std::uint8_t *input, std::size_t input_len, std::uint8_t *output,
     std::size_t output_capacity, std::size_t *output_len) noexcept;
 }

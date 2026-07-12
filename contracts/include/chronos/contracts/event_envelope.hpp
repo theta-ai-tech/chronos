@@ -164,6 +164,8 @@ struct EventTypeRegistration final {
   EffectivePositionPolicy effective_position;
   Applicability integrity;
   Applicability receive_time;
+
+  bool operator==(const EventTypeRegistration &) const = default;
 };
 
 struct EventEnvelopeDraft final {
@@ -372,6 +374,13 @@ private:
     auto producers = registration.authorized_producers;
     std::sort(producers.begin(), producers.end());
     auto acceptances = registration.allowed_acceptance_classes;
+    if (std::any_of(acceptances.begin(), acceptances.end(),
+                    [](AcceptanceClass value) { return !is_valid(value); }) ||
+        std::any_of(registration.permitted_modes.begin(),
+                    registration.permitted_modes.end(),
+                    [](RunMode value) { return !is_valid(value); })) {
+      return false;
+    }
     std::sort(acceptances.begin(), acceptances.end());
     auto modes = registration.permitted_modes;
     std::sort(modes.begin(), modes.end());

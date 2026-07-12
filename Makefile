@@ -1,4 +1,4 @@
-.PHONY: bootstrap module-stubs-check cpp-build cpp-test cpp-format cpp-check cpp-profiles-check python-build python-test python-lint python-format python-check m0-round-trip m0-check m0-gate-proof
+.PHONY: bootstrap module-stubs-check cpp-build cpp-test cpp-format cpp-check cpp-profiles-check python-build python-test python-lint python-format python-check m0-round-trip m0-check m0-gate-proof m1-conformance
 
 bootstrap:
 	python3 tools/development/bootstrap_m0.py
@@ -42,3 +42,6 @@ m0-check: module-stubs-check cpp-check python-check
 
 m0-gate-proof:
 	uv run --locked --group dev python tools/development/prove_m0_gates.py $$(test -z "$(PROOF)" || printf '%s' '--proof $(PROOF)')
+
+m1-conformance: cpp-build
+	uv run --locked --group dev pytest tests/python/test_serialization.py
