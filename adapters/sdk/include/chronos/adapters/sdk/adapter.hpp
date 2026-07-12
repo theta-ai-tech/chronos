@@ -108,6 +108,7 @@ struct RetryPolicy final {
 
 struct SourceSequenceCapability final {
   std::string field_name;
+  ChannelFamily channel{ChannelFamily::OrderBookDelta};
   SourceSequenceScope scope{SourceSequenceScope::ListingChannel};
   bool monotonic{};
   bool duplicates_possible{};
@@ -268,6 +269,7 @@ inline bool CapabilityManifest::valid() const noexcept {
   if (std::any_of(source_sequences.begin(), source_sequences.end(),
                   [](const SourceSequenceCapability &sequence) {
                     return !detail::valid_token(sequence.field_name) ||
+                           !detail::known(sequence.channel) ||
                            !detail::known(sequence.scope);
                   })) {
     return false;
@@ -296,6 +298,7 @@ negotiate(const CapabilityManifest &manifest,
                   request.required_source_sequences.end(),
                   [](const SourceSequenceCapability &sequence) {
                     return !detail::valid_token(sequence.field_name) ||
+                           !detail::known(sequence.channel) ||
                            !detail::known(sequence.scope);
                   })) {
     return NegotiationFailure::InvalidRequest;

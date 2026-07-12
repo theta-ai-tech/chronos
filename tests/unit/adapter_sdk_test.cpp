@@ -24,6 +24,7 @@ sdk::CapabilityRequest request() {
           .recovery = sdk::RecoveryMode::NewSession,
           .required_source_sequences =
               {{.field_name = "seq",
+                .channel = sdk::ChannelFamily::PublicTrade,
                 .scope = sdk::SourceSequenceScope::VenueCrossSequence,
                 .monotonic = true,
                 .duplicates_possible = true}},
@@ -82,6 +83,11 @@ TEST_CASE("sequence negotiation requires matching field semantics and scope") {
   auto incompatible = request();
   incompatible.required_source_sequences.front().scope =
       sdk::SourceSequenceScope::ListingChannel;
+  CHECK(adapter.configure(incompatible) ==
+        sdk::NegotiationFailure::SourceSequencesUnsupported);
+
+  incompatible = request();
+  incompatible.required_source_sequences.front().field_name = "u";
   CHECK(adapter.configure(incompatible) ==
         sdk::NegotiationFailure::SourceSequencesUnsupported);
 }
