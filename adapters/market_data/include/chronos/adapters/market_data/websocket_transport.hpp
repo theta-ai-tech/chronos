@@ -29,6 +29,8 @@ enum class TransportFailure {
   Closed,
   MessageTooLarge,
   UnsupportedFrame,
+  Protocol,
+  SubscriptionRejected,
 };
 
 template <typename T> struct TransportResult final {

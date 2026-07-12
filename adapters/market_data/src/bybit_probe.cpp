@@ -35,6 +35,11 @@ int main(int argc, char **argv) {
     std::cerr << "connect/subscribe failed: " << connected.detail << '\n';
     return 1;
   }
+  const auto heartbeat = session.send_heartbeat(5s);
+  if (!heartbeat.ok()) {
+    std::cerr << "heartbeat failed: " << heartbeat.detail << '\n';
+    return 1;
+  }
 
   bool saw_book = false;
   bool saw_trade = false;

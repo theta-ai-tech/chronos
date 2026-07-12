@@ -1,3 +1,4 @@
+#include "chronos/adapters/market_data/websocket_framer.hpp"
 #include "chronos/adapters/market_data/websocket_transport.hpp"
 
 #include <curl/curl.h>
@@ -98,7 +99,7 @@ public:
     }
     url_ = std::string(url);
     error_.fill('\0');
-    maximum_message_bytes_ = maximum_message_bytes;
+    assembler_.emplace(maximum_message_bytes);
     curl_easy_setopt(handle_, CURLOPT_URL, url_.c_str());
     curl_easy_setopt(handle_, CURLOPT_CONNECT_ONLY, 2L);
     curl_easy_setopt(handle_, CURLOPT_CONNECTTIMEOUT_MS,
@@ -194,34 +195,25 @@ public:
                 .detail = "unsupported WebSocket frame kind"};
       }
 
-      const bool control = *kind == WebSocketMessageKind::Ping ||
-                           *kind == WebSocketMessageKind::Pong ||
-                           *kind == WebSocketMessageKind::Close;
-      auto &pending_payload = control ? pending_control_ : pending_data_;
-      auto &pending_kind = control ? pending_control_kind_ : pending_data_kind_;
-      if (pending_kind.has_value() && *pending_kind != *kind) {
-        return {.failure = TransportFailure::UnsupportedFrame,
-                .detail = "message kind changed within fragmented input"};
+      const auto assembled = assembler_->feed(
+          {.kind = *kind,
+           .payload = std::span<const std::byte>(buffer.data(), received),
+           .frame_complete = metadata->bytesleft == 0,
+           .message_continues = (metadata->flags & CURLWS_CONT) != 0});
+      if (assembled.failure != FrameAssemblyFailure::None) {
+        const auto failure =
+            assembled.failure == FrameAssemblyFailure::MessageTooLarge
+                ? TransportFailure::MessageTooLarge
+                : TransportFailure::UnsupportedFrame;
+        close();
+        return {.failure = failure,
+                .detail = "terminal WebSocket frame assembly failure"};
       }
-      pending_kind = kind;
-      if (received > maximum_message_bytes_ ||
-          pending_payload.size() > maximum_message_bytes_ - received) {
-        return {.failure = TransportFailure::MessageTooLarge,
-                .detail = "WebSocket message exceeds negotiated limit"};
-      }
-      pending_payload.insert(pending_payload.end(), buffer.begin(),
-                             buffer.begin() + received);
-      const bool complete_frame = metadata->bytesleft == 0;
-      const bool complete_message = (metadata->flags & CURLWS_CONT) == 0;
-      if (complete_frame && (control || complete_message)) {
-        WebSocketMessage message{.kind = *kind,
-                                 .payload = std::move(pending_payload)};
-        pending_payload.clear();
-        pending_kind.reset();
-        if (message.kind == WebSocketMessageKind::Close) {
+      if (assembled.message.has_value()) {
+        if (assembled.terminal) {
           connected_ = false;
         }
-        return {.value = std::move(message)};
+        return {.value = std::move(*assembled.message)};
       }
     }
   }
@@ -236,12 +228,8 @@ public:
     }
     handle_ = nullptr;
     connected_ = false;
-    maximum_message_bytes_ = 0;
     url_.clear();
-    pending_data_.clear();
-    pending_data_kind_.reset();
-    pending_control_.clear();
-    pending_control_kind_.reset();
+    assembler_.reset();
   }
 
 private:
@@ -268,13 +256,9 @@ private:
 
   CURL *handle_{};
   bool connected_{};
-  std::size_t maximum_message_bytes_{};
   std::string url_;
   std::array<char, CURL_ERROR_SIZE> error_{};
-  std::vector<std::byte> pending_data_;
-  std::optional<WebSocketMessageKind> pending_data_kind_;
-  std::vector<std::byte> pending_control_;
-  std::optional<WebSocketMessageKind> pending_control_kind_;
+  std::optional<WebSocketMessageAssembler> assembler_;
 };
 
 } // namespace

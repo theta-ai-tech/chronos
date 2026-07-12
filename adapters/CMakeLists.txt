@@ -9,6 +9,7 @@ target_link_libraries(chronos_adapter_sdk
 add_library(chronos_bybit_adapter STATIC
   market_data/src/bybit_adapter.cpp
   market_data/src/bybit_websocket.cpp
+  market_data/src/websocket_framer.cpp
   market_data/src/curl_websocket_transport.cpp)
 
 find_package(CURL 7.86 REQUIRED)

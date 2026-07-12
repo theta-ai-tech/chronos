@@ -2,9 +2,231 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <optional>
 #include <utility>
 
 namespace chronos::adapters::market_data {
+namespace {
+
+class JsonCursor final {
+public:
+  explicit JsonCursor(std::string_view input) : input_(input) {}
+
+  void whitespace() noexcept {
+    while (position_ < input_.size() &&
+           (input_[position_] == ' ' || input_[position_] == '\n' ||
+            input_[position_] == '\r' || input_[position_] == '\t')) {
+      ++position_;
+    }
+  }
+
+  bool consume(char expected) noexcept {
+    whitespace();
+    if (position_ >= input_.size() || input_[position_] != expected) {
+      return false;
+    }
+    ++position_;
+    return true;
+  }
+
+  std::optional<std::string> string() {
+    whitespace();
+    if (position_ >= input_.size() || input_[position_++] != '"') {
+      return std::nullopt;
+    }
+    std::string result;
+    while (position_ < input_.size()) {
+      const unsigned char character =
+          static_cast<unsigned char>(input_[position_++]);
+      if (character == '"') {
+        return result;
+      }
+      if (character < 0x20U) {
+        return std::nullopt;
+      }
+      if (character == '\\') {
+        if (position_ >= input_.size()) {
+          return std::nullopt;
+        }
+        const char escaped = input_[position_++];
+        switch (escaped) {
+        case '"':
+        case '\\':
+        case '/':
+          result.push_back(escaped);
+          break;
+        case 'b':
+          result.push_back('\b');
+          break;
+        case 'f':
+          result.push_back('\f');
+          break;
+        case 'n':
+          result.push_back('\n');
+          break;
+        case 'r':
+          result.push_back('\r');
+          break;
+        case 't':
+          result.push_back('\t');
+          break;
+        case 'u':
+          for (int index = 0; index < 4; ++index) {
+            if (position_ >= input_.size() ||
+                std::isxdigit(
+                    static_cast<unsigned char>(input_[position_++])) == 0) {
+              return std::nullopt;
+            }
+          }
+          result.push_back('?');
+          break;
+        default:
+          return std::nullopt;
+        }
+      } else {
+        result.push_back(static_cast<char>(character));
+      }
+    }
+    return std::nullopt;
+  }
+
+  std::optional<bool> boolean() noexcept {
+    whitespace();
+    if (input_.substr(position_, 4) == "true") {
+      position_ += 4;
+      return true;
+    }
+    if (input_.substr(position_, 5) == "false") {
+      position_ += 5;
+      return false;
+    }
+    return std::nullopt;
+  }
+
+  bool skip_value(std::size_t depth = 0) {
+    whitespace();
+    if (depth > 16 || position_ >= input_.size()) {
+      return false;
+    }
+    if (input_[position_] == '"') {
+      return string().has_value();
+    }
+    if (input_[position_] == '{') {
+      ++position_;
+      whitespace();
+      if (consume('}')) {
+        return true;
+      }
+      while (true) {
+        if (!string().has_value() || !consume(':') || !skip_value(depth + 1)) {
+          return false;
+        }
+        if (consume('}')) {
+          return true;
+        }
+        if (!consume(',')) {
+          return false;
+        }
+      }
+    }
+    if (input_[position_] == '[') {
+      ++position_;
+      whitespace();
+      if (consume(']')) {
+        return true;
+      }
+      while (true) {
+        if (!skip_value(depth + 1)) {
+          return false;
+        }
+        if (consume(']')) {
+          return true;
+        }
+        if (!consume(',')) {
+          return false;
+        }
+      }
+    }
+    const auto start = position_;
+    while (position_ < input_.size() && input_[position_] != ',' &&
+           input_[position_] != '}' && input_[position_] != ']' &&
+           std::isspace(static_cast<unsigned char>(input_[position_])) == 0) {
+      ++position_;
+    }
+    return position_ > start;
+  }
+
+  [[nodiscard]] bool finished() noexcept {
+    whitespace();
+    return position_ == input_.size();
+  }
+
+private:
+  std::string_view input_;
+  std::size_t position_{};
+};
+
+std::string_view message_text(const WebSocketMessage &message) noexcept {
+  return {reinterpret_cast<const char *>(message.payload.data()),
+          message.payload.size()};
+}
+} // namespace
+
+BybitControlResponse parse_bybit_control_response(std::string_view payload) {
+  JsonCursor cursor(payload);
+  if (!cursor.consume('{')) {
+    return BybitControlResponse::Malformed;
+  }
+  std::optional<std::string> operation;
+  std::optional<bool> success;
+  if (cursor.consume('}')) {
+    return cursor.finished() ? BybitControlResponse::Other
+                             : BybitControlResponse::Malformed;
+  }
+  while (true) {
+    const auto key = cursor.string();
+    if (!key.has_value() || !cursor.consume(':')) {
+      return BybitControlResponse::Malformed;
+    }
+    if (*key == "op") {
+      if (operation.has_value()) {
+        return BybitControlResponse::Malformed;
+      }
+      operation = cursor.string();
+      if (!operation.has_value()) {
+        return BybitControlResponse::Malformed;
+      }
+    } else if (*key == "success") {
+      if (success.has_value()) {
+        return BybitControlResponse::Malformed;
+      }
+      success = cursor.boolean();
+      if (!success.has_value()) {
+        return BybitControlResponse::Malformed;
+      }
+    } else if (!cursor.skip_value()) {
+      return BybitControlResponse::Malformed;
+    }
+    if (cursor.consume('}')) {
+      break;
+    }
+    if (!cursor.consume(',')) {
+      return BybitControlResponse::Malformed;
+    }
+  }
+  if (!cursor.finished()) {
+    return BybitControlResponse::Malformed;
+  }
+  if (!operation.has_value() || *operation != "subscribe") {
+    return BybitControlResponse::Other;
+  }
+  if (!success.has_value()) {
+    return BybitControlResponse::Malformed;
+  }
+  return *success ? BybitControlResponse::SubscriptionAccepted
+                  : BybitControlResponse::SubscriptionRejected;
+}
 
 bool valid_bybit_subscription(const BybitSubscription &value) noexcept {
   if (value.symbol.empty() || value.symbol.size() > 32 ||
@@ -71,6 +293,8 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
     return {.failure = TransportFailure::InvalidConfiguration,
             .detail = "invalid Bybit session configuration"};
   }
+  early_messages_.clear();
+  subscribed_ = false;
   auto connected = transport_->connect(bybit_public_websocket_url(subscription),
                                        timeout, maximum_message_bytes);
   if (!connected.ok()) {
@@ -83,8 +307,45 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
     return {.failure = sent.ok() ? TransportFailure::Send : sent.failure,
             .detail = sent.ok() ? "partial subscription write" : sent.detail};
   }
-  subscribed_ = true;
-  return {.value = true};
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (early_messages_.size() < 8) {
+    const auto remaining =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+    if (remaining.count() <= 0) {
+      transport_->close();
+      return {.failure = TransportFailure::Timeout,
+              .detail = "Bybit subscription acknowledgement timed out"};
+    }
+    auto response = transport_->receive(remaining);
+    if (!response.ok()) {
+      transport_->close();
+      return {.failure = response.failure, .detail = response.detail};
+    }
+    if (response.value.kind != WebSocketMessageKind::Text) {
+      early_messages_.push_back(std::move(response.value));
+      continue;
+    }
+    switch (parse_bybit_control_response(message_text(response.value))) {
+    case BybitControlResponse::SubscriptionAccepted:
+      subscribed_ = true;
+      return {.value = true};
+    case BybitControlResponse::SubscriptionRejected:
+      transport_->close();
+      return {.failure = TransportFailure::SubscriptionRejected,
+              .detail = "Bybit rejected the subscription"};
+    case BybitControlResponse::Malformed:
+      transport_->close();
+      return {.failure = TransportFailure::Protocol,
+              .detail = "malformed Bybit control response"};
+    case BybitControlResponse::Other:
+      early_messages_.push_back(std::move(response.value));
+      break;
+    }
+  }
+  transport_->close();
+  return {.failure = TransportFailure::Protocol,
+          .detail = "subscription acknowledgement exceeded early-frame bound"};
 }
 
 TransportResult<WebSocketMessage>
@@ -93,13 +354,28 @@ BybitWebSocketSession::receive(std::chrono::milliseconds timeout) {
     return {.failure = TransportFailure::InvalidConfiguration,
             .detail = "session is not subscribed"};
   }
+  if (!early_messages_.empty()) {
+    auto message = std::move(early_messages_.front());
+    early_messages_.pop_front();
+    return {.value = std::move(message)};
+  }
   return transport_->receive(timeout);
+}
+
+TransportResult<std::size_t>
+BybitWebSocketSession::send_heartbeat(std::chrono::milliseconds timeout) {
+  if (!transport_ || !subscribed_ || timeout.count() <= 0) {
+    return {.failure = TransportFailure::InvalidConfiguration,
+            .detail = "session is not subscribed"};
+  }
+  return transport_->send_text("{\"op\":\"ping\"}", timeout);
 }
 
 void BybitWebSocketSession::close() noexcept {
   if (transport_) {
     transport_->close();
   }
+  early_messages_.clear();
   subscribed_ = false;
 }
 

@@ -1,9 +1,11 @@
 #include "chronos/adapters/market_data/bybit_websocket.hpp"
+#include "chronos/adapters/market_data/websocket_framer.hpp"
 
 #include "microtest.hpp"
 
 #include <chrono>
 #include <cstddef>
+#include <deque>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -33,8 +35,13 @@ public:
 
   market_data::TransportResult<market_data::WebSocketMessage>
   receive(std::chrono::milliseconds) override {
-    return {.value = {.kind = market_data::WebSocketMessageKind::Text,
-                      .payload = std::move(next_payload_)}};
+    if (messages_.empty()) {
+      return {.failure = market_data::TransportFailure::Timeout,
+              .detail = "fake receive queue empty"};
+    }
+    auto message = std::move(messages_.front());
+    messages_.pop_front();
+    return {.value = std::move(message)};
   }
 
   void close() noexcept override { closed_ = true; }
@@ -42,7 +49,7 @@ public:
   std::string url_;
   std::string sent_;
   std::size_t maximum_message_bytes_{};
-  std::vector<std::byte> next_payload_;
+  std::deque<market_data::WebSocketMessage> messages_;
   bool closed_{};
 };
 
@@ -51,6 +58,16 @@ market_data::BybitSubscription subscription() {
           .market = sdk::MarketClass::LinearPerpetual,
           .symbol = "BTCUSDT",
           .order_book_depth = 50};
+}
+
+std::vector<std::byte> bytes(std::string_view value) {
+  const auto *begin = reinterpret_cast<const std::byte *>(value.data());
+  return {begin, begin + value.size()};
+}
+
+market_data::WebSocketMessage text_message(std::string_view value) {
+  return {.kind = market_data::WebSocketMessageKind::Text,
+          .payload = bytes(value)};
 }
 } // namespace
 
@@ -78,6 +95,8 @@ TEST_CASE(
 TEST_CASE("session connects and subscribes through the transport seam") {
   auto transport = std::make_unique<FakeTransport>();
   auto *observer = transport.get();
+  observer->messages_.push_back(text_message(
+      R"({"success":true,"ret_msg":"","op":"subscribe","conn_id":"c"})"));
   market_data::BybitWebSocketSession session(std::move(transport));
   const auto result = session.connect_and_subscribe(subscription(), 2s, 4096);
   CHECK(result.ok());
@@ -85,6 +104,113 @@ TEST_CASE("session connects and subscribes through the transport seam") {
   CHECK(observer->sent_.find("orderbook.50.BTCUSDT") != std::string::npos);
   CHECK(observer->sent_.find("publicTrade.BTCUSDT") != std::string::npos);
   CHECK(observer->maximum_message_bytes_ == 4096);
+  const auto heartbeat = session.send_heartbeat(2s);
+  CHECK(heartbeat.ok());
+  CHECK(observer->sent_ == R"({"op":"ping"})");
   session.close();
   CHECK(observer->closed_);
+}
+
+TEST_CASE("Bybit control responses are parsed structurally and fail closed") {
+  CHECK(market_data::parse_bybit_control_response(
+            R"({"op":"subscribe","success":true,"data":{"x":[1,2]}})") ==
+        market_data::BybitControlResponse::SubscriptionAccepted);
+  CHECK(market_data::parse_bybit_control_response(
+            R"({"success":false,"op":"subscribe","ret_msg":"bad"})") ==
+        market_data::BybitControlResponse::SubscriptionRejected);
+  CHECK(market_data::parse_bybit_control_response(
+            R"({"success":true,"op":"ping"})") ==
+        market_data::BybitControlResponse::Other);
+  CHECK(market_data::parse_bybit_control_response(
+            R"({"success":true,"ret_msg":"\u03b1","op":"subscribe"})") ==
+        market_data::BybitControlResponse::SubscriptionAccepted);
+  CHECK(market_data::parse_bybit_control_response(
+            R"({"success":true,"success":false,"op":"subscribe"})") ==
+        market_data::BybitControlResponse::Malformed);
+}
+
+TEST_CASE("session does not become ready when Bybit rejects subscription") {
+  auto transport = std::make_unique<FakeTransport>();
+  auto *observer = transport.get();
+  observer->messages_.push_back(
+      text_message(R"({"success":false,"op":"subscribe"})"));
+  market_data::BybitWebSocketSession session(std::move(transport));
+  const auto result = session.connect_and_subscribe(subscription(), 2s, 4096);
+  CHECK(result.failure == market_data::TransportFailure::SubscriptionRejected);
+  CHECK(observer->closed_);
+}
+
+TEST_CASE("frame assembler preserves data around interleaved control frames") {
+  market_data::WebSocketMessageAssembler assembler(32);
+  const auto first = bytes("hel");
+  const auto ping = bytes("p");
+  const auto second = bytes("lo");
+  auto result = assembler.feed({.kind = market_data::WebSocketMessageKind::Text,
+                                .payload = first,
+                                .frame_complete = true,
+                                .message_continues = true});
+  CHECK(!result.message.has_value());
+  result = assembler.feed({.kind = market_data::WebSocketMessageKind::Ping,
+                           .payload = ping,
+                           .frame_complete = true,
+                           .message_continues = false});
+  CHECK(result.message.has_value());
+  CHECK(result.message->kind == market_data::WebSocketMessageKind::Ping);
+  result = assembler.feed({.kind = market_data::WebSocketMessageKind::Text,
+                           .payload = second,
+                           .frame_complete = true,
+                           .message_continues = false});
+  CHECK(result.message.has_value());
+  CHECK(result.message->payload == bytes("hello"));
+}
+
+TEST_CASE(
+    "frame assembler retains partial chunks and isolates oversize input") {
+  market_data::WebSocketMessageAssembler assembler(4);
+  const auto first = bytes("ab");
+  const auto second = bytes("cd");
+  auto result = assembler.feed({.kind = market_data::WebSocketMessageKind::Text,
+                                .payload = first,
+                                .frame_complete = false,
+                                .message_continues = false});
+  CHECK(!result.message.has_value());
+  result = assembler.feed({.kind = market_data::WebSocketMessageKind::Text,
+                           .payload = second,
+                           .frame_complete = true,
+                           .message_continues = false});
+  CHECK(result.message.has_value());
+  CHECK(result.message->payload == bytes("abcd"));
+
+  const auto hostile = bytes("abcde");
+  result = assembler.feed({.kind = market_data::WebSocketMessageKind::Text,
+                           .payload = hostile,
+                           .frame_complete = true,
+                           .message_continues = false});
+  CHECK(result.failure == market_data::FrameAssemblyFailure::MessageTooLarge);
+  CHECK(result.terminal);
+  result = assembler.feed({.kind = market_data::WebSocketMessageKind::Text,
+                           .payload = first,
+                           .frame_complete = true,
+                           .message_continues = false});
+  CHECK(result.terminal);
+  CHECK(!result.message.has_value());
+}
+
+TEST_CASE("close frame terminally ends frame assembly") {
+  market_data::WebSocketMessageAssembler assembler(16);
+  const auto reason = bytes("bye");
+  auto result =
+      assembler.feed({.kind = market_data::WebSocketMessageKind::Close,
+                      .payload = reason,
+                      .frame_complete = true,
+                      .message_continues = false});
+  CHECK(result.message.has_value());
+  CHECK(result.terminal);
+  const auto later = bytes("later");
+  result = assembler.feed({.kind = market_data::WebSocketMessageKind::Text,
+                           .payload = later,
+                           .frame_complete = true,
+                           .message_continues = false});
+  CHECK(result.terminal);
+  CHECK(!result.message.has_value());
 }

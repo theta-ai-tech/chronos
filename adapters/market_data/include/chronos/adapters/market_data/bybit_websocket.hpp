@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <deque>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -25,6 +26,15 @@ bybit_public_websocket_url(const BybitSubscription &value);
 [[nodiscard]] std::string
 bybit_subscription_message(const BybitSubscription &value);
 
+enum class BybitControlResponse {
+  SubscriptionAccepted,
+  SubscriptionRejected,
+  Other,
+  Malformed,
+};
+[[nodiscard]] BybitControlResponse
+parse_bybit_control_response(std::string_view payload);
+
 class BybitWebSocketSession final {
 public:
   explicit BybitWebSocketSession(std::unique_ptr<WebSocketTransport> transport =
@@ -36,10 +46,13 @@ public:
                         std::size_t maximum_message_bytes);
   [[nodiscard]] TransportResult<WebSocketMessage>
   receive(std::chrono::milliseconds timeout);
+  [[nodiscard]] TransportResult<std::size_t>
+  send_heartbeat(std::chrono::milliseconds timeout);
   void close() noexcept;
 
 private:
   std::unique_ptr<WebSocketTransport> transport_;
+  std::deque<WebSocketMessage> early_messages_;
   bool subscribed_{};
 };
 
