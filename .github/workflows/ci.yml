@@ -27,7 +27,7 @@ jobs:
       - name: Install C++ tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes clang-18
+          sudo apt-get install --yes clang-18 libcurl4-openssl-dev
           python -m pip install "cmake>=3.24,<4" "ninja>=1.11,<2"
 
       - name: Sync Python tooling
@@ -73,7 +73,7 @@ jobs:
       - name: Install C++ tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes clang-18
+          sudo apt-get install --yes clang-18 libcurl4-openssl-dev
           python -m pip install "cmake>=3.24,<4" "ninja>=1.11,<2"
 
       - name: Sync locked tooling

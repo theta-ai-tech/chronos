@@ -23,9 +23,10 @@ Other hosts are unsupported until they are added to the checked toolchain and bo
 | Python | ≥ 3.9 (tested 3.9.6) | Python runtime |
 | uv | tested 0.11.16 | Python dependency lock and tool runner |
 | make | POSIX make | aggregate local commands |
+| libcurl | >= 7.86 with WebSocket support | Bybit public `wss` transport |
 
-No third-party libraries are fetched during the C++ build (the test harness is vendored), so a
-C++ configure + build works without network access. Python tooling is resolved from `uv.lock`;
+No third-party libraries are fetched during the C++ build; libcurl must already be installed, and
+the test harness is vendored. Python tooling is resolved from `uv.lock`;
 the first `uv sync` needs access to the configured Python package index unless the packages are
 already cached.
 
@@ -33,7 +34,7 @@ For a new macOS machine:
 
 ```sh
 xcode-select --install
-brew install cmake ninja uv
+brew install cmake ninja uv curl
 git clone git@github.com:theta-ai-tech/chronos.git
 cd chronos
 make bootstrap
@@ -43,7 +44,7 @@ For a new Ubuntu 24.04 machine:
 
 ```sh
 sudo apt-get update
-sudo apt-get install --yes clang-18 cmake ninja-build make python3 pipx git
+sudo apt-get install --yes clang-18 cmake ninja-build make python3 pipx git libcurl4-openssl-dev
 pipx install uv==0.11.16
 export PATH="$HOME/.local/bin:$PATH"
 git clone git@github.com:theta-ai-tech/chronos.git
@@ -177,3 +178,23 @@ cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCHRONOS_SANITIZE=ON
 - `tools/development/run_m0_round_trip.py` — explicit hello-event runner for docs and manual tests.
 
 Real domain modules and canonical cross-boundary contracts arrive in later milestones.
+
+## M2.2 live Bybit probe
+
+The Bybit public WebSocket transport requires libcurl 7.86 or newer built with
+the `wss` protocol. Apple system libcurl may report a sufficient version while
+omitting WebSocket support; the adapter detects that build and fails closed.
+On macOS, use the keg-only Homebrew build explicitly:
+
+```sh
+brew install curl
+cmake -S . -B build-ws -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_PREFIX_PATH="$(brew --prefix curl)"
+cmake --build build-ws --target chronos_bybit_probe
+./build-ws/adapters/chronos_bybit_probe BTCUSDT production
+```
+
+The probe exits successfully only after one public session receives both an
+`orderbook.50.BTCUSDT` frame and a `publicTrade.BTCUSDT` frame. It performs no
+authentication, order entry, normalization, or live decision processing.
