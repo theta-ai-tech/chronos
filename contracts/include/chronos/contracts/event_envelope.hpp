@@ -15,7 +15,7 @@
 
 namespace chronos::contracts {
 
-inline constexpr std::array<std::string_view, 20> kReservedEventNamespaces{
+inline constexpr std::array<std::string_view, 22> kReservedEventNamespaces{
     "source",
     "reference",
     "market.book",
@@ -23,6 +23,8 @@ inline constexpr std::array<std::string_view, 20> kReservedEventNamespaces{
     "market.control",
     "external",
     "run.control",
+    "run.timer",
+    "run.input",
     "feature",
     "strategy",
     "recommendation",
@@ -52,7 +54,8 @@ event_namespace(std::string_view event_type) noexcept {
 
 [[nodiscard]] inline bool
 is_valid_event_type(std::string_view event_type) noexcept {
-  if (!event_namespace(event_type).has_value() || event_type.back() == '.') {
+  const auto namespace_name = event_namespace(event_type);
+  if (!namespace_name.has_value() || event_type.back() == '.') {
     return false;
   }
   bool previous_dot = false;
@@ -65,32 +68,115 @@ is_valid_event_type(std::string_view event_type) noexcept {
     }
     previous_dot = character == '.';
   }
-  return true;
+  return std::count(event_type.begin(), event_type.end(), '.') >= 2;
 }
 
 using SubjectRef = std::variant<CanonicalInstrumentId, ListingId>;
 using CausationRef = std::variant<CommandId, EventId, StateViewId, DecisionId>;
+
+enum class AcceptanceClass : std::uint8_t {
+  accepted_transition,
+  accepted_observation,
+  accepted_rejection,
+  accepted_correction,
+};
+
+enum class RunMode : std::uint8_t {
+  capture,
+  replay,
+  backtest,
+  live_read_only,
+  live_paper,
+};
+
+[[nodiscard]] constexpr bool is_valid(AcceptanceClass value) noexcept {
+  return value >= AcceptanceClass::accepted_transition &&
+         value <= AcceptanceClass::accepted_correction;
+}
+
+[[nodiscard]] constexpr bool is_valid(RunMode value) noexcept {
+  return value >= RunMode::capture && value <= RunMode::live_paper;
+}
+
+class EventPosition final {
+public:
+  [[nodiscard]] static constexpr std::optional<EventPosition>
+  from(StreamId stream_id, std::uint64_t stream_epoch,
+       std::uint64_t stream_sequence) noexcept {
+    if (stream_epoch == 0) {
+      return std::nullopt;
+    }
+    return EventPosition(stream_id, stream_epoch, stream_sequence);
+  }
+  [[nodiscard]] constexpr StreamId stream_id() const noexcept {
+    return stream_id_;
+  }
+  [[nodiscard]] constexpr std::uint64_t stream_epoch() const noexcept {
+    return stream_epoch_;
+  }
+  [[nodiscard]] constexpr std::uint64_t stream_sequence() const noexcept {
+    return stream_sequence_;
+  }
+  bool operator==(const EventPosition &) const = default;
+
+private:
+  constexpr EventPosition(StreamId stream_id, std::uint64_t stream_epoch,
+                          std::uint64_t stream_sequence) noexcept
+      : stream_id_(stream_id), stream_epoch_(stream_epoch),
+        stream_sequence_(stream_sequence) {}
+  StreamId stream_id_;
+  std::uint64_t stream_epoch_;
+  std::uint64_t stream_sequence_;
+};
+
+struct ProducerRef final {
+  ProducerId component_id;
+  VersionRef implementation_version;
+  RuntimeId runtime_incarnation_id;
+  bool operator==(const ProducerRef &) const = default;
+};
+
+struct EventTypeRegistration final {
+  std::string event_type;
+  AuthorityId semantic_owner;
+  bool root_observation;
+  bool run_scoped;
+  bool ordered;
+  bool run_input_eligible;
+  bool requires_source_event;
+  bool requires_subjects;
+  bool mode_sensitive;
+  bool requires_effective_position;
+  bool requires_integrity;
+  bool requires_receive_time;
+};
 
 struct EventEnvelopeDraft final {
   EventId event_id;
   std::string event_type;
   std::uint32_t envelope_version;
   VersionRef schema_version;
-  ProducerId producer_id;
-  VersionRef producer_version;
+  AuthorityId semantic_owner;
+  ProducerRef producer;
+  AcceptanceClass acceptance_class;
   std::optional<RunId> run_id;
-  std::optional<StreamCursor> stream_cursor;
+  std::optional<RunMode> mode;
+  std::optional<EventPosition> event_position;
   std::optional<std::uint64_t> run_input_sequence;
+  std::optional<std::uint64_t> effective_position;
   std::optional<StateLineage> state_lineage;
   std::optional<SourceEventId> source_event_id;
   std::optional<std::vector<CausationRef>> causation_refs;
+  std::optional<std::vector<CorrelationId>> correlation_refs;
   std::optional<std::vector<SubjectRef>> subject_refs;
   std::optional<TimePoint> source_event_time;
   std::optional<TimePoint> chronos_receive_time;
   TimePoint accept_time;
+  std::optional<TimePoint> recoverability_handoff_time;
   std::optional<TimePoint> record_time;
   DataQuality quality;
   std::vector<std::uint8_t> payload;
+  std::optional<IntegrityId> integrity;
 
   bool operator==(const EventEnvelopeDraft &) const = default;
 };
@@ -98,8 +184,36 @@ struct EventEnvelopeDraft final {
 class EventEnvelope final {
 public:
   [[nodiscard]] static std::optional<EventEnvelope>
-  from(EventEnvelopeDraft draft) {
-    if (!is_valid_event_type(draft.event_type) || draft.envelope_version == 0) {
+  from(const EventTypeRegistration &registration, EventEnvelopeDraft draft) {
+    if (!is_valid_event_type(registration.event_type) ||
+        draft.event_type != registration.event_type ||
+        draft.semantic_owner != registration.semantic_owner ||
+        draft.envelope_version == 0 || !is_valid(draft.acceptance_class) ||
+        (draft.mode.has_value() && !is_valid(*draft.mode))) {
+      return std::nullopt;
+    }
+    if (registration.run_scoped != draft.run_id.has_value() ||
+        registration.ordered != draft.event_position.has_value() ||
+        registration.requires_source_event !=
+            draft.source_event_id.has_value() ||
+        registration.requires_subjects != draft.subject_refs.has_value() ||
+        registration.mode_sensitive != draft.mode.has_value() ||
+        registration.requires_effective_position !=
+            draft.effective_position.has_value() ||
+        registration.requires_integrity != draft.integrity.has_value() ||
+        registration.requires_receive_time !=
+            draft.chronos_receive_time.has_value()) {
+      return std::nullopt;
+    }
+    if (!registration.root_observation && !draft.causation_refs.has_value()) {
+      return std::nullopt;
+    }
+    if (draft.run_input_sequence.has_value() &&
+        (!registration.run_input_eligible || !draft.run_id.has_value() ||
+         !draft.event_position.has_value())) {
+      return std::nullopt;
+    }
+    if (draft.effective_position.has_value() && !draft.run_id.has_value()) {
       return std::nullopt;
     }
     if (draft.state_lineage.has_value() &&
@@ -114,6 +228,7 @@ public:
       return std::nullopt;
     }
     if (!validate_optional_refs(draft.event_id, draft.causation_refs) ||
+        !validate_optional_ids(draft.correlation_refs) ||
         !validate_optional_subjects(draft.subject_refs)) {
       return std::nullopt;
     }
@@ -132,18 +247,18 @@ public:
   [[nodiscard]] const VersionRef &schema_version() const noexcept {
     return draft_.schema_version;
   }
-  [[nodiscard]] const ProducerId &producer_id() const noexcept {
-    return draft_.producer_id;
+  [[nodiscard]] const AuthorityId &semantic_owner() const noexcept {
+    return draft_.semantic_owner;
   }
-  [[nodiscard]] const VersionRef &producer_version() const noexcept {
-    return draft_.producer_version;
+  [[nodiscard]] const ProducerRef &producer() const noexcept {
+    return draft_.producer;
   }
   [[nodiscard]] const std::optional<RunId> &run_id() const noexcept {
     return draft_.run_id;
   }
-  [[nodiscard]] const std::optional<StreamCursor> &
-  stream_cursor() const noexcept {
-    return draft_.stream_cursor;
+  [[nodiscard]] const std::optional<EventPosition> &
+  event_position() const noexcept {
+    return draft_.event_position;
   }
   [[nodiscard]] const std::optional<std::uint64_t> &
   run_input_sequence() const noexcept {
@@ -223,6 +338,20 @@ private:
       }
     }
     return true;
+  }
+
+  template <typename Id>
+  [[nodiscard]] static bool validate_optional_ids(
+      const std::optional<std::vector<Id>> &identities) noexcept {
+    if (!identities.has_value()) {
+      return true;
+    }
+    if (identities->empty()) {
+      return false;
+    }
+    auto sorted = *identities;
+    std::sort(sorted.begin(), sorted.end());
+    return std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end();
   }
 
   EventEnvelopeDraft draft_;

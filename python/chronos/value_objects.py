@@ -59,6 +59,26 @@ class DecisionId(OpaqueId):
 
 
 @dataclass(frozen=True)
+class AuthorityId(OpaqueId):
+    pass
+
+
+@dataclass(frozen=True)
+class RuntimeId(OpaqueId):
+    pass
+
+
+@dataclass(frozen=True)
+class CorrelationId(OpaqueId):
+    pass
+
+
+@dataclass(frozen=True)
+class IntegrityId(OpaqueId):
+    pass
+
+
+@dataclass(frozen=True)
 class StreamId(OpaqueId):
     pass
 
