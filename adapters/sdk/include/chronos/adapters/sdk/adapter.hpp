@@ -24,6 +24,13 @@ enum class RecoveryMode : std::uint8_t {
   ProvenResume,
   SourceReplay
 };
+enum class SourceSequenceScope : std::uint8_t {
+  Connection,
+  SourceSession,
+  Listing,
+  ListingChannel,
+  VenueCrossSequence,
+};
 enum class ChannelFamily : std::uint8_t {
   OrderBookSnapshot,
   OrderBookDelta,
@@ -99,6 +106,15 @@ struct RetryPolicy final {
   }
 };
 
+struct SourceSequenceCapability final {
+  std::string field_name;
+  SourceSequenceScope scope{SourceSequenceScope::ListingChannel};
+  bool monotonic{};
+  bool duplicates_possible{};
+
+  bool operator==(const SourceSequenceCapability &) const = default;
+};
+
 struct CapabilityManifest final {
   std::string adapter_id;
   std::string implementation_version;
@@ -110,7 +126,7 @@ struct CapabilityManifest final {
   AuthenticationMode public_authentication{AuthenticationMode::None};
   std::vector<ChannelFamily> channels;
   std::vector<MarketClass> markets;
-  bool supports_source_sequences{};
+  std::vector<SourceSequenceCapability> source_sequences;
   std::vector<FramingMode> framing_modes;
   std::vector<CompressionMode> compression_modes;
   std::vector<RecoveryMode> recovery_modes;
@@ -136,7 +152,7 @@ struct CapabilityRequest final {
   FramingMode framing{FramingMode::TextMessage};
   CompressionMode compression{CompressionMode::None};
   RecoveryMode recovery{RecoveryMode::NewSession};
-  bool require_source_sequences{};
+  std::vector<SourceSequenceCapability> required_source_sequences;
   ResourceLimits required_limits;
 };
 
@@ -217,6 +233,9 @@ template <typename T> [[nodiscard]] constexpr bool known(T value) noexcept {
   } else if constexpr (std::is_same_v<T, RecoveryMode>) {
     return value >= RecoveryMode::NewSession &&
            value <= RecoveryMode::SourceReplay;
+  } else if constexpr (std::is_same_v<T, SourceSequenceScope>) {
+    return value >= SourceSequenceScope::Connection &&
+           value <= SourceSequenceScope::VenueCrossSequence;
   }
   return false;
 }
@@ -246,6 +265,13 @@ inline bool CapabilityManifest::valid() const noexcept {
       !detail::valid_token(conformance_result_id)) {
     return false;
   }
+  if (std::any_of(source_sequences.begin(), source_sequences.end(),
+                  [](const SourceSequenceCapability &sequence) {
+                    return !detail::valid_token(sequence.field_name) ||
+                           !detail::known(sequence.scope);
+                  })) {
+    return false;
+  }
   return std::all_of(schema_versions.begin(), schema_versions.end(),
                      detail::valid_token);
 }
@@ -264,6 +290,14 @@ negotiate(const CapabilityManifest &manifest,
       !detail::all_known<ChannelFamily>(request.required_channels) ||
       !detail::valid_token(request.schema_version) ||
       !request.required_limits.valid()) {
+    return NegotiationFailure::InvalidRequest;
+  }
+  if (std::any_of(request.required_source_sequences.begin(),
+                  request.required_source_sequences.end(),
+                  [](const SourceSequenceCapability &sequence) {
+                    return !detail::valid_token(sequence.field_name) ||
+                           !detail::known(sequence.scope);
+                  })) {
     return NegotiationFailure::InvalidRequest;
   }
   if (manifest.environment != request.environment) {
@@ -299,8 +333,12 @@ negotiate(const CapabilityManifest &manifest,
                                          request.compression)) {
     return NegotiationFailure::CompressionUnsupported;
   }
-  if (request.require_source_sequences && !manifest.supports_source_sequences) {
-    return NegotiationFailure::SourceSequencesUnsupported;
+  for (const auto &required : request.required_source_sequences) {
+    if (std::find(manifest.source_sequences.begin(),
+                  manifest.source_sequences.end(),
+                  required) == manifest.source_sequences.end()) {
+      return NegotiationFailure::SourceSequencesUnsupported;
+    }
   }
   if (request.required_limits.maximum_frame_bytes >
           manifest.limits.maximum_frame_bytes ||

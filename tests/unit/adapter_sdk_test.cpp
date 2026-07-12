@@ -22,7 +22,11 @@ sdk::CapabilityRequest request() {
           .framing = sdk::FramingMode::TextMessage,
           .compression = sdk::CompressionMode::None,
           .recovery = sdk::RecoveryMode::NewSession,
-          .require_source_sequences = true,
+          .required_source_sequences =
+              {{.field_name = "seq",
+                .scope = sdk::SourceSequenceScope::VenueCrossSequence,
+                .monotonic = true,
+                .duplicates_possible = true}},
           .required_limits = {.maximum_frame_bytes = 1U << 20U,
                               .maximum_message_bytes = 1U << 20U,
                               .maximum_nesting_depth = 64,
@@ -71,4 +75,13 @@ TEST_CASE("unknown capabilities and active reconfiguration fail closed") {
   CHECK(adapter.start());
   CHECK(adapter.configure(request()) ==
         sdk::NegotiationFailure::LifecycleUnavailable);
+}
+
+TEST_CASE("sequence negotiation requires matching field semantics and scope") {
+  BybitAdapter adapter(sdk::EnvironmentClass::Test);
+  auto incompatible = request();
+  incompatible.required_source_sequences.front().scope =
+      sdk::SourceSequenceScope::ListingChannel;
+  CHECK(adapter.configure(incompatible) ==
+        sdk::NegotiationFailure::SourceSequencesUnsupported);
 }
