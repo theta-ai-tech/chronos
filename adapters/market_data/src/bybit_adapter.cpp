@@ -22,9 +22,9 @@ BybitAdapter::BybitAdapter(sdk::EnvironmentClass environment)
                             sdk::MarketClass::LinearPerpetual,
                             sdk::MarketClass::InversePerpetual},
                 .supports_source_sequences = true,
-                .supports_resume = false,
-                .supports_replay = false,
-                .supports_compression = false,
+                .framing_modes = {sdk::FramingMode::TextMessage},
+                .compression_modes = {sdk::CompressionMode::None},
+                .recovery_modes = {sdk::RecoveryMode::NewSession},
                 .supports_private_feeds = false,
                 .supports_order_entry = false,
                 .supports_level_three = false,
@@ -45,16 +45,22 @@ sdk::ConnectionState BybitAdapter::connection_state() const noexcept {
   return connection_state_;
 }
 
-sdk::HealthState BybitAdapter::health_state() const noexcept {
-  return health_state_;
+sdk::HealthState
+BybitAdapter::health_state(sdk::HealthScope scope) const noexcept {
+  const auto index = static_cast<std::size_t>(scope);
+  return index < health_states_.size() ? health_states_[index]
+                                       : sdk::HealthState::Unknown;
 }
 
 std::optional<sdk::NegotiationFailure>
 BybitAdapter::configure(const sdk::CapabilityRequest &request) noexcept {
+  if (connection_state_ != sdk::ConnectionState::Configured) {
+    return sdk::NegotiationFailure::LifecycleUnavailable;
+  }
   const auto failure = sdk::negotiate(manifest_, request);
   configured_ = !failure.has_value();
-  health_state_ =
-      configured_ ? sdk::HealthState::Starting : sdk::HealthState::Incompatible;
+  health_states_.fill(configured_ ? sdk::HealthState::Starting
+                                  : sdk::HealthState::Incompatible);
   return failure;
 }
 
@@ -63,13 +69,13 @@ bool BybitAdapter::start() noexcept {
     return false;
   }
   connection_state_ = sdk::ConnectionState::Connecting;
-  health_state_ = sdk::HealthState::Starting;
+  health_states_.fill(sdk::HealthState::Starting);
   return true;
 }
 
 void BybitAdapter::stop() noexcept {
   connection_state_ = sdk::ConnectionState::Closed;
-  health_state_ = sdk::HealthState::Unknown;
+  health_states_.fill(sdk::HealthState::Unknown);
 }
 
 } // namespace chronos::adapters::market_data

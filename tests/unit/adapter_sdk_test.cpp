@@ -19,8 +19,15 @@ sdk::CapabilityRequest request() {
           .market = sdk::MarketClass::LinearPerpetual,
           .schema_version = "bybit-v5-public-v1",
           .subscription_count = 3,
-          .require_resume = false,
-          .require_replay = false};
+          .framing = sdk::FramingMode::TextMessage,
+          .compression = sdk::CompressionMode::None,
+          .recovery = sdk::RecoveryMode::NewSession,
+          .require_source_sequences = true,
+          .required_limits = {.maximum_frame_bytes = 1U << 20U,
+                              .maximum_message_bytes = 1U << 20U,
+                              .maximum_nesting_depth = 64,
+                              .maximum_expansion_ratio = 1,
+                              .maximum_subscriptions = 3}};
 }
 } // namespace
 
@@ -41,14 +48,27 @@ TEST_CASE("Bybit implements the venue-neutral source adapter SDK") {
 TEST_CASE("capability negotiation fails closed before activation") {
   BybitAdapter adapter(sdk::EnvironmentClass::Test);
   auto unsupported = request();
-  unsupported.require_resume = true;
+  unsupported.recovery = sdk::RecoveryMode::ProvenResume;
   CHECK(adapter.configure(unsupported) ==
-        sdk::NegotiationFailure::ResumeUnsupported);
+        sdk::NegotiationFailure::RecoveryUnsupported);
   CHECK(!adapter.start());
-  CHECK(adapter.health_state() == sdk::HealthState::Incompatible);
+  CHECK(adapter.health_state(sdk::HealthScope::Transport) ==
+        sdk::HealthState::Incompatible);
 
   unsupported = request();
   unsupported.subscription_count = 100;
   CHECK(adapter.configure(unsupported) ==
         sdk::NegotiationFailure::SubscriptionLimitExceeded);
+}
+
+TEST_CASE("unknown capabilities and active reconfiguration fail closed") {
+  BybitAdapter adapter(sdk::EnvironmentClass::Test);
+  auto invalid = request();
+  invalid.required_channels = {static_cast<sdk::ChannelFamily>(255)};
+  CHECK(adapter.configure(invalid) == sdk::NegotiationFailure::InvalidRequest);
+
+  CHECK(!adapter.configure(request()).has_value());
+  CHECK(adapter.start());
+  CHECK(adapter.configure(request()) ==
+        sdk::NegotiationFailure::LifecycleUnavailable);
 }
