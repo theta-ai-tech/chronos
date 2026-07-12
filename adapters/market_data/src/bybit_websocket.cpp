@@ -148,13 +148,16 @@ public:
         }
       }
     }
-    const auto start = position_;
-    while (position_ < input_.size() && input_[position_] != ',' &&
-           input_[position_] != '}' && input_[position_] != ']' &&
-           std::isspace(static_cast<unsigned char>(input_[position_])) == 0) {
-      ++position_;
+    if (input_.substr(position_, 4) == "true" ||
+        input_.substr(position_, 4) == "null") {
+      position_ += 4;
+      return true;
     }
-    return position_ > start;
+    if (input_.substr(position_, 5) == "false") {
+      position_ += 5;
+      return true;
+    }
+    return skip_number();
   }
 
   [[nodiscard]] bool finished() noexcept {
@@ -163,6 +166,58 @@ public:
   }
 
 private:
+  bool skip_number() noexcept {
+    const auto start = position_;
+    if (position_ < input_.size() && input_[position_] == '-') {
+      ++position_;
+    }
+    if (position_ >= input_.size()) {
+      position_ = start;
+      return false;
+    }
+    if (input_[position_] == '0') {
+      ++position_;
+    } else if (input_[position_] >= '1' && input_[position_] <= '9') {
+      while (position_ < input_.size() && input_[position_] >= '0' &&
+             input_[position_] <= '9') {
+        ++position_;
+      }
+    } else {
+      position_ = start;
+      return false;
+    }
+    if (position_ < input_.size() && input_[position_] == '.') {
+      ++position_;
+      const auto fraction_start = position_;
+      while (position_ < input_.size() && input_[position_] >= '0' &&
+             input_[position_] <= '9') {
+        ++position_;
+      }
+      if (position_ == fraction_start) {
+        position_ = start;
+        return false;
+      }
+    }
+    if (position_ < input_.size() &&
+        (input_[position_] == 'e' || input_[position_] == 'E')) {
+      ++position_;
+      if (position_ < input_.size() &&
+          (input_[position_] == '+' || input_[position_] == '-')) {
+        ++position_;
+      }
+      const auto exponent_start = position_;
+      while (position_ < input_.size() && input_[position_] >= '0' &&
+             input_[position_] <= '9') {
+        ++position_;
+      }
+      if (position_ == exponent_start) {
+        position_ = start;
+        return false;
+      }
+    }
+    return true;
+  }
+
   std::string_view input_;
   std::size_t position_{};
 };
@@ -179,6 +234,7 @@ BybitControlResponse parse_bybit_control_response(std::string_view payload) {
     return BybitControlResponse::Malformed;
   }
   std::optional<std::string> operation;
+  std::optional<std::string> request_id;
   std::optional<bool> success;
   if (cursor.consume('}')) {
     return cursor.finished() ? BybitControlResponse::Other
@@ -195,6 +251,14 @@ BybitControlResponse parse_bybit_control_response(std::string_view payload) {
       }
       operation = cursor.string();
       if (!operation.has_value()) {
+        return BybitControlResponse::Malformed;
+      }
+    } else if (*key == "req_id") {
+      if (request_id.has_value()) {
+        return BybitControlResponse::Malformed;
+      }
+      request_id = cursor.string();
+      if (!request_id.has_value()) {
         return BybitControlResponse::Malformed;
       }
     } else if (*key == "success") {
@@ -221,8 +285,11 @@ BybitControlResponse parse_bybit_control_response(std::string_view payload) {
   if (!operation.has_value() || *operation != "subscribe") {
     return BybitControlResponse::Other;
   }
-  if (!success.has_value()) {
+  if (!success.has_value() || !request_id.has_value()) {
     return BybitControlResponse::Malformed;
+  }
+  if (*request_id != "chronos-m2") {
+    return BybitControlResponse::Other;
   }
   return *success ? BybitControlResponse::SubscriptionAccepted
                   : BybitControlResponse::SubscriptionRejected;
@@ -294,6 +361,7 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
             .detail = "invalid Bybit session configuration"};
   }
   early_messages_.clear();
+  early_message_overflowed_ = false;
   subscribed_ = false;
   auto connected = transport_->connect(bybit_public_websocket_url(subscription),
                                        timeout, maximum_message_bytes);
@@ -308,7 +376,14 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
             .detail = sent.ok() ? "partial subscription write" : sent.detail};
   }
   const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (early_messages_.size() < 8) {
+  const auto retain_early = [this](WebSocketMessage message) {
+    if (early_messages_.size() == 8) {
+      early_messages_.pop_front();
+      early_message_overflowed_ = true;
+    }
+    early_messages_.push_back(std::move(message));
+  };
+  while (true) {
     const auto remaining =
         std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
@@ -323,7 +398,7 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
       return {.failure = response.failure, .detail = response.detail};
     }
     if (response.value.kind != WebSocketMessageKind::Text) {
-      early_messages_.push_back(std::move(response.value));
+      retain_early(std::move(response.value));
       continue;
     }
     switch (parse_bybit_control_response(message_text(response.value))) {
@@ -339,13 +414,10 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
       return {.failure = TransportFailure::Protocol,
               .detail = "malformed Bybit control response"};
     case BybitControlResponse::Other:
-      early_messages_.push_back(std::move(response.value));
+      retain_early(std::move(response.value));
       break;
     }
   }
-  transport_->close();
-  return {.failure = TransportFailure::Protocol,
-          .detail = "subscription acknowledgement exceeded early-frame bound"};
 }
 
 TransportResult<WebSocketMessage>
@@ -369,6 +441,10 @@ BybitWebSocketSession::send_heartbeat(std::chrono::milliseconds timeout) {
             .detail = "session is not subscribed"};
   }
   return transport_->send_text("{\"op\":\"ping\"}", timeout);
+}
+
+bool BybitWebSocketSession::early_message_overflowed() const noexcept {
+  return early_message_overflowed_;
 }
 
 void BybitWebSocketSession::close() noexcept {

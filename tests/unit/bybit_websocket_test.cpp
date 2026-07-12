@@ -96,7 +96,7 @@ TEST_CASE("session connects and subscribes through the transport seam") {
   auto transport = std::make_unique<FakeTransport>();
   auto *observer = transport.get();
   observer->messages_.push_back(text_message(
-      R"({"success":true,"ret_msg":"","op":"subscribe","conn_id":"c"})"));
+      R"({"success":true,"ret_msg":"","op":"subscribe","req_id":"chronos-m2","conn_id":"c"})"));
   market_data::BybitWebSocketSession session(std::move(transport));
   const auto result = session.connect_and_subscribe(subscription(), 2s, 4096);
   CHECK(result.ok());
@@ -112,32 +112,61 @@ TEST_CASE("session connects and subscribes through the transport seam") {
 }
 
 TEST_CASE("Bybit control responses are parsed structurally and fail closed") {
-  CHECK(market_data::parse_bybit_control_response(
-            R"({"op":"subscribe","success":true,"data":{"x":[1,2]}})") ==
-        market_data::BybitControlResponse::SubscriptionAccepted);
-  CHECK(market_data::parse_bybit_control_response(
-            R"({"success":false,"op":"subscribe","ret_msg":"bad"})") ==
-        market_data::BybitControlResponse::SubscriptionRejected);
+  CHECK(
+      market_data::parse_bybit_control_response(
+          R"({"op":"subscribe","success":true,"req_id":"chronos-m2","data":{"x":[1,2]}})") ==
+      market_data::BybitControlResponse::SubscriptionAccepted);
+  CHECK(
+      market_data::parse_bybit_control_response(
+          R"({"success":false,"op":"subscribe","req_id":"chronos-m2","ret_msg":"bad"})") ==
+      market_data::BybitControlResponse::SubscriptionRejected);
   CHECK(market_data::parse_bybit_control_response(
             R"({"success":true,"op":"ping"})") ==
         market_data::BybitControlResponse::Other);
+  CHECK(
+      market_data::parse_bybit_control_response(
+          R"({"success":true,"ret_msg":"\u03b1","op":"subscribe","req_id":"chronos-m2"})") ==
+      market_data::BybitControlResponse::SubscriptionAccepted);
+  CHECK(
+      market_data::parse_bybit_control_response(
+          R"({"success":true,"success":false,"op":"subscribe","req_id":"chronos-m2"})") ==
+      market_data::BybitControlResponse::Malformed);
   CHECK(market_data::parse_bybit_control_response(
-            R"({"success":true,"ret_msg":"\u03b1","op":"subscribe"})") ==
-        market_data::BybitControlResponse::SubscriptionAccepted);
-  CHECK(market_data::parse_bybit_control_response(
-            R"({"success":true,"success":false,"op":"subscribe"})") ==
-        market_data::BybitControlResponse::Malformed);
+            R"({"success":true,"op":"subscribe","req_id":"stale"})") ==
+        market_data::BybitControlResponse::Other);
+  CHECK(
+      market_data::parse_bybit_control_response(
+          R"({"success":true,"op":"subscribe","req_id":"chronos-m2","extra":garbage})") ==
+      market_data::BybitControlResponse::Malformed);
 }
 
 TEST_CASE("session does not become ready when Bybit rejects subscription") {
   auto transport = std::make_unique<FakeTransport>();
   auto *observer = transport.get();
-  observer->messages_.push_back(
-      text_message(R"({"success":false,"op":"subscribe"})"));
+  observer->messages_.push_back(text_message(
+      R"({"success":false,"op":"subscribe","req_id":"chronos-m2"})"));
   market_data::BybitWebSocketSession session(std::move(transport));
   const auto result = session.connect_and_subscribe(subscription(), 2s, 4096);
   CHECK(result.failure == market_data::TransportFailure::SubscriptionRejected);
   CHECK(observer->closed_);
+}
+
+TEST_CASE("pre-ack market pressure stays bounded without rejecting readiness") {
+  auto transport = std::make_unique<FakeTransport>();
+  auto *observer = transport.get();
+  for (int index = 0; index < 10; ++index) {
+    observer->messages_.push_back(
+        text_message(R"({"topic":"orderbook.50.BTCUSDT","data":[]})"));
+  }
+  observer->messages_.push_back(text_message(
+      R"({"success":true,"op":"subscribe","req_id":"chronos-m2"})"));
+  market_data::BybitWebSocketSession session(std::move(transport));
+  const auto result = session.connect_and_subscribe(subscription(), 2s, 4096);
+  CHECK(result.ok());
+  CHECK(session.early_message_overflowed());
+  for (int index = 0; index < 8; ++index) {
+    CHECK(session.receive(2s).ok());
+  }
 }
 
 TEST_CASE("frame assembler preserves data around interleaved control frames") {

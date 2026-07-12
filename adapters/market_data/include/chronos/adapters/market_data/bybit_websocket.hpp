@@ -48,11 +48,13 @@ public:
   receive(std::chrono::milliseconds timeout);
   [[nodiscard]] TransportResult<std::size_t>
   send_heartbeat(std::chrono::milliseconds timeout);
+  [[nodiscard]] bool early_message_overflowed() const noexcept;
   void close() noexcept;
 
 private:
   std::unique_ptr<WebSocketTransport> transport_;
   std::deque<WebSocketMessage> early_messages_;
+  bool early_message_overflowed_{};
   bool subscribed_{};
 };
 
