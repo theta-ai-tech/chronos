@@ -1,13 +1,17 @@
-add_library(chronos_adapter_sdk INTERFACE)
+add_library(chronos_adapter_sdk STATIC
+  sdk/src/source_event.cpp
+  sdk/src/sha256.cpp)
 
 target_include_directories(chronos_adapter_sdk
-  INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/sdk/include)
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/sdk/include)
 
 target_link_libraries(chronos_adapter_sdk
-  INTERFACE chronos_contracts chronos_options)
+  PUBLIC chronos_contracts chronos_options
+  PRIVATE chronos_warnings)
 
 add_library(chronos_bybit_adapter STATIC
   market_data/src/bybit_adapter.cpp
+  market_data/src/source_capture.cpp
   market_data/src/bybit_websocket.cpp
   market_data/src/websocket_framer.cpp
   market_data/src/curl_websocket_transport.cpp)

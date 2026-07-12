@@ -2,18 +2,31 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace chronos::adapters::market_data {
 
-enum class WebSocketMessageKind { Text, Binary, Ping, Pong, Close };
+enum class WebSocketMessageKind { Text, Binary, Ping, Pong, Close, Unknown };
+enum class WebSocketIngressIntegrity {
+  Complete,
+  Malformed,
+  Unsupported,
+  Truncated,
+  ResourceLimitExceeded,
+};
 
 struct WebSocketMessage final {
   WebSocketMessageKind kind{WebSocketMessageKind::Text};
   std::vector<std::byte> payload;
+  std::int64_t monotonic_receive_time_nanoseconds{};
+  bool fragmented{};
+  WebSocketIngressIntegrity integrity{WebSocketIngressIntegrity::Complete};
+  std::size_t original_payload_size{};
 };
 
 enum class TransportFailure {
@@ -31,12 +44,14 @@ enum class TransportFailure {
   UnsupportedFrame,
   Protocol,
   SubscriptionRejected,
+  CaptureHandoff,
 };
 
 template <typename T> struct TransportResult final {
   T value{};
   TransportFailure failure{TransportFailure::None};
   std::string detail;
+  std::optional<WebSocketMessage> failure_evidence;
 
   [[nodiscard]] bool ok() const noexcept {
     return failure == TransportFailure::None;

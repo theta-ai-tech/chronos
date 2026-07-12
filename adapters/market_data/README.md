@@ -4,13 +4,16 @@
 
 Contains concrete public market-data source adapters. The initial Bybit adapter
 implements the shared SDK and a bounded public V5 WebSocket transport for L2
-order-book and public-trade framing. Semantic decoding remains an M3 concern.
+order-book and public-trade framing. Every framed ingress message can be handed
+to the M2.3 immutable source-capture pipeline before control interpretation.
+Semantic decoding remains an M3 concern.
 
 - **Parent:** `adapters/`
 - **Owner:** Inherits `adapters/` ownership.
 - **Plane:** Inherits `adapters/` plane.
 - **Language:** Inherits `adapters/` language policy.
 - **Public API:** `bybit_adapter.hpp`, `bybit_websocket.hpp`, and
-  `websocket_transport.hpp` under `chronos/adapters/market_data/`
+  `websocket_transport.hpp`, `source_capture.hpp` under
+  `chronos/adapters/market_data/`
 - **Purpose:** Venue market-data adapters (Bybit first) and capture.
 - **Accepted dependencies:** inherits `adapters/` rules (see parent README).
