@@ -80,9 +80,10 @@ class CurlWebSocketTransport final : public WebSocketTransport {
 public:
   ~CurlWebSocketTransport() override { close(); }
 
-  TransportResult<bool> connect(std::string_view url,
-                                std::chrono::milliseconds timeout,
-                                std::size_t maximum_message_bytes) override {
+  TransportResult<bool>
+  connect(std::string_view url, std::chrono::milliseconds timeout,
+          std::size_t maximum_message_bytes,
+          const std::function<bool()> &cancelled) override {
     close();
     if (url.empty() || timeout.count() <= 0 || maximum_message_bytes == 0 ||
         timeout.count() > std::numeric_limits<long>::max() ||
@@ -110,7 +111,12 @@ public:
     curl_easy_setopt(handle_, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(handle_, CURLOPT_PROTOCOLS_STR, "wss");
     curl_easy_setopt(handle_, CURLOPT_ERRORBUFFER, error_.data());
+    cancelled_ = &cancelled;
+    curl_easy_setopt(handle_, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(handle_, CURLOPT_XFERINFOFUNCTION, &cancel_transfer);
+    curl_easy_setopt(handle_, CURLOPT_XFERINFODATA, this);
     const auto result = curl_easy_perform(handle_);
+    cancelled_ = nullptr;
     if (result != CURLE_OK) {
       const auto failure = map_curl_failure(result);
       const auto detail = curl_detail(result, error_);
@@ -122,8 +128,8 @@ public:
   }
 
   TransportResult<std::size_t>
-  send_text(std::string_view payload,
-            std::chrono::milliseconds timeout) override {
+  send_text(std::string_view payload, std::chrono::milliseconds timeout,
+            const std::function<bool()> &cancelled) override {
     if (!connected_ || handle_ == nullptr || payload.empty() ||
         timeout.count() <= 0) {
       return {.failure = TransportFailure::InvalidConfiguration,
@@ -132,13 +138,18 @@ public:
     std::size_t offset = 0;
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (offset < payload.size()) {
+      if (cancelled && cancelled()) {
+        return {.value = offset,
+                .failure = TransportFailure::Closed,
+                .detail = "WebSocket send cancelled"};
+      }
       std::size_t sent = 0;
       const auto result =
           curl_ws_send(handle_, payload.data() + offset,
                        payload.size() - offset, &sent, 0, CURLWS_TEXT);
       offset += sent;
       if (result == CURLE_AGAIN) {
-        if (!wait_for_socket(POLLOUT, deadline)) {
+        if (!wait_for_socket(POLLOUT, deadline, cancelled)) {
           return {.value = offset,
                   .failure = TransportFailure::Timeout,
                   .detail = "subscription send timed out"};
@@ -155,7 +166,8 @@ public:
   }
 
   TransportResult<WebSocketMessage>
-  receive(std::chrono::milliseconds timeout) override {
+  receive(std::chrono::milliseconds timeout,
+          const std::function<bool()> &cancelled) override {
     if (!connected_ || handle_ == nullptr || timeout.count() <= 0) {
       return {.failure = TransportFailure::InvalidConfiguration,
               .detail = "WebSocket is not connected"};
@@ -164,12 +176,16 @@ public:
     std::array<std::byte, 64U * 1024U> buffer{};
 
     while (true) {
+      if (cancelled && cancelled()) {
+        return {.failure = TransportFailure::Closed,
+                .detail = "WebSocket receive cancelled"};
+      }
       std::size_t received = 0;
       const curl_ws_frame *metadata = nullptr;
       const auto result = curl_ws_recv(handle_, buffer.data(), buffer.size(),
                                        &received, &metadata);
       if (result == CURLE_AGAIN) {
-        if (!wait_for_socket(POLLIN, deadline)) {
+        if (!wait_for_socket(POLLIN, deadline, cancelled)) {
           return {.failure = TransportFailure::Timeout,
                   .detail = "WebSocket receive timed out"};
         }
@@ -261,8 +277,18 @@ public:
   }
 
 private:
+  static int cancel_transfer(void *context, curl_off_t, curl_off_t, curl_off_t,
+                             curl_off_t) {
+    const auto *self = static_cast<const CurlWebSocketTransport *>(context);
+    return self->cancelled_ != nullptr && *self->cancelled_ &&
+                   (*self->cancelled_)()
+               ? 1
+               : 0;
+  }
+
   bool wait_for_socket(short events,
-                       std::chrono::steady_clock::time_point deadline) {
+                       std::chrono::steady_clock::time_point deadline,
+                       const std::function<bool()> &cancelled) {
     curl_socket_t socket = CURL_SOCKET_BAD;
     if (curl_easy_getinfo(handle_, CURLINFO_ACTIVESOCKET, &socket) !=
             CURLE_OK ||
@@ -276,10 +302,19 @@ private:
       return false;
     }
     pollfd descriptor{.fd = socket, .events = events, .revents = 0};
-    const auto poll_timeout = static_cast<int>(std::min<std::int64_t>(
-        remaining.count(), std::numeric_limits<int>::max()));
-    return poll(&descriptor, 1, poll_timeout) > 0 &&
-           (descriptor.revents & events) != 0;
+    while (!(cancelled && cancelled())) {
+      const auto current_remaining =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              deadline - std::chrono::steady_clock::now());
+      if (current_remaining.count() <= 0)
+        return false;
+      const auto poll_timeout = static_cast<int>(
+          std::min<std::int64_t>(current_remaining.count(), 25));
+      if (poll(&descriptor, 1, poll_timeout) > 0 &&
+          (descriptor.revents & events) != 0)
+        return true;
+    }
+    return false;
   }
 
   CURL *handle_{};
@@ -288,6 +323,7 @@ private:
   std::string url_;
   std::array<char, CURL_ERROR_SIZE> error_{};
   std::optional<WebSocketMessageAssembler> assembler_;
+  const std::function<bool()> *cancelled_{};
 };
 
 } // namespace

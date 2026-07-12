@@ -8,12 +8,17 @@ order-book and public-trade framing. Every framed ingress message can be handed
 to the M2.3 immutable source-capture pipeline before control interpretation.
 Semantic decoding remains an M3 concern.
 
+M2.4 adds bounded reconnect coordination, unique capture-session identity per
+attempt, capture-owned source-session epochs, scoped health, and explicit
+gapped continuity after every unproven reconnect. It does not allocate the
+normalized stream epochs owned by the later stream authority.
+
 - **Parent:** `adapters/`
 - **Owner:** Inherits `adapters/` ownership.
 - **Plane:** Inherits `adapters/` plane.
 - **Language:** Inherits `adapters/` language policy.
 - **Public API:** `bybit_adapter.hpp`, `bybit_websocket.hpp`, and
-  `websocket_transport.hpp`, `source_capture.hpp` under
+  `websocket_transport.hpp`, `source_capture.hpp`, and `reconnect.hpp` under
   `chronos/adapters/market_data/`
 - **Purpose:** Venue market-data adapters (Bybit first) and capture.
 - **Accepted dependencies:** inherits `adapters/` rules (see parent README).

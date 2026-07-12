@@ -354,7 +354,7 @@ BybitWebSocketSession::BybitWebSocketSession(
 
 TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
     const BybitSubscription &subscription, std::chrono::milliseconds timeout,
-    std::size_t maximum_message_bytes) {
+    std::size_t maximum_message_bytes, const std::function<bool()> &cancelled) {
   if (!transport_ || !valid_bybit_subscription(subscription) ||
       timeout.count() <= 0 || maximum_message_bytes == 0) {
     return {.failure = TransportFailure::InvalidConfiguration,
@@ -363,19 +363,39 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
   early_messages_.clear();
   early_message_overflowed_ = false;
   subscribed_ = false;
-  auto connected = transport_->connect(bybit_public_websocket_url(subscription),
-                                       timeout, maximum_message_bytes);
+  const auto was_cancelled = [&cancelled] { return cancelled && cancelled(); };
+  if (was_cancelled()) {
+    return {.failure = TransportFailure::Closed,
+            .detail = "Bybit session establishment cancelled"};
+  }
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  const auto budget_remaining = [&deadline] {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+  };
+  auto connected =
+      transport_->connect(bybit_public_websocket_url(subscription),
+                          budget_remaining(), maximum_message_bytes, cancelled);
   if (!connected.ok()) {
     return connected;
   }
+  if (was_cancelled()) {
+    transport_->close();
+    return {.failure = TransportFailure::Closed,
+            .detail = "Bybit session establishment cancelled"};
+  }
   const auto payload = bybit_subscription_message(subscription);
-  auto sent = transport_->send_text(payload, timeout);
+  if (budget_remaining().count() <= 0) {
+    transport_->close();
+    return {.failure = TransportFailure::Timeout,
+            .detail = "Bybit session establishment timed out"};
+  }
+  auto sent = transport_->send_text(payload, budget_remaining(), cancelled);
   if (!sent.ok() || sent.value != payload.size()) {
     transport_->close();
     return {.failure = sent.ok() ? TransportFailure::Send : sent.failure,
             .detail = sent.ok() ? "partial subscription write" : sent.detail};
   }
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
   const auto retain_early = [this](WebSocketMessage message) {
     if (early_messages_.size() == 8) {
       early_messages_.pop_front();
@@ -384,6 +404,11 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
     early_messages_.push_back(std::move(message));
   };
   while (true) {
+    if (was_cancelled()) {
+      transport_->close();
+      return {.failure = TransportFailure::Closed,
+              .detail = "Bybit session establishment cancelled"};
+    }
     const auto remaining =
         std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now());
@@ -392,7 +417,7 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
       return {.failure = TransportFailure::Timeout,
               .detail = "Bybit subscription acknowledgement timed out"};
     }
-    auto response = transport_->receive(remaining);
+    auto response = transport_->receive(remaining, cancelled);
     if (!response.ok()) {
       if (response.failure_evidence.has_value() &&
           !observe(*response.failure_evidence)) {
@@ -469,6 +494,10 @@ BybitWebSocketSession::send_heartbeat(std::chrono::milliseconds timeout) {
             .detail = "session is not subscribed"};
   }
   return transport_->send_text("{\"op\":\"ping\"}", timeout);
+}
+
+bool BybitWebSocketSession::capture_enabled() const noexcept {
+  return static_cast<bool>(observer_);
 }
 
 bool BybitWebSocketSession::early_message_overflowed() const noexcept {
