@@ -68,3 +68,14 @@ TEST_CASE("C++ codec rejects truncation and trailing bytes") {
   bytes.push_back(0);
   CHECK(!decode_conformance_frame(bytes).has_value());
 }
+
+TEST_CASE("C++ codec rejects hostile counts and invalid UTF-8") {
+  auto bytes = fixture_bytes();
+  for (std::size_t index = 136; index < 140; ++index) {
+    bytes[index] = 0xFF;
+  }
+  CHECK(!decode_conformance_frame(bytes).has_value());
+  bytes = fixture_bytes();
+  bytes[58] = 0xFF;
+  CHECK(!decode_conformance_frame(bytes).has_value());
+}

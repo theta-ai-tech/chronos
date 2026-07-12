@@ -145,7 +145,10 @@ class _Reader:
         return decode() if self.boolean() else None
 
     def vector(self, decode: Callable[[], T]) -> tuple[T, ...]:
-        return tuple(decode() for _ in range(self.u32()))
+        count = self.u32()
+        if count > len(self.data) - self.position:
+            raise ContractValueError("impossible conformance vector count")
+        return tuple(decode() for _ in range(count))
 
     def finish(self) -> None:
         if self.position != len(self.data):

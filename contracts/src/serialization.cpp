@@ -14,6 +14,47 @@ namespace {
 
 constexpr std::array<std::uint8_t, 5> kMagic{'C', 'H', 'R', '1', 1};
 
+[[nodiscard]] bool valid_utf8(std::span<const std::uint8_t> bytes) noexcept {
+  std::size_t index = 0;
+  while (index < bytes.size()) {
+    const auto first = bytes[index++];
+    if (first <= 0x7F) {
+      continue;
+    }
+    std::size_t continuation_count = 0;
+    std::uint32_t codepoint = 0;
+    if (first >= 0xC2 && first <= 0xDF) {
+      continuation_count = 1;
+      codepoint = first & 0x1FU;
+    } else if (first >= 0xE0 && first <= 0xEF) {
+      continuation_count = 2;
+      codepoint = first & 0x0FU;
+    } else if (first >= 0xF0 && first <= 0xF4) {
+      continuation_count = 3;
+      codepoint = first & 0x07U;
+    } else {
+      return false;
+    }
+    if (continuation_count > bytes.size() - index) {
+      return false;
+    }
+    for (std::size_t offset = 0; offset < continuation_count; ++offset) {
+      const auto continuation = bytes[index++];
+      if ((continuation & 0xC0U) != 0x80U) {
+        return false;
+      }
+      codepoint = (codepoint << 6U) | (continuation & 0x3FU);
+    }
+    const bool overlong = (continuation_count == 2 && codepoint < 0x800U) ||
+                          (continuation_count == 3 && codepoint < 0x10000U);
+    if (overlong || (codepoint >= 0xD800U && codepoint <= 0xDFFFU) ||
+        codepoint > 0x10FFFFU) {
+      return false;
+    }
+  }
+  return true;
+}
+
 class Writer final {
 public:
   void u8(std::uint8_t value) { bytes_.push_back(value); }
@@ -110,6 +151,9 @@ public:
   }
   std::string text() {
     const auto value = blob();
+    if (!valid_utf8(value)) {
+      throw std::runtime_error("invalid UTF-8 in conformance frame");
+    }
     return {reinterpret_cast<const char *>(value.data()), value.size()};
   }
   template <typename Id> Id id() {
@@ -135,6 +179,9 @@ public:
   template <typename Decode> auto vector(Decode decode) {
     using Value = decltype(decode());
     const auto count = u32();
+    if (count > remaining()) {
+      throw std::runtime_error("impossible conformance vector count");
+    }
     std::vector<Value> values;
     values.reserve(count);
     for (std::uint32_t index = 0; index < count; ++index) {
@@ -144,6 +191,9 @@ public:
   }
   [[nodiscard]] bool done() const noexcept {
     return position_ == bytes_.size();
+  }
+  [[nodiscard]] std::size_t remaining() const noexcept {
+    return bytes_.size() - position_;
   }
 
 private:

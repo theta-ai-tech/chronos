@@ -164,3 +164,18 @@ def test_both_boundaries_reject_noncanonical_frames(mutation) -> None:
         decode_conformance_frame(invalid)
     with pytest.raises(BoundaryCallError):
         ChronosBoundary().round_trip_contract_frame(invalid)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value[:136] + b"\xff\xff\xff\xff" + value[140:],
+        lambda value: value[:58] + b"\xff" + value[59:],
+    ],
+)
+def test_both_decoders_reject_hostile_counts_and_invalid_utf8(mutation) -> None:
+    invalid = mutation(fixture_bytes())
+    with pytest.raises(ContractValueError):
+        decode_conformance_frame(invalid)
+    with pytest.raises(BoundaryCallError):
+        ChronosBoundary().round_trip_contract_frame(invalid)
