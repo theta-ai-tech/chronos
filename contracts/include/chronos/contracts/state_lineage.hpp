@@ -66,6 +66,11 @@ public:
 
     bool less = false;
     bool greater = false;
+    if (run_input_sequence_ < other.run_input_sequence_) {
+      less = true;
+    } else if (run_input_sequence_ > other.run_input_sequence_) {
+      greater = true;
+    }
     for (std::size_t index = 0; index < cursors_.size(); ++index) {
       const auto &left = cursors_[index];
       const auto &right = other.cursors_[index];

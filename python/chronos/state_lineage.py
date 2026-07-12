@@ -68,8 +68,8 @@ class StateLineage:
         if self.run_id != other.run_id or len(self.cursors) != len(other.cursors):
             return LineageRelation.INCOMPARABLE
 
-        less = False
-        greater = False
+        less = self.run_input_sequence < other.run_input_sequence
+        greater = self.run_input_sequence > other.run_input_sequence
         for left, right in zip(self.cursors, other.cursors):
             if left.stream_id != right.stream_id or left.stream_epoch != right.stream_epoch:
                 return LineageRelation.INCOMPARABLE

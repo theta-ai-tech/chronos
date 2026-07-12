@@ -66,6 +66,15 @@ def test_concurrent_cuts_do_not_collapse_to_run_input_scalar() -> None:
     assert right.compare(left) is LineageRelation.CONCURRENT
 
 
+def test_run_input_position_is_one_vector_dimension() -> None:
+    earlier = lineage(2, 2, 10)
+    later_same_cursors = lineage(2, 2, 11)
+    cursor_ahead_input_behind = lineage(3, 3, 9)
+    assert earlier.compare(later_same_cursors) is LineageRelation.PRECEDES
+    assert later_same_cursors.compare(earlier) is LineageRelation.SUCCEEDS
+    assert earlier.compare(cursor_ahead_input_behind) is LineageRelation.CONCURRENT
+
+
 def test_different_runs_or_epochs_are_incomparable() -> None:
     base = lineage(1, 1)
     other_run = StateLineage.from_cursors(

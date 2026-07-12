@@ -63,6 +63,17 @@ TEST_CASE("concurrent cuts do not collapse to run-input scalar order") {
   CHECK(right.compare(left) == LineageRelation::concurrent);
 }
 
+TEST_CASE("run-input position participates as one vector dimension") {
+  const auto earlier = lineage({cursor('1', 2), cursor('2', 2)}, 10);
+  const auto later_same_cursors = lineage({cursor('1', 2), cursor('2', 2)}, 11);
+  const auto cursor_ahead_input_behind =
+      lineage({cursor('1', 3), cursor('2', 3)}, 9);
+  CHECK(earlier.compare(later_same_cursors) == LineageRelation::precedes);
+  CHECK(later_same_cursors.compare(earlier) == LineageRelation::succeeds);
+  CHECK(earlier.compare(cursor_ahead_input_behind) ==
+        LineageRelation::concurrent);
+}
+
 TEST_CASE("different run, stream set, or epoch is incomparable") {
   const auto base = lineage({cursor('1', 1), cursor('2', 1)});
   const std::array required{stream_id('1'), stream_id('2')};
