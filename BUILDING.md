@@ -212,3 +212,23 @@ The reconnect probe requires both L2 and trade traffic before and after a
 forced connection boundary. It exits zero only when the second session has a
 different capture-session identity, source-session epoch advances from 1 to 2,
 and continuity remains explicitly `gapped` pending later snapshot/stream proof.
+
+## M2.5 capture dataset verification
+
+The unit suite creates a source capture, seals it as an immutable dataset,
+reads it twice, and proves identical records and content identity. It also
+checks sequence-gap and corruption rejection:
+
+```sh
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+Inspect any sealed dataset independently with:
+
+```sh
+./build/adapters/chronos_capture_dataset_probe /path/to/capture-dataset
+```
+
+The probe prints the verified dataset ID and record count, and exits nonzero
+for missing, partial, malformed, or integrity-mismatched datasets.

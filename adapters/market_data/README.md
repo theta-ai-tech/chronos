@@ -13,12 +13,20 @@ attempt, capture-owned source-session epochs, scoped health, and explicit
 gapped continuity after every unproven reconnect. It does not allocate the
 normalized stream epochs owned by the later stream authority.
 
+M2.5 adds a versioned immutable capture-dataset format. A writer accepts one
+capture session/partition in contiguous capture order, seals `records.bin` and
+`manifest.txt` through an atomic directory publish, and assigns the dataset a
+canonical SHA-256 identity. The reader verifies the manifest, file and payload
+digests, record bounds, enum values, and sequence continuity before returning
+records. Normalization and replay-class selection remain M3 concerns.
+
 - **Parent:** `adapters/`
 - **Owner:** Inherits `adapters/` ownership.
 - **Plane:** Inherits `adapters/` plane.
 - **Language:** Inherits `adapters/` language policy.
 - **Public API:** `bybit_adapter.hpp`, `bybit_websocket.hpp`, and
-  `websocket_transport.hpp`, `source_capture.hpp`, and `reconnect.hpp` under
+  `websocket_transport.hpp`, `source_capture.hpp`, `reconnect.hpp`, and
+  `capture_dataset.hpp` under
   `chronos/adapters/market_data/`
 - **Purpose:** Venue market-data adapters (Bybit first) and capture.
 - **Accepted dependencies:** inherits `adapters/` rules (see parent README).
