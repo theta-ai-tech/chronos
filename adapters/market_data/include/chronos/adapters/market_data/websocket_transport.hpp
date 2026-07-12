@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -63,11 +64,14 @@ public:
   virtual ~WebSocketTransport() = default;
   [[nodiscard]] virtual TransportResult<bool>
   connect(std::string_view url, std::chrono::milliseconds timeout,
-          std::size_t maximum_message_bytes) = 0;
+          std::size_t maximum_message_bytes,
+          const std::function<bool()> &cancelled = {}) = 0;
   [[nodiscard]] virtual TransportResult<std::size_t>
-  send_text(std::string_view payload, std::chrono::milliseconds timeout) = 0;
+  send_text(std::string_view payload, std::chrono::milliseconds timeout,
+            const std::function<bool()> &cancelled = {}) = 0;
   [[nodiscard]] virtual TransportResult<WebSocketMessage>
-  receive(std::chrono::milliseconds timeout) = 0;
+  receive(std::chrono::milliseconds timeout,
+          const std::function<bool()> &cancelled = {}) = 0;
   virtual void close() noexcept = 0;
 };
 

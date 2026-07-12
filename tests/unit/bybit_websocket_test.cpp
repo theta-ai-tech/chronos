@@ -21,20 +21,23 @@ class FakeTransport final : public market_data::WebSocketTransport {
 public:
   market_data::TransportResult<bool>
   connect(std::string_view url, std::chrono::milliseconds,
-          std::size_t maximum_message_bytes) override {
+          std::size_t maximum_message_bytes,
+          const std::function<bool()> & = {}) override {
     url_ = url;
     maximum_message_bytes_ = maximum_message_bytes;
     return {.value = true};
   }
 
   market_data::TransportResult<std::size_t>
-  send_text(std::string_view payload, std::chrono::milliseconds) override {
+  send_text(std::string_view payload, std::chrono::milliseconds,
+            const std::function<bool()> & = {}) override {
     sent_ = payload;
     return {.value = payload.size()};
   }
 
   market_data::TransportResult<market_data::WebSocketMessage>
-  receive(std::chrono::milliseconds) override {
+  receive(std::chrono::milliseconds,
+          const std::function<bool()> & = {}) override {
     if (next_failure != market_data::TransportFailure::None) {
       const auto failure = next_failure;
       next_failure = market_data::TransportFailure::None;

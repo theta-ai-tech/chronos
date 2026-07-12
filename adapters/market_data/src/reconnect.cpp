@@ -236,7 +236,7 @@ BybitReconnectController::connect_with_policy(RecoveryCause cause,
       health_.scopes[static_cast<std::size_t>(sdk::HealthScope::Transport)] =
           sdk::HealthState::Healthy;
       health_.scopes[static_cast<std::size_t>(sdk::HealthScope::Subscription)] =
-          sdk::HealthState::Healthy;
+          sdk::HealthState::Starting;
       health_.scopes[static_cast<std::size_t>(sdk::HealthScope::Capture)] =
           session_->capture_enabled() ? sdk::HealthState::Healthy
                                       : sdk::HealthState::Unknown;

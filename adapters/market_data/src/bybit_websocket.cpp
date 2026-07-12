@@ -368,8 +368,14 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
     return {.failure = TransportFailure::Closed,
             .detail = "Bybit session establishment cancelled"};
   }
-  auto connected = transport_->connect(bybit_public_websocket_url(subscription),
-                                       timeout, maximum_message_bytes);
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  const auto budget_remaining = [&deadline] {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+  };
+  auto connected =
+      transport_->connect(bybit_public_websocket_url(subscription),
+                          budget_remaining(), maximum_message_bytes, cancelled);
   if (!connected.ok()) {
     return connected;
   }
@@ -379,13 +385,17 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
             .detail = "Bybit session establishment cancelled"};
   }
   const auto payload = bybit_subscription_message(subscription);
-  auto sent = transport_->send_text(payload, timeout);
+  if (budget_remaining().count() <= 0) {
+    transport_->close();
+    return {.failure = TransportFailure::Timeout,
+            .detail = "Bybit session establishment timed out"};
+  }
+  auto sent = transport_->send_text(payload, budget_remaining(), cancelled);
   if (!sent.ok() || sent.value != payload.size()) {
     transport_->close();
     return {.failure = sent.ok() ? TransportFailure::Send : sent.failure,
             .detail = sent.ok() ? "partial subscription write" : sent.detail};
   }
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
   const auto retain_early = [this](WebSocketMessage message) {
     if (early_messages_.size() == 8) {
       early_messages_.pop_front();
@@ -407,7 +417,7 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
       return {.failure = TransportFailure::Timeout,
               .detail = "Bybit subscription acknowledgement timed out"};
     }
-    auto response = transport_->receive(remaining);
+    auto response = transport_->receive(remaining, cancelled);
     if (!response.ok()) {
       if (response.failure_evidence.has_value() &&
           !observe(*response.failure_evidence)) {
