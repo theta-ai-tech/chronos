@@ -16,6 +16,8 @@ sdk::SourceFrameKind source_frame_kind(WebSocketMessageKind kind) noexcept {
     return sdk::SourceFrameKind::Pong;
   case WebSocketMessageKind::Close:
     return sdk::SourceFrameKind::Close;
+  case WebSocketMessageKind::Unknown:
+    return sdk::SourceFrameKind::Unknown;
   }
   return sdk::SourceFrameKind::Unknown;
 }

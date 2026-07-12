@@ -206,7 +206,7 @@ public:
         std::vector<std::byte> retained(retained_view.begin(),
                                         retained_view.end());
         WebSocketMessage evidence{
-            .kind = WebSocketMessageKind::Binary,
+            .kind = WebSocketMessageKind::Unknown,
             .payload = std::move(retained),
             .monotonic_receive_time_nanoseconds = receive_time,
             .fragmented = (metadata->flags & CURLWS_CONT) != 0,

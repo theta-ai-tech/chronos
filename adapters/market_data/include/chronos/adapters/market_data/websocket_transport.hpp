@@ -11,7 +11,7 @@
 
 namespace chronos::adapters::market_data {
 
-enum class WebSocketMessageKind { Text, Binary, Ping, Pong, Close };
+enum class WebSocketMessageKind { Text, Binary, Ping, Pong, Close, Unknown };
 enum class WebSocketIngressIntegrity {
   Complete,
   Malformed,

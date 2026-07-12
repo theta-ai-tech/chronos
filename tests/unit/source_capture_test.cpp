@@ -298,3 +298,20 @@ TEST_CASE(
   CHECK(result.event->payload_digest().coverage ==
         sdk::DigestCoverage::RetainedPrefix);
 }
+
+TEST_CASE("unsupported transport evidence preserves unknown frame kind") {
+  auto recorder = sdk::SourceCaptureRecorder::create(context());
+  const auto raw = bytes("unknown-frame");
+  market_data::WebSocketMessage evidence{
+      .kind = market_data::WebSocketMessageKind::Unknown,
+      .payload = raw,
+      .monotonic_receive_time_nanoseconds = 777,
+      .integrity = market_data::WebSocketIngressIntegrity::Unsupported,
+      .original_payload_size = raw.size()};
+  auto result = market_data::capture_websocket_message(
+      *recorder, id<contracts::SourceEventId>(44),
+      id<contracts::ClockDomainId>(6), evidence);
+  CHECK(result.ok());
+  CHECK(result.event->frame_kind() == sdk::SourceFrameKind::Unknown);
+  CHECK(result.event->framing_status() == sdk::FramingStatus::Unsupported);
+}
