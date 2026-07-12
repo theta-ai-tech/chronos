@@ -12,6 +12,7 @@ target_link_libraries(chronos_adapter_sdk
 add_library(chronos_bybit_adapter STATIC
   market_data/src/bybit_adapter.cpp
   market_data/src/source_capture.cpp
+  market_data/src/capture_dataset.cpp
   market_data/src/reconnect.cpp
   market_data/src/bybit_websocket.cpp
   market_data/src/websocket_framer.cpp
@@ -33,8 +34,14 @@ add_executable(chronos_bybit_probe
 add_executable(chronos_bybit_reconnect_probe
   market_data/src/bybit_reconnect_probe.cpp)
 
+add_executable(chronos_capture_dataset_probe
+  market_data/src/capture_dataset_probe.cpp)
+
 target_link_libraries(chronos_bybit_probe
   PRIVATE chronos_bybit_adapter chronos_options chronos_warnings)
 
 target_link_libraries(chronos_bybit_reconnect_probe
+  PRIVATE chronos_bybit_adapter chronos_options chronos_warnings)
+
+target_link_libraries(chronos_capture_dataset_probe
   PRIVATE chronos_bybit_adapter chronos_options chronos_warnings)
