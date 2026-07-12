@@ -4,13 +4,17 @@ add_executable(chronos_unit_tests
   unit/event_envelope_test.cpp
   unit/fixed_point_test.cpp
   unit/state_lineage_test.cpp
+  unit/serialization_test.cpp
   unit/value_objects_test.cpp
   unit/version_test.cpp)
 
 target_include_directories(chronos_unit_tests
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/support)
 
+target_compile_definitions(chronos_unit_tests
+  PRIVATE CHRONOS_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+
 target_link_libraries(chronos_unit_tests
-  PRIVATE chronos_contracts chronos_core chronos_boundary chronos_options chronos_warnings)
+  PRIVATE chronos_core chronos_boundary chronos_options chronos_warnings)
 
 add_test(NAME chronos_unit_tests COMMAND chronos_unit_tests)

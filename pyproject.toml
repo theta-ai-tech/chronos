@@ -30,6 +30,7 @@ include = [
   "/README.md",
   "/pyproject.toml",
   "/python/chronos",
+  "/contracts/conformance/fixtures",
   "/tests/python",
   "/tools/development/bootstrap_m0.py",
 ]

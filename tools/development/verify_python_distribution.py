@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 EXPECTED_SDIST_PATHS = {
     ".gitignore",
     "README.md",
+    "contracts/conformance/fixtures/m1-full-frame.hex",
     "PKG-INFO",
     "pyproject.toml",
     "python/chronos/__init__.py",
@@ -17,12 +18,14 @@ EXPECTED_SDIST_PATHS = {
     "python/chronos/event_envelope.py",
     "python/chronos/value_objects.py",
     "python/chronos/state_lineage.py",
+    "python/chronos/serialization.py",
     "tests/python/test_boundary.py",
     "tests/python/test_bootstrap.py",
     "tests/python/test_contracts_fixed_point.py",
     "tests/python/test_event_envelope.py",
     "tests/python/test_value_objects.py",
     "tests/python/test_state_lineage.py",
+    "tests/python/test_serialization.py",
     "tests/python/test_package.py",
     "tools/development/bootstrap_m0.py",
 }
@@ -33,6 +36,7 @@ EXPECTED_WHEEL_PACKAGE_PATHS = {
     "chronos/event_envelope.py",
     "chronos/value_objects.py",
     "chronos/state_lineage.py",
+    "chronos/serialization.py",
 }
 EXPECTED_DIST_INFO_FILES = {"METADATA", "RECORD", "WHEEL"}
 
