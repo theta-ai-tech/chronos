@@ -107,6 +107,9 @@ private:
 };
 
 struct EventIdTag;
+struct CommandIdTag;
+struct StateViewIdTag;
+struct DecisionIdTag;
 struct StreamIdTag;
 struct RunIdTag;
 struct SourceEventIdTag;
@@ -117,6 +120,9 @@ struct DefinitionIdTag;
 struct ClockDomainIdTag;
 
 using EventId = OpaqueId<EventIdTag>;
+using CommandId = OpaqueId<CommandIdTag>;
+using StateViewId = OpaqueId<StateViewIdTag>;
+using DecisionId = OpaqueId<DecisionIdTag>;
 using StreamId = OpaqueId<StreamIdTag>;
 using RunId = OpaqueId<RunIdTag>;
 using SourceEventId = OpaqueId<SourceEventIdTag>;

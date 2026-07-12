@@ -44,6 +44,21 @@ class EventId(OpaqueId):
 
 
 @dataclass(frozen=True)
+class CommandId(OpaqueId):
+    pass
+
+
+@dataclass(frozen=True)
+class StateViewId(OpaqueId):
+    pass
+
+
+@dataclass(frozen=True)
+class DecisionId(OpaqueId):
+    pass
+
+
+@dataclass(frozen=True)
 class StreamId(OpaqueId):
     pass
 
