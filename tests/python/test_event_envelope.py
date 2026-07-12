@@ -9,6 +9,7 @@ from chronos.event_envelope import (
     EventEnvelope,
     EventTypeRegistration,
     ProducerRef,
+    RunMode,
     event_namespace,
     is_valid_event_type,
 )
@@ -52,6 +53,8 @@ def registration() -> EventTypeRegistration:
         envelope_version=1,
         schema_version=version("a3", 2),
         authorized_producers=(identity(ProducerId, "a4"),),
+        allowed_acceptance_classes=(AcceptanceClass.ACCEPTED_OBSERVATION,),
+        permitted_modes=(RunMode.CAPTURE,),
         root_observation=True,
         run_scope=Applicability.OPTIONAL,
         event_position=Applicability.OPTIONAL,
@@ -167,6 +170,17 @@ def test_registry_enforces_owner_and_derived_causation() -> None:
     derived = replace(registration(), root_observation=False)
     with pytest.raises(ContractValueError):
         replace(valid_envelope(), registration=derived)
+    with pytest.raises(ContractValueError):
+        updated(valid_envelope(), acceptance_class=AcceptanceClass.ACCEPTED_REJECTION)
+    with pytest.raises(ContractValueError):
+        updated(valid_envelope(), mode=RunMode.LIVE_PAPER)
+
+
+def test_registration_control_fields_are_typed() -> None:
+    with pytest.raises(TypeError):
+        replace(registration(), root_observation=1)
+    with pytest.raises(TypeError):
+        replace(registration(), subjects="optional")
 
 
 def test_registry_pins_versions_producers_and_allows_optional_subjects() -> None:
@@ -184,6 +198,10 @@ def test_registry_pins_versions_producers_and_allows_optional_subjects() -> None
 def test_effective_position_depends_on_acceptance_disposition() -> None:
     policy = replace(
         registration(),
+        allowed_acceptance_classes=(
+            AcceptanceClass.ACCEPTED_TRANSITION,
+            AcceptanceClass.ACCEPTED_REJECTION,
+        ),
         run_scope=Applicability.REQUIRED,
         effective_position=EffectivePositionPolicy.ACCEPTED_TRANSITION_ONLY,
     )

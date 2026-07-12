@@ -64,6 +64,8 @@ EventTypeRegistration registration() {
       .schema_version = version("018f1f6e-7d3a-7c4b-8a91-0123456789a3", 2),
       .authorized_producers = {id<ProducerId>(
           "018f1f6e-7d3a-7c4b-8a91-0123456789a4")},
+      .allowed_acceptance_classes = {AcceptanceClass::accepted_observation},
+      .permitted_modes = {RunMode::capture},
       .root_observation = true,
       .run_scope = Applicability::optional,
       .event_position = Applicability::optional,
@@ -120,6 +122,14 @@ TEST_CASE("registry enforces owner and required stable semantics") {
   CHECK(!EventEnvelope::from(registration(), std::move(draft)).has_value());
 
   draft = valid_draft();
+  draft.acceptance_class = AcceptanceClass::accepted_rejection;
+  CHECK(!EventEnvelope::from(registration(), std::move(draft)).has_value());
+
+  draft = valid_draft();
+  draft.mode = RunMode::live_paper;
+  CHECK(!EventEnvelope::from(registration(), std::move(draft)).has_value());
+
+  draft = valid_draft();
   auto derived = registration();
   derived.root_observation = false;
   CHECK(!EventEnvelope::from(derived, std::move(draft)).has_value());
@@ -161,6 +171,8 @@ TEST_CASE("envelope validates causation and typed subjects") {
 
 TEST_CASE("effective position follows acceptance disposition") {
   auto policy = registration();
+  policy.allowed_acceptance_classes = {AcceptanceClass::accepted_transition,
+                                       AcceptanceClass::accepted_rejection};
   policy.run_scope = Applicability::required;
   policy.effective_position = EffectivePositionPolicy::accepted_transition_only;
   auto draft = valid_draft();

@@ -141,6 +141,8 @@ class EventTypeRegistration:
     envelope_version: int
     schema_version: VersionRef
     authorized_producers: tuple[ProducerId, ...]
+    allowed_acceptance_classes: tuple[AcceptanceClass, ...]
+    permitted_modes: tuple[RunMode, ...]
     root_observation: bool
     run_scope: Applicability
     event_position: Applicability
@@ -164,6 +166,37 @@ class EventTypeRegistration:
             raise ContractValueError("registration requires authorized producers")
         if len(set(self.authorized_producers)) != len(self.authorized_producers):
             raise ContractValueError("authorized producers must be unique")
+        if not self.allowed_acceptance_classes or any(
+            not isinstance(value, AcceptanceClass) for value in self.allowed_acceptance_classes
+        ):
+            raise ContractValueError("registration requires allowed acceptance classes")
+        if len(set(self.allowed_acceptance_classes)) != len(self.allowed_acceptance_classes):
+            raise ContractValueError("allowed acceptance classes must be unique")
+        if any(not isinstance(value, RunMode) for value in self.permitted_modes):
+            raise TypeError("permitted modes must be RunModes")
+        if len(set(self.permitted_modes)) != len(self.permitted_modes):
+            raise ContractValueError("permitted modes must be unique")
+        for name, value in (
+            ("root observation", self.root_observation),
+            ("run-input eligibility", self.run_input_eligible),
+        ):
+            if not isinstance(value, bool):
+                raise TypeError(f"{name} must be boolean")
+        for name, value in (
+            ("run scope", self.run_scope),
+            ("event position", self.event_position),
+            ("source event", self.source_event),
+            ("subjects", self.subjects),
+            ("mode", self.mode),
+            ("integrity", self.integrity),
+            ("receive time", self.receive_time),
+        ):
+            if not isinstance(value, Applicability):
+                raise TypeError(f"{name} must be an Applicability")
+        if not isinstance(self.effective_position, EffectivePositionPolicy):
+            raise TypeError("effective position must be an EffectivePositionPolicy")
+        if (self.mode is Applicability.FORBIDDEN) != (not self.permitted_modes):
+            raise ContractValueError("mode applicability and permitted modes disagree")
 
 
 @dataclass(frozen=True)
@@ -213,6 +246,10 @@ class EventEnvelope:
             raise ContractValueError("schema version does not match the registry entry")
         if self.producer.component_id not in registration.authorized_producers:
             raise ContractValueError("producer is not authorized for this event type")
+        if self.acceptance_class not in registration.allowed_acceptance_classes:
+            raise ContractValueError("acceptance class is not allowed for this event type")
+        if self.mode is not None and self.mode not in registration.permitted_modes:
+            raise ContractValueError("run mode is not permitted for this event type")
         _require_type("acceptance class", self.acceptance_class, AcceptanceClass)
         _require_optional_type("run ID", self.run_id, RunId)
         _require_optional_type("mode", self.mode, RunMode)

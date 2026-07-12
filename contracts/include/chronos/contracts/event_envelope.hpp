@@ -152,6 +152,8 @@ struct EventTypeRegistration final {
   std::uint32_t envelope_version;
   VersionRef schema_version;
   std::vector<ProducerId> authorized_producers;
+  std::vector<AcceptanceClass> allowed_acceptance_classes;
+  std::vector<RunMode> permitted_modes;
   bool root_observation;
   Applicability run_scope;
   Applicability event_position;
@@ -207,6 +209,14 @@ public:
                   registration.authorized_producers.end(),
                   draft.producer.component_id) ==
             registration.authorized_producers.end() ||
+        std::find(registration.allowed_acceptance_classes.begin(),
+                  registration.allowed_acceptance_classes.end(),
+                  draft.acceptance_class) ==
+            registration.allowed_acceptance_classes.end() ||
+        (draft.mode.has_value() &&
+         std::find(registration.permitted_modes.begin(),
+                   registration.permitted_modes.end(),
+                   *draft.mode) == registration.permitted_modes.end()) ||
         !is_valid(draft.acceptance_class) ||
         (draft.mode.has_value() && !is_valid(*draft.mode))) {
       return std::nullopt;
@@ -353,13 +363,23 @@ private:
   [[nodiscard]] static bool
   valid_registration(const EventTypeRegistration &registration) noexcept {
     if (registration.envelope_version == 0 ||
-        registration.authorized_producers.empty()) {
+        registration.authorized_producers.empty() ||
+        registration.allowed_acceptance_classes.empty() ||
+        (registration.mode == Applicability::forbidden) !=
+            registration.permitted_modes.empty()) {
       return false;
     }
     auto producers = registration.authorized_producers;
     std::sort(producers.begin(), producers.end());
+    auto acceptances = registration.allowed_acceptance_classes;
+    std::sort(acceptances.begin(), acceptances.end());
+    auto modes = registration.permitted_modes;
+    std::sort(modes.begin(), modes.end());
     return std::adjacent_find(producers.begin(), producers.end()) ==
-           producers.end();
+               producers.end() &&
+           std::adjacent_find(acceptances.begin(), acceptances.end()) ==
+               acceptances.end() &&
+           std::adjacent_find(modes.begin(), modes.end()) == modes.end();
   }
 
   [[nodiscard]] static constexpr bool
