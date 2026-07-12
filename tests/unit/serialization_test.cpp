@@ -65,6 +65,11 @@ TEST_CASE("C++ codec rejects truncation and trailing bytes") {
   bytes.pop_back();
   CHECK(!decode_conformance_frame(bytes).has_value());
   bytes = fixture_bytes();
+  for (std::size_t index = 426; index < 430; ++index) {
+    bytes[index] = 0xFF;
+  }
+  CHECK(!decode_conformance_frame(bytes).has_value());
+  bytes = fixture_bytes();
   bytes.push_back(0);
   CHECK(!decode_conformance_frame(bytes).has_value());
 }

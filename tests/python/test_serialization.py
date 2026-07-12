@@ -170,6 +170,7 @@ def test_both_boundaries_reject_noncanonical_frames(mutation) -> None:
     "mutation",
     [
         lambda value: value[:136] + b"\xff\xff\xff\xff" + value[140:],
+        lambda value: value[:426] + b"\xff\xff\xff\xff" + value[430:],
         lambda value: value[:58] + b"\xff" + value[59:],
     ],
 )

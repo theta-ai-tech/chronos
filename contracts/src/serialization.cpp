@@ -270,6 +270,9 @@ StateLineage read_lineage(Reader &reader) {
   const auto run_id = reader.id<RunId>();
   const auto run_input_sequence = reader.u64();
   const auto count = reader.u32();
+  if (count > reader.remaining()) {
+    throw std::runtime_error("impossible lineage cursor count");
+  }
   std::vector<StreamCursor> cursors;
   std::vector<StreamId> required;
   cursors.reserve(count);
