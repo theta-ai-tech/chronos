@@ -231,7 +231,7 @@ BybitReconnectController::connect_with_policy(RecoveryCause cause,
       health_.capture_session_id = *capture_session_id;
       // An acknowledgement proves transport/subscription setup, not source
       // readiness. M3 promotes the session after qualifying channel evidence.
-      health_.connection = sdk::ConnectionState::Connecting;
+      health_.connection = sdk::ConnectionState::SessionReady;
       set_all_health(sdk::HealthState::Starting);
       health_.scopes[static_cast<std::size_t>(sdk::HealthScope::Transport)] =
           sdk::HealthState::Healthy;

@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -20,24 +21,35 @@ using namespace std::chrono_literals;
 class FakeTransport final : public market_data::WebSocketTransport {
 public:
   market_data::TransportResult<bool>
-  connect(std::string_view url, std::chrono::milliseconds,
+  connect(std::string_view url, std::chrono::milliseconds timeout,
           std::size_t maximum_message_bytes,
-          const std::function<bool()> & = {}) override {
+          const std::function<bool()> &cancelled = {}) override {
     url_ = url;
     maximum_message_bytes_ = maximum_message_bytes;
+    operation_timeouts_.push_back(timeout);
+    if (connect_delay_.count() > 0)
+      std::this_thread::sleep_for(connect_delay_);
+    if (cancel_on_connect_ && cancellation_flag_ != nullptr)
+      *cancellation_flag_ = true;
+    if (cancelled)
+      cancelled_ = cancelled();
+    if (cancelled_)
+      return {.failure = market_data::TransportFailure::Closed};
     return {.value = true};
   }
 
   market_data::TransportResult<std::size_t>
-  send_text(std::string_view payload, std::chrono::milliseconds,
+  send_text(std::string_view payload, std::chrono::milliseconds timeout,
             const std::function<bool()> & = {}) override {
+    operation_timeouts_.push_back(timeout);
     sent_ = payload;
     return {.value = payload.size()};
   }
 
   market_data::TransportResult<market_data::WebSocketMessage>
-  receive(std::chrono::milliseconds,
+  receive(std::chrono::milliseconds timeout,
           const std::function<bool()> & = {}) override {
+    operation_timeouts_.push_back(timeout);
     if (next_failure != market_data::TransportFailure::None) {
       const auto failure = next_failure;
       next_failure = market_data::TransportFailure::None;
@@ -59,6 +71,11 @@ public:
   std::string url_;
   std::string sent_;
   std::size_t maximum_message_bytes_{};
+  std::chrono::milliseconds connect_delay_{};
+  bool cancel_on_connect_{};
+  bool *cancellation_flag_{};
+  bool cancelled_{};
+  std::vector<std::chrono::milliseconds> operation_timeouts_;
   std::deque<market_data::WebSocketMessage> messages_;
   market_data::TransportFailure next_failure{
       market_data::TransportFailure::None};
@@ -122,6 +139,32 @@ TEST_CASE("session connects and subscribes through the transport seam") {
   CHECK(observer->sent_ == R"({"op":"ping"})");
   session.close();
   CHECK(observer->closed_);
+}
+
+TEST_CASE(
+    "session establishment shares one deadline and forwards cancellation") {
+  auto transport = std::make_unique<FakeTransport>();
+  auto *fake = transport.get();
+  fake->connect_delay_ = 20ms;
+  fake->messages_.push_back(text_message(
+      R"({"success":true,"op":"subscribe","req_id":"chronos-m2"})"));
+  market_data::BybitWebSocketSession session(std::move(transport));
+  CHECK(session.connect_and_subscribe(subscription(), 200ms, 4096).ok());
+  CHECK(fake->operation_timeouts_.size() == 3);
+  CHECK(fake->operation_timeouts_[1] < fake->operation_timeouts_[0]);
+  CHECK(fake->operation_timeouts_[2] <= fake->operation_timeouts_[1]);
+
+  bool cancelled = false;
+  auto cancelled_transport = std::make_unique<FakeTransport>();
+  auto *cancelled_fake = cancelled_transport.get();
+  cancelled_fake->cancel_on_connect_ = true;
+  cancelled_fake->cancellation_flag_ = &cancelled;
+  market_data::BybitWebSocketSession cancelled_session(
+      std::move(cancelled_transport));
+  const auto result = cancelled_session.connect_and_subscribe(
+      subscription(), 200ms, 4096, [&cancelled] { return cancelled; });
+  CHECK(result.failure == market_data::TransportFailure::Closed);
+  CHECK(cancelled_fake->cancelled_);
 }
 
 TEST_CASE("Bybit control responses are parsed structurally and fail closed") {

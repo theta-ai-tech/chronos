@@ -84,12 +84,15 @@ public:
   void sleep_for(std::chrono::milliseconds delay) override {
     sleeps.push_back(delay);
     now_ += delay;
+    if (cancel_on_sleep_)
+      cancelled_ = true;
   }
   bool cancelled() const noexcept override { return cancelled_; }
 
   std::chrono::steady_clock::time_point now_{};
   std::vector<std::chrono::milliseconds> sleeps;
   bool cancelled_{};
+  bool cancel_on_sleep_{};
 };
 
 class ZeroJitter final : public market_data::JitterSource {
@@ -271,6 +274,18 @@ TEST_CASE("attempt, elapsed, and cancellation bounds are explicit") {
   CHECK(cancelled->start().disposition ==
         market_data::RecoveryDisposition::Cancelled);
   CHECK(cancelled_factory.created == 0);
+
+  FakeFactory backoff_factory;
+  backoff_factory.outcomes = {market_data::TransportFailure::Timeout,
+                              market_data::TransportFailure::None};
+  FakeScheduler backoff_scheduler;
+  backoff_scheduler.cancel_on_sleep_ = true;
+  auto backoff_cancelled = market_data::BybitReconnectController::create(
+      subscription(), policy(), backoff_factory, backoff_scheduler, jitter,
+      identities);
+  CHECK(backoff_cancelled->start().disposition ==
+        market_data::RecoveryDisposition::Cancelled);
+  CHECK(backoff_factory.created == 1);
 }
 
 TEST_CASE("capture health is never inferred from transport readiness") {
