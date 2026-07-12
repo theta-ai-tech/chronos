@@ -14,16 +14,14 @@ public:
 class SourceEventConsumer {
 public:
   virtual ~SourceEventConsumer() = default;
-  [[nodiscard]] virtual bool accept(sdk::SourceEvent event) = 0;
+  [[nodiscard]] virtual bool accept(const sdk::SourceEvent &event) = 0;
 };
 
 [[nodiscard]] sdk::CaptureResult
 capture_websocket_message(sdk::SourceCaptureRecorder &recorder,
                           contracts::SourceEventId source_event_id,
                           contracts::ClockDomainId monotonic_clock_domain_id,
-                          const WebSocketMessage &message,
-                          sdk::CaptureIntegrityStatus integrity_status =
-                              sdk::CaptureIntegrityStatus::Complete);
+                          const WebSocketMessage &message);
 
 class WebSocketSourceCapture final {
 public:
@@ -33,6 +31,8 @@ public:
                          SourceEventConsumer &consumer);
 
   [[nodiscard]] bool capture(const WebSocketMessage &message);
+  [[nodiscard]] bool retry_pending();
+  [[nodiscard]] bool has_pending() const noexcept;
   [[nodiscard]] sdk::CaptureFailure last_failure() const noexcept;
 
 private:
@@ -40,6 +40,7 @@ private:
   contracts::ClockDomainId monotonic_clock_domain_id_;
   SourceEventIdentitySource &identity_source_;
   SourceEventConsumer &consumer_;
+  std::optional<sdk::SourceEvent> pending_event_;
   sdk::CaptureFailure last_failure_{sdk::CaptureFailure::None};
 };
 

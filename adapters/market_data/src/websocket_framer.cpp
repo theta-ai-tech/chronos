@@ -31,10 +31,14 @@ FrameAssemblyResult WebSocketMessageAssembler::append(
     std::optional<std::int64_t> &pending_receive_time, bool &pending_fragmented,
     bool control) {
   if (pending_kind.has_value() && *pending_kind != chunk.kind) {
-    return terminal(FrameAssemblyFailure::ProtocolViolation);
+    return terminal_with_evidence(FrameAssemblyFailure::ProtocolViolation,
+                                  chunk, pending_payload, pending_kind,
+                                  pending_receive_time, pending_fragmented);
   }
   if (control && chunk.message_continues) {
-    return terminal(FrameAssemblyFailure::ProtocolViolation);
+    return terminal_with_evidence(FrameAssemblyFailure::ProtocolViolation,
+                                  chunk, pending_payload, pending_kind,
+                                  pending_receive_time, pending_fragmented);
   }
   pending_kind = chunk.kind;
   if (!pending_receive_time.has_value()) {
@@ -43,7 +47,9 @@ FrameAssemblyResult WebSocketMessageAssembler::append(
   pending_fragmented = pending_fragmented || chunk.message_continues;
   if (chunk.payload.size() > maximum_message_bytes_ ||
       pending_payload.size() > maximum_message_bytes_ - chunk.payload.size()) {
-    return terminal(FrameAssemblyFailure::MessageTooLarge);
+    return terminal_with_evidence(FrameAssemblyFailure::MessageTooLarge, chunk,
+                                  pending_payload, pending_kind,
+                                  pending_receive_time, pending_fragmented);
   }
   pending_payload.insert(pending_payload.end(), chunk.payload.begin(),
                          chunk.payload.end());
@@ -51,11 +57,14 @@ FrameAssemblyResult WebSocketMessageAssembler::append(
     return {};
   }
 
+  const auto message_size = pending_payload.size();
   WebSocketMessage message{.kind = chunk.kind,
                            .payload = std::move(pending_payload),
                            .monotonic_receive_time_nanoseconds =
                                *pending_receive_time,
-                           .fragmented = pending_fragmented};
+                           .fragmented = pending_fragmented,
+                           .integrity = WebSocketIngressIntegrity::Complete,
+                           .original_payload_size = message_size};
   pending_payload.clear();
   pending_kind.reset();
   pending_receive_time.reset();
@@ -72,6 +81,35 @@ WebSocketMessageAssembler::terminal(FrameAssemblyFailure failure) {
   reset();
   terminal_ = true;
   return {.failure = failure, .terminal = true};
+}
+
+FrameAssemblyResult WebSocketMessageAssembler::terminal_with_evidence(
+    FrameAssemblyFailure failure, const WebSocketFrameChunk &chunk,
+    std::vector<std::byte> &pending_payload,
+    std::optional<WebSocketMessageKind> pending_kind,
+    std::optional<std::int64_t> pending_receive_time, bool fragmented) {
+  const auto observed_size = pending_payload.size() + chunk.payload.size() +
+                             chunk.remaining_frame_bytes;
+  const auto available = maximum_message_bytes_ - pending_payload.size();
+  const auto retain_from_chunk = std::min(available, chunk.payload.size());
+  const auto retained_chunk = chunk.payload.first(retain_from_chunk);
+  pending_payload.insert(pending_payload.end(), retained_chunk.begin(),
+                         retained_chunk.end());
+  WebSocketMessage evidence{
+      .kind = pending_kind.value_or(chunk.kind),
+      .payload = std::move(pending_payload),
+      .monotonic_receive_time_nanoseconds = pending_receive_time.value_or(
+          chunk.monotonic_receive_time_nanoseconds),
+      .fragmented = fragmented || chunk.message_continues,
+      .integrity = failure == FrameAssemblyFailure::MessageTooLarge
+                       ? WebSocketIngressIntegrity::ResourceLimitExceeded
+                       : WebSocketIngressIntegrity::Malformed,
+      .original_payload_size = observed_size};
+  reset();
+  terminal_ = true;
+  return {.failure_evidence = std::move(evidence),
+          .failure = failure,
+          .terminal = true};
 }
 
 void WebSocketMessageAssembler::reset() noexcept {

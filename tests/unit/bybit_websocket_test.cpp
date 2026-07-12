@@ -35,6 +35,13 @@ public:
 
   market_data::TransportResult<market_data::WebSocketMessage>
   receive(std::chrono::milliseconds) override {
+    if (next_failure != market_data::TransportFailure::None) {
+      const auto failure = next_failure;
+      next_failure = market_data::TransportFailure::None;
+      return {.failure = failure,
+              .detail = "injected framing failure",
+              .failure_evidence = std::move(next_failure_evidence)};
+    }
     if (messages_.empty()) {
       return {.failure = market_data::TransportFailure::Timeout,
               .detail = "fake receive queue empty"};
@@ -50,6 +57,9 @@ public:
   std::string sent_;
   std::size_t maximum_message_bytes_{};
   std::deque<market_data::WebSocketMessage> messages_;
+  market_data::TransportFailure next_failure{
+      market_data::TransportFailure::None};
+  std::optional<market_data::WebSocketMessage> next_failure_evidence;
   bool closed_{};
 };
 
@@ -222,6 +232,9 @@ TEST_CASE(
                            .message_continues = false});
   CHECK(result.failure == market_data::FrameAssemblyFailure::MessageTooLarge);
   CHECK(result.terminal);
+  CHECK(result.failure_evidence.has_value());
+  CHECK(result.failure_evidence->payload == bytes("abcd"));
+  CHECK(result.failure_evidence->original_payload_size == 5);
   result = assembler.feed({.kind = market_data::WebSocketMessageKind::Text,
                            .payload = first,
                            .frame_complete = true,
@@ -247,4 +260,31 @@ TEST_CASE("close frame terminally ends frame assembly") {
                            .message_continues = false});
   CHECK(result.terminal);
   CHECK(!result.message.has_value());
+}
+
+TEST_CASE("Bybit capture observer receives terminal framing evidence") {
+  auto transport = std::make_unique<FakeTransport>();
+  auto *fake = transport.get();
+  fake->messages_.push_back(text_message(
+      R"({"success":true,"op":"subscribe","req_id":"chronos-m2"})"));
+  std::vector<market_data::WebSocketMessage> observed;
+  market_data::BybitWebSocketSession session(
+      std::move(transport),
+      [&observed](const market_data::WebSocketMessage &message) {
+        observed.push_back(message);
+        return true;
+      });
+  CHECK(session.connect_and_subscribe(subscription(), 2s, 4).ok());
+  fake->next_failure = market_data::TransportFailure::MessageTooLarge;
+  fake->next_failure_evidence = market_data::WebSocketMessage{
+      .kind = market_data::WebSocketMessageKind::Text,
+      .payload = bytes("abcd"),
+      .monotonic_receive_time_nanoseconds = 777,
+      .integrity =
+          market_data::WebSocketIngressIntegrity::ResourceLimitExceeded,
+      .original_payload_size = 9};
+  const auto failure = session.receive(2s);
+  CHECK(failure.failure == market_data::TransportFailure::MessageTooLarge);
+  CHECK(observed.size() == 2);
+  CHECK(observed.back().original_payload_size == 9);
 }

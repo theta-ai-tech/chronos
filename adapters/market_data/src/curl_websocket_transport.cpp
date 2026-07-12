@@ -100,6 +100,7 @@ public:
     url_ = std::string(url);
     error_.fill('\0');
     assembler_.emplace(maximum_message_bytes);
+    maximum_message_bytes_ = maximum_message_bytes;
     curl_easy_setopt(handle_, CURLOPT_URL, url_.c_str());
     curl_easy_setopt(handle_, CURLOPT_CONNECT_ONLY, 2L);
     curl_easy_setopt(handle_, CURLOPT_CONNECTTIMEOUT_MS,
@@ -178,6 +179,14 @@ public:
         return {.failure = map_curl_failure(result),
                 .detail = curl_detail(result, error_)};
       }
+      const auto receive_time =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now().time_since_epoch())
+              .count();
+      const auto bytes_left =
+          metadata->bytesleft > 0
+              ? static_cast<std::size_t>(metadata->bytesleft)
+              : 0;
       std::optional<WebSocketMessageKind> kind;
       if ((metadata->flags & CURLWS_TEXT) != 0) {
         kind = WebSocketMessageKind::Text;
@@ -191,17 +200,29 @@ public:
         kind = WebSocketMessageKind::Close;
       }
       if (!kind.has_value()) {
+        const auto retained_size = std::min(received, maximum_message_bytes_);
+        const auto retained_view =
+            std::span<const std::byte>(buffer).first(retained_size);
+        std::vector<std::byte> retained(retained_view.begin(),
+                                        retained_view.end());
+        WebSocketMessage evidence{
+            .kind = WebSocketMessageKind::Binary,
+            .payload = std::move(retained),
+            .monotonic_receive_time_nanoseconds = receive_time,
+            .fragmented = (metadata->flags & CURLWS_CONT) != 0,
+            .integrity = WebSocketIngressIntegrity::Unsupported,
+            .original_payload_size = received + bytes_left};
+        close();
         return {.failure = TransportFailure::UnsupportedFrame,
-                .detail = "unsupported WebSocket frame kind"};
+                .detail = "unsupported WebSocket frame kind",
+                .failure_evidence = std::move(evidence)};
       }
 
       const auto assembled = assembler_->feed(
           {.kind = *kind,
            .payload = std::span<const std::byte>(buffer.data(), received),
-           .monotonic_receive_time_nanoseconds =
-               std::chrono::duration_cast<std::chrono::nanoseconds>(
-                   std::chrono::steady_clock::now().time_since_epoch())
-                   .count(),
+           .monotonic_receive_time_nanoseconds = receive_time,
+           .remaining_frame_bytes = bytes_left,
            .frame_complete = metadata->bytesleft == 0,
            .message_continues = (metadata->flags & CURLWS_CONT) != 0});
       if (assembled.failure != FrameAssemblyFailure::None) {
@@ -209,9 +230,11 @@ public:
             assembled.failure == FrameAssemblyFailure::MessageTooLarge
                 ? TransportFailure::MessageTooLarge
                 : TransportFailure::UnsupportedFrame;
+        auto evidence = std::move(assembled.failure_evidence);
         close();
         return {.failure = failure,
-                .detail = "terminal WebSocket frame assembly failure"};
+                .detail = "terminal WebSocket frame assembly failure",
+                .failure_evidence = std::move(evidence)};
       }
       if (assembled.message.has_value()) {
         if (assembled.terminal) {
@@ -233,6 +256,7 @@ public:
     handle_ = nullptr;
     connected_ = false;
     url_.clear();
+    maximum_message_bytes_ = 0;
     assembler_.reset();
   }
 
@@ -260,6 +284,7 @@ private:
 
   CURL *handle_{};
   bool connected_{};
+  std::size_t maximum_message_bytes_{};
   std::string url_;
   std::array<char, CURL_ERROR_SIZE> error_{};
   std::optional<WebSocketMessageAssembler> assembler_;

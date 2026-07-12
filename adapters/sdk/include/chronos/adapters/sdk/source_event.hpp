@@ -94,6 +94,8 @@ struct SourceCaptureInput final {
   contracts::SourceEventId source_event_id;
   contracts::TimePoint chronos_receive_time;
   std::span<const std::byte> raw_payload;
+  std::size_t original_payload_size{};
+  bool complete_payload_available{true};
   FramingProtocol framing_protocol{FramingProtocol::WebSocket};
   SourceFrameKind frame_kind{SourceFrameKind::Unknown};
   FramingStatus framing_status{FramingStatus::Complete};
@@ -167,6 +169,7 @@ enum class CaptureFailure : std::uint8_t {
   DuplicateSourceEventId,
   SequenceExhausted,
   CapacityExceeded,
+  ConsumerRejected,
 };
 
 struct CaptureResult final {

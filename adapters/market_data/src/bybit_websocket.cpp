@@ -394,8 +394,16 @@ TransportResult<bool> BybitWebSocketSession::connect_and_subscribe(
     }
     auto response = transport_->receive(remaining);
     if (!response.ok()) {
+      if (response.failure_evidence.has_value() &&
+          !observe(*response.failure_evidence)) {
+        transport_->close();
+        return {.failure = TransportFailure::CaptureHandoff,
+                .detail = "source capture rejected framing-failure evidence"};
+      }
       transport_->close();
-      return {.failure = response.failure, .detail = response.detail};
+      return {.failure = response.failure,
+              .detail = response.detail,
+              .failure_evidence = std::move(response.failure_evidence)};
     }
     if (!observe(response.value)) {
       transport_->close();
@@ -437,6 +445,15 @@ BybitWebSocketSession::receive(std::chrono::milliseconds timeout) {
     return {.value = std::move(message)};
   }
   auto result = transport_->receive(timeout);
+  if (!result.ok() && result.failure_evidence.has_value()) {
+    if (!observe(*result.failure_evidence)) {
+      transport_->close();
+      return {.failure = TransportFailure::CaptureHandoff,
+              .detail = "source capture rejected framing-failure evidence"};
+    }
+    transport_->close();
+    return result;
+  }
   if (result.ok() && !observe(result.value)) {
     transport_->close();
     return {.failure = TransportFailure::CaptureHandoff,

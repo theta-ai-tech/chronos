@@ -49,9 +49,30 @@ bool valid_input(const SourceCaptureInput &input) noexcept {
       input.integrity_status == CaptureIntegrityStatus::Complete &&
       (input.framing_status != FramingStatus::Complete ||
        input.frame_kind == SourceFrameKind::Unknown);
+  const auto original_size = input.original_payload_size == 0
+                                 ? input.raw_payload.size()
+                                 : input.original_payload_size;
+  const bool size_valid = original_size >= input.raw_payload.size() &&
+                          (!input.complete_payload_available ||
+                           original_size == input.raw_payload.size());
+  const bool status_consistent =
+      (input.integrity_status == CaptureIntegrityStatus::Complete &&
+       input.framing_status == FramingStatus::Complete) ||
+      (input.integrity_status == CaptureIntegrityStatus::Malformed &&
+       input.framing_status == FramingStatus::Invalid) ||
+      (input.integrity_status == CaptureIntegrityStatus::Unsupported &&
+       input.framing_status == FramingStatus::Unsupported) ||
+      (input.integrity_status == CaptureIntegrityStatus::Truncated &&
+       input.framing_status == FramingStatus::Incomplete) ||
+      (input.integrity_status == CaptureIntegrityStatus::Corrupt &&
+       input.framing_status == FramingStatus::Invalid) ||
+      (input.integrity_status ==
+           CaptureIntegrityStatus::ResourceLimitExceeded &&
+       input.framing_status == FramingStatus::Incomplete);
   return protocol_valid && frame_kind_valid && framing_valid &&
          integrity_valid && clock_valid && encoding_valid &&
-         compression_valid && !complete_unknown;
+         compression_valid && size_valid && status_consistent &&
+         !complete_unknown;
 }
 } // namespace
 
@@ -73,7 +94,9 @@ SourceEvent::SourceEvent(SourceCaptureContext context, SourceCaptureInput input,
     : context_(std::move(context)), source_event_id_(input.source_event_id),
       chronos_receive_time_(input.chronos_receive_time),
       raw_payload_(std::move(retained_payload)),
-      original_payload_size_(input.raw_payload.size()),
+      original_payload_size_(input.original_payload_size == 0
+                                 ? input.raw_payload.size()
+                                 : input.original_payload_size),
       payload_digest_(std::move(digest)), capture_sequence_(capture_sequence),
       framing_protocol_(input.framing_protocol), frame_kind_(input.frame_kind),
       framing_status_(effective_framing),
@@ -167,18 +190,22 @@ CaptureResult SourceCaptureRecorder::capture(SourceCaptureInput input) {
     return {.failure = CaptureFailure::CapacityExceeded};
   }
 
+  const auto original_size = input.original_payload_size == 0
+                                 ? input.raw_payload.size()
+                                 : input.original_payload_size;
   const auto retained_size = std::min(input.raw_payload.size(),
                                       context_.maximum_retained_payload_bytes);
   const auto retained_view = input.raw_payload.first(retained_size);
   std::vector<std::byte> retained(retained_view.begin(), retained_view.end());
-  const bool limited = retained_size != input.raw_payload.size();
+  const bool limited = retained_size != original_size;
   const auto effective_integrity =
       limited ? CaptureIntegrityStatus::ResourceLimitExceeded
               : input.integrity_status;
   const auto effective_framing =
       limited ? FramingStatus::Incomplete : input.framing_status;
-  auto digest = sha256(retained, limited ? DigestCoverage::RetainedPrefix
-                                         : DigestCoverage::CompletePayload);
+  auto digest = input.complete_payload_available
+                    ? sha256(input.raw_payload, DigestCoverage::CompletePayload)
+                    : sha256(retained, DigestCoverage::RetainedPrefix);
   const auto sequence = next_capture_sequence_;
   SourceEvent event(context_, input, sequence, std::move(retained),
                     std::move(digest), effective_framing, effective_integrity);

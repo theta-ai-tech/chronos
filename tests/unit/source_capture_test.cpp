@@ -85,12 +85,23 @@ private:
 
 class CollectingConsumer final : public market_data::SourceEventConsumer {
 public:
-  bool accept(sdk::SourceEvent event) override {
-    events.push_back(std::move(event));
+  bool accept(const sdk::SourceEvent &event) override {
+    events.push_back(event);
     return true;
   }
 
   std::vector<sdk::SourceEvent> events;
+};
+
+class RetryConsumer final : public market_data::SourceEventConsumer {
+public:
+  bool accept(const sdk::SourceEvent &event) override {
+    seen_ids.push_back(event.source_event_id());
+    return accept_now;
+  }
+
+  bool accept_now{};
+  std::vector<contracts::SourceEventId> seen_ids;
 };
 
 bool equal_payload(std::span<const std::byte> left,
@@ -150,6 +161,7 @@ TEST_CASE("malformed and unsupported source bytes are retained unchanged") {
   auto malformed_input =
       input(id<contracts::SourceEventId>(14), malformed_payload);
   malformed_input.integrity_status = sdk::CaptureIntegrityStatus::Malformed;
+  malformed_input.framing_status = sdk::FramingStatus::Invalid;
   auto malformed = recorder->capture(malformed_input);
   CHECK(malformed.ok());
   CHECK(malformed.event->integrity_status() ==
@@ -160,9 +172,19 @@ TEST_CASE("malformed and unsupported source bytes are retained unchanged") {
   auto unsupported_input =
       input(id<contracts::SourceEventId>(15), unsupported_payload);
   unsupported_input.integrity_status = sdk::CaptureIntegrityStatus::Unsupported;
+  unsupported_input.framing_status = sdk::FramingStatus::Unsupported;
   auto unsupported = recorder->capture(unsupported_input);
   CHECK(unsupported.ok());
   CHECK(equal_payload(unsupported.event->raw_payload(), unsupported_payload));
+}
+
+TEST_CASE("contradictory framing and integrity metadata fails closed") {
+  auto recorder = sdk::SourceCaptureRecorder::create(context());
+  const auto payload = bytes("partial");
+  auto contradictory = input(id<contracts::SourceEventId>(42), payload);
+  contradictory.integrity_status = sdk::CaptureIntegrityStatus::Truncated;
+  CHECK(recorder->capture(contradictory).failure ==
+        sdk::CaptureFailure::InvalidInput);
 }
 
 TEST_CASE("resource limit retains a verifiable prefix and original length") {
@@ -178,7 +200,12 @@ TEST_CASE("resource limit retains a verifiable prefix and original length") {
         sdk::CaptureIntegrityStatus::ResourceLimitExceeded);
   CHECK(result.event->framing_status() == sdk::FramingStatus::Incomplete);
   CHECK(result.event->payload_digest().coverage ==
-        sdk::DigestCoverage::RetainedPrefix);
+        sdk::DigestCoverage::CompletePayload);
+  auto second = recorder->capture(
+      input(id<contracts::SourceEventId>(18), bytes("abcdWXYZ")));
+  CHECK(second.ok());
+  CHECK(second.event->payload_digest().bytes !=
+        result.event->payload_digest().bytes);
 }
 
 TEST_CASE(
@@ -195,11 +222,12 @@ TEST_CASE(
       .kind = market_data::WebSocketMessageKind::Text,
       .payload = payload,
       .monotonic_receive_time_nanoseconds = 987654321,
-      .fragmented = true};
+      .fragmented = true,
+      .integrity = market_data::WebSocketIngressIntegrity::Malformed,
+      .original_payload_size = payload.size()};
   auto result = market_data::capture_websocket_message(
       *recorder, id<contracts::SourceEventId>(17),
-      id<contracts::ClockDomainId>(6), message,
-      sdk::CaptureIntegrityStatus::Malformed);
+      id<contracts::ClockDomainId>(6), message);
   CHECK(result.ok());
   CHECK(result.event->chronos_receive_time().nanoseconds() == 987654321);
   CHECK(result.event->fragmented());
@@ -225,4 +253,48 @@ TEST_CASE(
   CHECK(consumer.events.size() == 1);
   CHECK(consumer.events.front().capture_sequence() == 1);
   CHECK(equal_payload(consumer.events.front().raw_payload(), payload));
+}
+
+TEST_CASE("consumer rejection retains the accepted identity for exact retry") {
+  auto recorder = sdk::SourceCaptureRecorder::create(context());
+  SequentialIdentitySource identities;
+  RetryConsumer consumer;
+  market_data::WebSocketSourceCapture capture(std::move(*recorder),
+                                              id<contracts::ClockDomainId>(6),
+                                              identities, consumer);
+  const auto payload = bytes("retry me exactly");
+  market_data::WebSocketMessage message{
+      .kind = market_data::WebSocketMessageKind::Text,
+      .payload = payload,
+      .monotonic_receive_time_nanoseconds = 555};
+  CHECK(!capture.capture(message));
+  CHECK(capture.has_pending());
+  CHECK(capture.last_failure() == sdk::CaptureFailure::ConsumerRejected);
+  consumer.accept_now = true;
+  CHECK(capture.retry_pending());
+  CHECK(!capture.has_pending());
+  CHECK(consumer.seen_ids.size() == 2);
+  CHECK(consumer.seen_ids.front() == consumer.seen_ids.back());
+}
+
+TEST_CASE(
+    "partial transport evidence retains prefix identity and reported size") {
+  auto recorder = sdk::SourceCaptureRecorder::create(context());
+  const auto prefix = bytes("abcd");
+  market_data::WebSocketMessage evidence{
+      .kind = market_data::WebSocketMessageKind::Text,
+      .payload = prefix,
+      .monotonic_receive_time_nanoseconds = 666,
+      .fragmented = true,
+      .integrity =
+          market_data::WebSocketIngressIntegrity::ResourceLimitExceeded,
+      .original_payload_size = 9};
+  auto result = market_data::capture_websocket_message(
+      *recorder, id<contracts::SourceEventId>(43),
+      id<contracts::ClockDomainId>(6), evidence);
+  CHECK(result.ok());
+  CHECK(result.event->original_payload_size() == 9);
+  CHECK(result.event->framing_status() == sdk::FramingStatus::Incomplete);
+  CHECK(result.event->payload_digest().coverage ==
+        sdk::DigestCoverage::RetainedPrefix);
 }

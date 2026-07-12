@@ -40,7 +40,7 @@ private:
 
 class ProbeConsumer final : public market_data::SourceEventConsumer {
 public:
-  bool accept(sdk::SourceEvent event) override {
+  bool accept(const sdk::SourceEvent &event) override {
     if (event.capture_sequence() != count_ + 1 ||
         event.payload_digest().coverage !=
             sdk::DigestCoverage::CompletePayload) {
