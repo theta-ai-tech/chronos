@@ -86,7 +86,8 @@ bool valid(ProductClass product_class) {
 
 bool contained_by(const EffectiveInterval &inner,
                   const EffectiveInterval &outer) {
-  if (inner.domain_id() != outer.domain_id() || inner.first() < outer.first()) {
+  if (inner.partition_id() != outer.partition_id() ||
+      inner.first() < outer.first()) {
     return false;
   }
   if (!outer.last_exclusive().has_value()) {
@@ -99,28 +100,29 @@ bool contained_by(const EffectiveInterval &inner,
 } // namespace
 
 EffectiveInterval::EffectiveInterval(
-    EffectiveDomainId domain_id, std::uint64_t first,
+    contracts::CapturePartitionId partition_id, std::uint64_t first,
     std::optional<std::uint64_t> last_exclusive) noexcept
-    : domain_id_(domain_id), first_(first), last_exclusive_(last_exclusive) {}
+    : partition_id_(partition_id), first_(first),
+      last_exclusive_(last_exclusive) {}
 
 std::optional<EffectiveInterval> EffectiveInterval::from_capture_sequence(
-    EffectiveDomainId domain_id, std::uint64_t first,
+    contracts::CapturePartitionId partition_id, std::uint64_t first,
     std::optional<std::uint64_t> last_exclusive) {
   if (first == 0 || (last_exclusive.has_value() && *last_exclusive <= first)) {
     return std::nullopt;
   }
-  return EffectiveInterval(domain_id, first, last_exclusive);
+  return EffectiveInterval(partition_id, first, last_exclusive);
 }
 
 bool EffectiveInterval::contains(
-    EffectiveDomainId domain_id,
+    contracts::CapturePartitionId partition_id,
     std::uint64_t capture_sequence) const noexcept {
-  return domain_id == domain_id_ && capture_sequence >= first_ &&
+  return partition_id == partition_id_ && capture_sequence >= first_ &&
          (!last_exclusive_.has_value() || capture_sequence < *last_exclusive_);
 }
 
-EffectiveDomainId EffectiveInterval::domain_id() const noexcept {
-  return domain_id_;
+contracts::CapturePartitionId EffectiveInterval::partition_id() const noexcept {
+  return partition_id_;
 }
 
 std::uint64_t EffectiveInterval::first() const noexcept { return first_; }
@@ -174,7 +176,7 @@ ListingDefinition::parse_price(std::string_view decimal) const {
   if (!units.has_value()) {
     return std::nullopt;
   }
-  return contracts::Price::from_units(*units, amount_definition_ref);
+  return contracts::Price::from_units(*units, version);
 }
 
 std::optional<contracts::Quantity>
@@ -183,7 +185,7 @@ ListingDefinition::parse_quantity(std::string_view decimal) const {
   if (!units.has_value()) {
     return std::nullopt;
   }
-  return contracts::Quantity::from_units(*units, amount_definition_ref);
+  return contracts::Quantity::from_units(*units, version);
 }
 
 ReferenceSnapshot::ReferenceSnapshot(contracts::VersionRef snapshot_version,
@@ -198,7 +200,6 @@ ReferenceSnapshot::create(contracts::VersionRef snapshot_version,
                           ListingDefinition listing) {
   if (listing.instrument_id != instrument.instrument_id ||
       !valid(instrument.product_class) || !valid(listing.status) ||
-      listing.amount_definition_ref == 0 ||
       snapshot_version.definition_id() == instrument.version.definition_id() ||
       snapshot_version.definition_id() == listing.version.definition_id() ||
       instrument.version.definition_id() == listing.version.definition_id() ||
@@ -230,12 +231,13 @@ const ListingDefinition &ReferenceSnapshot::listing() const noexcept {
 const ListingDefinition *
 ReferenceSnapshot::resolve(std::string_view venue,
                            std::string_view source_symbol,
-                           EffectiveDomainId domain_id,
+                           contracts::CapturePartitionId partition_id,
                            std::uint64_t capture_sequence) const noexcept {
   if (listing_.status != ListingStatus::Active || listing_.venue != venue ||
       listing_.source_symbol != source_symbol ||
-      !listing_.effective_interval.contains(domain_id, capture_sequence) ||
-      !instrument_.effective_interval.contains(domain_id, capture_sequence)) {
+      !listing_.effective_interval.contains(partition_id, capture_sequence) ||
+      !instrument_.effective_interval.contains(partition_id,
+                                               capture_sequence)) {
     return nullptr;
   }
   return &listing_;

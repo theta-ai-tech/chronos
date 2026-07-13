@@ -1,5 +1,7 @@
 #pragma once
 
+#include "chronos/contracts/value_objects.hpp"
+
 #include <compare>
 #include <cstdint>
 #include <limits>
@@ -55,18 +57,16 @@ private:
 template <typename Tag> class FixedPoint final {
 public:
   using units_type = AmountUnits;
-  using definition_ref_type = std::uint64_t;
+  using definition_ref_type = VersionRef;
 
   [[nodiscard]] static constexpr std::optional<FixedPoint>
   from_units(AmountUnits units, definition_ref_type definition_ref) noexcept {
-    if (definition_ref == 0) {
-      return std::nullopt;
-    }
     return FixedPoint(units, definition_ref);
   }
 
   [[nodiscard]] constexpr AmountUnits units() const noexcept { return units_; }
-  [[nodiscard]] constexpr definition_ref_type definition_ref() const noexcept {
+  [[nodiscard]] constexpr const definition_ref_type &
+  definition_ref() const noexcept {
     return definition_ref_;
   }
 
@@ -121,9 +121,9 @@ using Price = FixedPoint<PriceTag>;
 using Quantity = FixedPoint<QuantityTag>;
 using Money = FixedPoint<MoneyTag>;
 
-static_assert(sizeof(Price) == 16);
-static_assert(sizeof(Quantity) == 16);
-static_assert(sizeof(Money) == 16);
+static_assert(sizeof(Price) == 32);
+static_assert(sizeof(Quantity) == 32);
+static_assert(sizeof(Money) == 32);
 static_assert(std::is_trivially_copyable_v<Price>);
 static_assert(std::is_trivially_copyable_v<Quantity>);
 static_assert(std::is_trivially_copyable_v<Money>);

@@ -26,7 +26,7 @@ constexpr auto kOtherDomain = "018f1f6e-7d3a-7c4b-8a91-0123456789a2";
 
 ReferenceSnapshot snapshot(ListingStatus status = ListingStatus::Active) {
   const auto interval = EffectiveInterval::from_capture_sequence(
-                            id<EffectiveDomainId>(kEffectiveDomain), 10, 20)
+                            id<CapturePartitionId>(kEffectiveDomain), 10, 20)
                             .value();
   return ReferenceSnapshot::create(
              version(kSnapshotVersion, 1),
@@ -47,7 +47,6 @@ ReferenceSnapshot snapshot(ListingStatus status = ListingStatus::Active) {
                  .status = status,
                  .price_tick = DecimalIncrement::parse("0.10").value(),
                  .quantity_step = DecimalIncrement::parse("0.001").value(),
-                 .amount_definition_ref = 7001,
                  .effective_interval = interval,
              })
       .value();
@@ -61,14 +60,14 @@ TEST_CASE("one canonical instrument maps to one distinct listing definition") {
         reference.listing().instrument_id);
   CHECK(reference.listing().listing_id.to_string() == kListingId);
   CHECK(reference.listing().version.version() == 7);
-  const auto domain = id<EffectiveDomainId>(kEffectiveDomain);
+  const auto domain = id<CapturePartitionId>(kEffectiveDomain);
   CHECK(reference.resolve("bybit", "BTCUSDT", domain, 10) != nullptr);
   CHECK(reference.resolve("bybit", "BTCUSDT", domain, 19) != nullptr);
   CHECK(reference.resolve("bybit", "BTCUSDT", domain, 9) == nullptr);
   CHECK(reference.resolve("bybit", "BTCUSDT", domain, 20) == nullptr);
   CHECK(reference.resolve("other", "BTCUSDT", domain, 10) == nullptr);
   CHECK(reference.resolve("bybit", "BTCUSDT",
-                          id<EffectiveDomainId>(kOtherDomain), 10) == nullptr);
+                          id<CapturePartitionId>(kOtherDomain), 10) == nullptr);
   CHECK(snapshot(ListingStatus::Inactive)
             .resolve("bybit", "BTCUSDT", domain, 10) == nullptr);
 }
@@ -79,8 +78,8 @@ TEST_CASE("tick and step definitions drive exact fixed-point conversion") {
   const auto quantity = listing.parse_quantity("1.234");
   CHECK(price->units() == 420001);
   CHECK(quantity->units() == 1234);
-  CHECK(price->definition_ref() == listing.amount_definition_ref);
-  CHECK(quantity->definition_ref() == listing.amount_definition_ref);
+  CHECK(price->definition_ref() == listing.version);
+  CHECK(quantity->definition_ref() == listing.version);
   CHECK(listing.price_tick.scale().exponent() == 1);
   CHECK(listing.quantity_step.scale().exponent() == 3);
   CHECK(!listing.parse_price("42000.15").has_value());
@@ -89,13 +88,14 @@ TEST_CASE("tick and step definitions drive exact fixed-point conversion") {
   CHECK(!listing.parse_quantity("-1.000").has_value());
 
   auto unrelated_definition = listing;
-  unrelated_definition.amount_definition_ref = 7002;
+  unrelated_definition.version = version("018f1f6e-7d3a-7c4b-8a91-0123456789a3",
+                                         listing.version.version());
   const auto unrelated_price = unrelated_definition.parse_price("42000.10");
   CHECK(!price->checked_compare(*unrelated_price).has_value());
 }
 
 TEST_CASE("reference factories reject ambiguous or invalid definitions") {
-  const auto domain = id<EffectiveDomainId>(kEffectiveDomain);
+  const auto domain = id<CapturePartitionId>(kEffectiveDomain);
   CHECK(!EffectiveInterval::from_capture_sequence(domain, 0, std::nullopt)
              .has_value());
   CHECK(!EffectiveInterval::from_capture_sequence(domain, 10, 10).has_value());
@@ -122,12 +122,6 @@ TEST_CASE("reference factories reject ambiguous or invalid definitions") {
       EffectiveInterval::from_capture_sequence(domain, 11, 19).value();
   CHECK(!ReferenceSnapshot::create(
              valid.version(), std::move(narrow_instrument), valid.listing())
-             .has_value());
-
-  auto no_amount_identity = valid.listing();
-  no_amount_identity.amount_definition_ref = 0;
-  CHECK(!ReferenceSnapshot::create(valid.version(), valid.instrument(),
-                                   std::move(no_amount_identity))
              .has_value());
 
   auto shared_definition = valid.listing();

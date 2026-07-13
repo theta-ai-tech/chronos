@@ -16,11 +16,10 @@
 namespace chronos::adapters::sdk {
 
 struct CaptureSessionIdTag;
-struct CapturePartitionIdTag;
 struct SourceConnectionIdTag;
 struct SourceSubscriptionIdTag;
 using CaptureSessionId = contracts::OpaqueId<CaptureSessionIdTag>;
-using CapturePartitionId = contracts::OpaqueId<CapturePartitionIdTag>;
+using CapturePartitionId = contracts::CapturePartitionId;
 using SourceConnectionId = contracts::OpaqueId<SourceConnectionIdTag>;
 using SourceSubscriptionId = contracts::OpaqueId<SourceSubscriptionIdTag>;
 

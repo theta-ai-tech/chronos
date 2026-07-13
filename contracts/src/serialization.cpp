@@ -12,7 +12,7 @@
 namespace chronos::contracts {
 namespace {
 
-constexpr std::array<std::uint8_t, 5> kMagic{'C', 'H', 'R', '1', 1};
+constexpr std::array<std::uint8_t, 5> kMagic{'C', 'H', 'R', '1', 2};
 
 [[nodiscard]] bool valid_utf8(std::span<const std::uint8_t> bytes) noexcept {
   std::size_t index = 0;
@@ -525,11 +525,11 @@ encode_conformance_frame(const ConformanceFrame &frame) {
   writer.raw(kMagic);
   writer.u8(frame.decimal_scale.exponent());
   writer.i64(frame.price.units());
-  writer.u64(frame.price.definition_ref());
+  write_version(writer, frame.price.definition_ref());
   writer.i64(frame.quantity.units());
-  writer.u64(frame.quantity.definition_ref());
+  write_version(writer, frame.quantity.definition_ref());
   writer.i64(frame.money.units());
-  writer.u64(frame.money.definition_ref());
+  write_version(writer, frame.money.definition_ref());
   write_registration(writer, frame.registration);
   write_envelope(writer, frame.envelope);
   return std::move(writer).finish();
@@ -548,9 +548,10 @@ decode_conformance_frame(std::span<const std::uint8_t> bytes) noexcept {
       }
     }
     const auto scale = DecimalScale::from_exponent(reader.u8());
-    const auto price = Price::from_units(reader.i64(), reader.u64());
-    const auto quantity = Quantity::from_units(reader.i64(), reader.u64());
-    const auto money = Money::from_units(reader.i64(), reader.u64());
+    const auto price = Price::from_units(reader.i64(), read_version(reader));
+    const auto quantity =
+        Quantity::from_units(reader.i64(), read_version(reader));
+    const auto money = Money::from_units(reader.i64(), read_version(reader));
     if (!scale.has_value() || !price.has_value() || !quantity.has_value() ||
         !money.has_value()) {
       return std::nullopt;

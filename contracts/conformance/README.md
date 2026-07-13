@@ -7,7 +7,8 @@
 - **Plane:** Inherits `contracts/` plane.
 - **Language:** Inherits `contracts/` language policy.
 - **Public API:** `chronos/contracts/serialization.hpp`, `chronos.serialization`, and
-  `fixtures/m1-full-frame.hex` define the bounded canonical M1 conformance frame.
+  `fixtures/m1-full-frame.hex` define the bounded canonical conformance frame.
+  Frame version 2 carries complete amount-definition `VersionRef` identities.
 - **Failure semantics:** malformed, oversized, noncanonical, or semantically invalid frames
   fail before authority admission; trailing and truncated bytes are rejected.
 - **Purpose:** Fixtures and cross-boundary compatibility tests.

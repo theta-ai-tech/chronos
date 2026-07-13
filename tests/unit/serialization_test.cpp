@@ -65,7 +65,7 @@ TEST_CASE("C++ codec rejects truncation and trailing bytes") {
   bytes.pop_back();
   CHECK(!decode_conformance_frame(bytes).has_value());
   bytes = fixture_bytes();
-  for (std::size_t index = 426; index < 430; ++index) {
+  for (std::size_t index = 474; index < 478; ++index) {
     bytes[index] = 0xFF;
   }
   CHECK(!decode_conformance_frame(bytes).has_value());
@@ -76,11 +76,11 @@ TEST_CASE("C++ codec rejects truncation and trailing bytes") {
 
 TEST_CASE("C++ codec rejects hostile counts and invalid UTF-8") {
   auto bytes = fixture_bytes();
-  for (std::size_t index = 136; index < 140; ++index) {
+  for (std::size_t index = 184; index < 188; ++index) {
     bytes[index] = 0xFF;
   }
   CHECK(!decode_conformance_frame(bytes).has_value());
   bytes = fixture_bytes();
-  bytes[58] = 0xFF;
+  bytes[106] = 0xFF;
   CHECK(!decode_conformance_frame(bytes).has_value());
 }
