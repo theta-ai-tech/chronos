@@ -127,9 +127,9 @@ def make_frame() -> ConformanceFrame:
     )
     return ConformanceFrame(
         DecimalScale(8),
-        Price(12_345, 100),
-        Quantity(67, 101),
-        Money(-890, 102),
+        Price(12_345, version("15", 100)),
+        Quantity(67, version("16", 101)),
+        Money(-890, version("17", 102)),
         registration,
         envelope,
     )
@@ -169,9 +169,9 @@ def test_both_boundaries_reject_noncanonical_frames(mutation) -> None:
 @pytest.mark.parametrize(
     "mutation",
     [
-        lambda value: value[:136] + b"\xff\xff\xff\xff" + value[140:],
-        lambda value: value[:426] + b"\xff\xff\xff\xff" + value[430:],
-        lambda value: value[:58] + b"\xff" + value[59:],
+        lambda value: value[:184] + b"\xff\xff\xff\xff" + value[188:],
+        lambda value: value[:474] + b"\xff\xff\xff\xff" + value[478:],
+        lambda value: value[:106] + b"\xff" + value[107:],
     ],
 )
 def test_both_decoders_reject_hostile_counts_and_invalid_utf8(mutation) -> None:

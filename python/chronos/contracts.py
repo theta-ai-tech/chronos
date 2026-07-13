@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from chronos.value_objects import VersionRef
+
 MIN_AMOUNT_UNITS = -(2**63)
 MAX_AMOUNT_UNITS = 2**63 - 1
 
@@ -38,19 +40,15 @@ class DecimalScale:
 @dataclass(frozen=True)
 class _FixedPoint:
     units: int
-    definition_ref: int
+    definition_ref: VersionRef
 
     def __post_init__(self) -> None:
         if isinstance(self.units, bool) or not isinstance(self.units, int):
             raise TypeError("fixed-point units must be an integer")
         if not MIN_AMOUNT_UNITS <= self.units <= MAX_AMOUNT_UNITS:
             raise ContractValueError("fixed-point units exceed signed 64-bit range")
-        if isinstance(self.definition_ref, bool) or not isinstance(self.definition_ref, int):
-            raise TypeError("unit definition reference must be an integer")
-        if not 1 <= self.definition_ref <= 2**64 - 1:
-            raise ContractValueError(
-                "unit definition reference must be a nonzero unsigned 64-bit value"
-            )
+        if not isinstance(self.definition_ref, VersionRef):
+            raise TypeError("unit definition reference must be a VersionRef")
 
     def checked_add(self, other: object) -> _FixedPoint:
         self._require_same_type(other)

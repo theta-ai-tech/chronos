@@ -46,7 +46,7 @@ from chronos.value_objects import (
     VersionRef,
 )
 
-MAGIC = b"CHR1\x01"
+MAGIC = b"CHR1\x02"
 MAX_CONFORMANCE_FRAME_BYTES = 64 * 1024
 T = TypeVar("T")
 
@@ -406,7 +406,7 @@ def encode_conformance_frame(frame: ConformanceFrame) -> bytes:
     writer.u8(frame.decimal_scale.exponent)
     for amount in (frame.price, frame.quantity, frame.money):
         writer.i64(amount.units)
-        writer.u64(amount.definition_ref)
+        _write_version(writer, amount.definition_ref)
     _write_registration(writer, frame.registration)
     _write_envelope(writer, frame.envelope)
     if len(writer.data) > MAX_CONFORMANCE_FRAME_BYTES:
@@ -423,9 +423,9 @@ def _decode_conformance_frame(data: bytes) -> ConformanceFrame:
     if reader._read(len(MAGIC)) != MAGIC:
         raise ContractValueError("unsupported conformance frame version")
     scale = DecimalScale(reader.u8())
-    price = Price(reader.i64(), reader.u64())
-    quantity = Quantity(reader.i64(), reader.u64())
-    money = Money(reader.i64(), reader.u64())
+    price = Price(reader.i64(), _read_version(reader))
+    quantity = Quantity(reader.i64(), _read_version(reader))
+    money = Money(reader.i64(), _read_version(reader))
     registration = _read_registration(reader)
     envelope = _read_envelope(reader, registration)
     reader.finish()

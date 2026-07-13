@@ -7,22 +7,42 @@
 
 using chronos::contracts::checked_multiply_divide;
 using chronos::contracts::DecimalScale;
+using chronos::contracts::DefinitionId;
 using chronos::contracts::Money;
 using chronos::contracts::Price;
 using chronos::contracts::Quantity;
 using chronos::contracts::RoundingMode;
+using chronos::contracts::VersionRef;
+
+namespace {
+VersionRef definition(std::string_view value, std::uint64_t version) {
+  return VersionRef::from(DefinitionId::parse(value).value(), version).value();
+}
+
+const auto kPriceDefinition =
+    definition("018f1f6e-7d3a-7c4b-8a91-012345678901", 7);
+const auto kOtherDefinition =
+    definition("018f1f6e-7d3a-7c4b-8a91-012345678902", 7);
+const auto kMoneyDefinition =
+    definition("018f1f6e-7d3a-7c4b-8a91-012345678903", 9);
+} // namespace
 
 TEST_CASE("fixed-point values preserve exact type-scoped equality") {
-  CHECK(Price::from_units(42, 7) == Price::from_units(42, 7));
-  CHECK(Price::from_units(42, 7) != Price::from_units(43, 7));
-  CHECK(Price::from_units(42, 7) != Price::from_units(42, 8));
-  CHECK(Quantity::from_units(42, 7) == Quantity::from_units(42, 7));
-  CHECK(Money::from_units(-7, 9) == Money::from_units(-7, 9));
-  const auto lower = Price::from_units(1, 7).value();
-  const auto higher = Price::from_units(2, 7).value();
+  CHECK(Price::from_units(42, kPriceDefinition) ==
+        Price::from_units(42, kPriceDefinition));
+  CHECK(Price::from_units(42, kPriceDefinition) !=
+        Price::from_units(43, kPriceDefinition));
+  CHECK(Price::from_units(42, kPriceDefinition) !=
+        Price::from_units(42, kOtherDefinition));
+  CHECK(Quantity::from_units(42, kPriceDefinition) ==
+        Quantity::from_units(42, kPriceDefinition));
+  CHECK(Money::from_units(-7, kMoneyDefinition) ==
+        Money::from_units(-7, kMoneyDefinition));
+  const auto lower = Price::from_units(1, kPriceDefinition).value();
+  const auto higher = Price::from_units(2, kPriceDefinition).value();
   CHECK(lower.checked_compare(higher) == std::strong_ordering::less);
-  CHECK(!lower.checked_compare(Price::from_units(2, 8).value()).has_value());
-  CHECK(!Price::from_units(1, 0).has_value());
+  CHECK(!lower.checked_compare(Price::from_units(2, kOtherDefinition).value())
+             .has_value());
 }
 
 TEST_CASE("decimal scale is bounded and exact") {
@@ -38,19 +58,22 @@ TEST_CASE("decimal scale is bounded and exact") {
 TEST_CASE("checked addition and subtraction reject overflow") {
   constexpr auto maximum = std::numeric_limits<std::int64_t>::max();
   constexpr auto minimum = std::numeric_limits<std::int64_t>::min();
-  const auto price = Price::from_units(7, 1).value();
-  const auto money = Money::from_units(7, 2).value();
-  CHECK(price.checked_add(Price::from_units(5, 1).value()) ==
-        Price::from_units(12, 1));
-  CHECK(money.checked_subtract(Money::from_units(5, 2).value()) ==
-        Money::from_units(2, 2));
-  CHECK(!Price::from_units(maximum, 1)
-             ->checked_add(Price::from_units(1, 1).value())
+  const auto price = Price::from_units(7, kPriceDefinition).value();
+  const auto money = Money::from_units(7, kMoneyDefinition).value();
+  CHECK(price.checked_add(Price::from_units(5, kPriceDefinition).value()) ==
+        Price::from_units(12, kPriceDefinition));
+  CHECK(
+      money.checked_subtract(Money::from_units(5, kMoneyDefinition).value()) ==
+      Money::from_units(2, kMoneyDefinition));
+  CHECK(!Price::from_units(maximum, kPriceDefinition)
+             ->checked_add(Price::from_units(1, kPriceDefinition).value())
              .has_value());
-  CHECK(!Quantity::from_units(minimum, 1)
-             ->checked_subtract(Quantity::from_units(1, 1).value())
+  CHECK(
+      !Quantity::from_units(minimum, kPriceDefinition)
+           ->checked_subtract(Quantity::from_units(1, kPriceDefinition).value())
+           .has_value());
+  CHECK(!price.checked_add(Price::from_units(5, kOtherDefinition).value())
              .has_value());
-  CHECK(!price.checked_add(Price::from_units(5, 2).value()).has_value());
 }
 
 TEST_CASE("multiply-divide applies every declared rounding direction") {

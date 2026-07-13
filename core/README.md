@@ -18,6 +18,8 @@ authoritative ownership and dependency rules.
 
 ## Submodules
 
+- **`reference_data/`** — Versioned canonical-instrument and listing authority,
+  effective selection, and exact tick/step conversion.
 - **`dispatch/`** — Run-input dispatch: single monotonic run_input_sequence and merge policy.
 - **`market_state/`** — Listing-scoped L2 state, StateLineage cuts, immutable view publication.
 - **`features/`** — Deterministic, versioned feature observations.

@@ -10,22 +10,32 @@ from chronos.contracts import (
     RoundingMode,
     checked_multiply_divide,
 )
+from chronos.value_objects import DefinitionId, VersionRef
+
+
+def definition(suffix: str, version: int) -> VersionRef:
+    return VersionRef(DefinitionId.parse(f"018f1f6e-7d3a-7c4b-8a91-0123456789{suffix}"), version)
+
+
+PRICE_DEFINITION = definition("01", 7)
+OTHER_DEFINITION = definition("02", 7)
+MONEY_DEFINITION = definition("03", 9)
 
 
 def test_amounts_are_exact_type_scoped_signed_64_bit_values() -> None:
-    assert Price(42, 7) == Price(42, 7)
-    assert Price(42, 7) != Price(43, 7)
-    assert Price(42, 7) != Price(42, 8)
-    assert Price(42, 7) != Quantity(42, 7)
-    assert Money(MIN_AMOUNT_UNITS, 9).units == MIN_AMOUNT_UNITS
-    assert Money(MAX_AMOUNT_UNITS, 9).units == MAX_AMOUNT_UNITS
+    assert Price(42, PRICE_DEFINITION) == Price(42, PRICE_DEFINITION)
+    assert Price(42, PRICE_DEFINITION) != Price(43, PRICE_DEFINITION)
+    assert Price(42, PRICE_DEFINITION) != Price(42, OTHER_DEFINITION)
+    assert Price(42, PRICE_DEFINITION) != Quantity(42, PRICE_DEFINITION)
+    assert Money(MIN_AMOUNT_UNITS, MONEY_DEFINITION).units == MIN_AMOUNT_UNITS
+    assert Money(MAX_AMOUNT_UNITS, MONEY_DEFINITION).units == MAX_AMOUNT_UNITS
 
     with pytest.raises((TypeError, ContractValueError)):
-        Price(1.0, 7)  # type: ignore[arg-type]
+        Price(1.0, PRICE_DEFINITION)  # type: ignore[arg-type]
     with pytest.raises(ContractValueError):
-        Quantity(MAX_AMOUNT_UNITS + 1, 7)
-    with pytest.raises(ContractValueError):
-        Price(1, 0)
+        Quantity(MAX_AMOUNT_UNITS + 1, PRICE_DEFINITION)
+    with pytest.raises(TypeError):
+        Price(1, 7)  # type: ignore[arg-type]
 
 
 def test_scale_is_explicit_and_bounded() -> None:
@@ -36,14 +46,20 @@ def test_scale_is_explicit_and_bounded() -> None:
 
 
 def test_checked_arithmetic_rejects_overflow_and_cross_type_operations() -> None:
-    assert Price(7, 1).checked_add(Price(5, 1)) == Price(12, 1)
-    assert Money(7, 2).checked_subtract(Money(5, 2)) == Money(2, 2)
+    assert Price(7, PRICE_DEFINITION).checked_add(Price(5, PRICE_DEFINITION)) == Price(
+        12, PRICE_DEFINITION
+    )
+    assert Money(7, MONEY_DEFINITION).checked_subtract(Money(5, MONEY_DEFINITION)) == Money(
+        2, MONEY_DEFINITION
+    )
     with pytest.raises(ContractValueError):
-        Price(MAX_AMOUNT_UNITS, 1).checked_add(Price(1, 1))
+        Price(MAX_AMOUNT_UNITS, PRICE_DEFINITION).checked_add(Price(1, PRICE_DEFINITION))
     with pytest.raises(TypeError):
-        Price(1, 1).checked_add(Quantity(1, 1))  # type: ignore[arg-type]
+        Price(1, PRICE_DEFINITION).checked_add(
+            Quantity(1, PRICE_DEFINITION)  # type: ignore[arg-type]
+        )
     with pytest.raises(ContractValueError):
-        Price(1, 1).checked_add(Price(1, 2))
+        Price(1, PRICE_DEFINITION).checked_add(Price(1, OTHER_DEFINITION))
 
 
 @pytest.mark.parametrize(

@@ -94,6 +94,11 @@ class SourceEventId(OpaqueId):
 
 
 @dataclass(frozen=True)
+class CapturePartitionId(OpaqueId):
+    pass
+
+
+@dataclass(frozen=True)
 class CanonicalInstrumentId(OpaqueId):
     pass
 
