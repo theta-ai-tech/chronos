@@ -5,6 +5,7 @@ add_executable(chronos_unit_tests
   unit/source_capture_test.cpp
   unit/capture_dataset_test.cpp
   unit/reconnect_test.cpp
+  unit/reference_data_test.cpp
   unit/boundary_test.cpp
   unit/event_envelope_test.cpp
   unit/fixed_point_test.cpp
