@@ -85,6 +85,11 @@ bool valid(ProductClass product_class) {
          product_class == ProductClass::LinearPerpetual;
 }
 
+bool valid(VenueEnvironment environment) {
+  return environment == VenueEnvironment::Test ||
+         environment == VenueEnvironment::Production;
+}
+
 bool contained_by(const EffectiveInterval &inner,
                   const EffectiveInterval &outer) {
   if (inner.partition_id() != outer.partition_id() ||
@@ -200,7 +205,8 @@ ReferenceSnapshot::create(contracts::VersionRef snapshot_version,
                           CanonicalInstrumentDefinition instrument,
                           ListingDefinition listing) {
   if (listing.instrument_id != instrument.instrument_id ||
-      !valid(instrument.product_class) || !valid(listing.status) ||
+      !valid(instrument.product_class) || !valid(listing.environment) ||
+      !valid(listing.status) ||
       snapshot_version.definition_id() == instrument.version.definition_id() ||
       snapshot_version.definition_id() == listing.version.definition_id() ||
       instrument.version.definition_id() == listing.version.definition_id() ||
@@ -230,11 +236,14 @@ const ListingDefinition &ReferenceSnapshot::listing() const noexcept {
 }
 
 const ListingDefinition *
-ReferenceSnapshot::resolve(std::string_view venue,
+ReferenceSnapshot::resolve(std::string_view venue, VenueEnvironment environment,
+                           ProductClass product_class,
                            std::string_view source_symbol,
                            contracts::CapturePartitionId partition_id,
                            std::uint64_t capture_sequence) const noexcept {
   if (listing_.status != ListingStatus::Active || listing_.venue != venue ||
+      listing_.environment != environment ||
+      instrument_.product_class != product_class ||
       listing_.source_symbol != source_symbol ||
       !listing_.effective_interval.contains(partition_id, capture_sequence) ||
       !instrument_.effective_interval.contains(partition_id,

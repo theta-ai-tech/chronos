@@ -35,6 +35,28 @@ source_time(std::uint64_t milliseconds,
       nanoseconds_per_millisecond);
 }
 
+std::optional<core::reference_data::VenueEnvironment>
+reference_environment(adapters::sdk::EnvironmentClass environment) {
+  switch (environment) {
+  case adapters::sdk::EnvironmentClass::Test:
+    return core::reference_data::VenueEnvironment::Test;
+  case adapters::sdk::EnvironmentClass::Production:
+    return core::reference_data::VenueEnvironment::Production;
+  }
+  return std::nullopt;
+}
+
+std::optional<core::reference_data::ProductClass>
+reference_product_class(SourceProductClass product_class) {
+  switch (product_class) {
+  case SourceProductClass::Spot:
+    return core::reference_data::ProductClass::Spot;
+  case SourceProductClass::LinearPerpetual:
+    return core::reference_data::ProductClass::LinearPerpetual;
+  }
+  return std::nullopt;
+}
+
 BookNormalizationFailure
 convert_snapshot_side(const std::vector<SourceBookLevel> &source,
                       const core::reference_data::ListingDefinition &listing,
@@ -97,25 +119,41 @@ convert_delta_side(const std::vector<SourceBookLevel> &source,
 } // namespace
 
 BookNormalizationResult
-normalize_book(const DecodedBookMessage &message,
-               const SourceCaptureLineage &lineage,
-               std::string_view source_venue,
+normalize_book(const DecodedBookEnrichment &enrichment,
                const core::reference_data::ReferenceSnapshot &reference,
                contracts::ClockDomainId source_wall_clock_domain_id,
+               const ReferenceSelectionPolicy &selection_policy,
                const BookNormalizerVersions &versions) {
+  const auto &message = enrichment.message();
+  const auto &lineage = enrichment.source_lineage();
   if (!valid_version(versions.decoder_version) ||
       !valid_version(versions.source_schema_version) ||
-      !valid_version(versions.normalizer_version)) {
+      !valid_version(versions.normalizer_version) ||
+      !valid_version(selection_policy.lineage_schema_version) ||
+      !valid_version(selection_policy.semantic_key_policy_version) ||
+      !valid_version(selection_policy.effective_basis_policy_version) ||
+      !valid_version(selection_policy.selection_policy_version)) {
+    return {.failure = BookNormalizationFailure::SchemaViolation};
+  }
+
+  const auto environment =
+      reference_environment(message.assertions.environment);
+  const auto product_class =
+      reference_product_class(message.assertions.product_class);
+  if (!environment.has_value() || !product_class.has_value()) {
     return {.failure = BookNormalizationFailure::SchemaViolation};
   }
 
   const auto &reference_listing = reference.listing();
-  if (reference_listing.venue != source_venue ||
+  if (reference_listing.venue != message.assertions.venue ||
+      reference_listing.environment != *environment ||
+      reference.instrument().product_class != *product_class ||
       reference_listing.source_symbol != message.assertions.source_symbol) {
     return {.failure = BookNormalizationFailure::WrongTopicOrSymbol};
   }
   const auto *listing =
-      reference.resolve(source_venue, message.assertions.source_symbol,
+      reference.resolve(message.assertions.venue, *environment, *product_class,
+                        message.assertions.source_symbol,
                         lineage.capture_partition_id, lineage.capture_sequence);
   if (listing == nullptr) {
     return {.failure = BookNormalizationFailure::ReferenceUnavailable};
@@ -164,8 +202,33 @@ normalize_book(const DecodedBookMessage &message,
               .reference_snapshot_version = reference.version(),
               .instrument_version = reference.instrument().version,
               .listing_version = listing->version,
+              .reference_selection =
+                  {
+                      .reference_configuration_lineage_id =
+                          selection_policy.reference_configuration_lineage_id,
+                      .lineage_schema_version =
+                          selection_policy.lineage_schema_version,
+                      .semantic_key_policy_version =
+                          selection_policy.semantic_key_policy_version,
+                      .effective_basis_policy_version =
+                          selection_policy.effective_basis_policy_version,
+                      .selection_policy_version =
+                          selection_policy.selection_policy_version,
+                      .semantic_key =
+                          {
+                              .venue = message.assertions.venue,
+                              .environment = message.assertions.environment,
+                              .product_class = message.assertions.product_class,
+                              .source_listing_key =
+                                  message.assertions.source_symbol,
+                          },
+                      .effective_capture_partition_id =
+                          lineage.capture_partition_id,
+                      .effective_capture_sequence = lineage.capture_sequence,
+                  },
               .source_lineage = lineage,
               .source_assertions = message.assertions,
+              .source_extensions = message.extensions,
               .source_event_time = *timestamp,
               .decoder_version = versions.decoder_version,
               .source_schema_version = versions.source_schema_version,

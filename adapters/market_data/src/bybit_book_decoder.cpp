@@ -1,5 +1,7 @@
 #include "chronos/adapters/market_data/bybit_book_decoder.hpp"
 
+#include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstdint>
 #include <limits>
@@ -9,6 +11,16 @@
 #include <vector>
 
 namespace chronos::adapters::market_data {
+
+class BybitBookDecoderAccess final {
+public:
+  static normalization::market_data::DecodedBookEnrichment
+  bind(normalization::market_data::DecodedBookMessage message,
+       normalization::market_data::SourceCaptureLineage source_lineage) {
+    return {std::move(message), std::move(source_lineage)};
+  }
+};
+
 namespace {
 
 namespace book = chronos::normalization::market_data;
@@ -400,6 +412,137 @@ const JsonValue *member(const JsonValue &object, std::string_view key) {
   return nullptr;
 }
 
+void append_json_string(std::string_view value, std::string &output) {
+  constexpr std::array<char, 16> hex{'0', '1', '2', '3', '4', '5', '6', '7',
+                                     '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+  output.push_back('"');
+  for (const auto character : value) {
+    const auto byte = static_cast<unsigned char>(character);
+    switch (character) {
+    case '"':
+      output += "\\\"";
+      break;
+    case '\\':
+      output += "\\\\";
+      break;
+    case '\b':
+      output += "\\b";
+      break;
+    case '\f':
+      output += "\\f";
+      break;
+    case '\n':
+      output += "\\n";
+      break;
+    case '\r':
+      output += "\\r";
+      break;
+    case '\t':
+      output += "\\t";
+      break;
+    default:
+      if (byte < 0x20U) {
+        output += "\\u00";
+        output.push_back(hex[byte >> 4U]);
+        output.push_back(hex[byte & 0x0FU]);
+      } else {
+        output.push_back(character);
+      }
+      break;
+    }
+  }
+  output.push_back('"');
+}
+
+void append_canonical_json(const JsonValue &value, std::string &output) {
+  switch (value.kind) {
+  case JsonKind::Null:
+  case JsonKind::Boolean:
+  case JsonKind::Number:
+    output += value.scalar;
+    return;
+  case JsonKind::String:
+    append_json_string(value.scalar, output);
+    return;
+  case JsonKind::Array:
+    output.push_back('[');
+    for (std::size_t index = 0; index < value.array.size(); ++index) {
+      if (index != 0) {
+        output.push_back(',');
+      }
+      append_canonical_json(value.array[index], output);
+    }
+    output.push_back(']');
+    return;
+  case JsonKind::Object: {
+    std::vector<const JsonValue *> members;
+    members.reserve(value.object.size());
+    for (const auto &child : value.object) {
+      members.push_back(&child);
+    }
+    std::sort(members.begin(), members.end(),
+              [](const auto *left, const auto *right) {
+                return left->key < right->key;
+              });
+    output.push_back('{');
+    for (std::size_t index = 0; index < members.size(); ++index) {
+      if (index != 0) {
+        output.push_back(',');
+      }
+      append_json_string(members[index]->key, output);
+      output.push_back(':');
+      append_canonical_json(*members[index], output);
+    }
+    output.push_back('}');
+    return;
+  }
+  }
+}
+
+template <std::size_t Size>
+bool known_member(std::string_view key,
+                  const std::array<std::string_view, Size> &known) {
+  return std::find(known.begin(), known.end(), key) != known.end();
+}
+
+BookNormalizationFailure
+collect_extensions(const JsonValue &root, const JsonValue &data,
+                   std::size_t maximum_bytes,
+                   std::vector<book::SourceExtensionField> &output) {
+  constexpr std::array<std::string_view, 5> root_members{"topic", "type", "ts",
+                                                         "data", "cts"};
+  constexpr std::array<std::string_view, 5> data_members{"s", "b", "a", "u",
+                                                         "seq"};
+  std::size_t bytes{};
+  const auto collect = [&output, &bytes, maximum_bytes](const JsonValue &object,
+                                                        std::string_view prefix,
+                                                        const auto &known) {
+    for (const auto &value : object.object) {
+      if (known_member(value.key, known)) {
+        continue;
+      }
+      book::SourceExtensionField extension{.path =
+                                               std::string(prefix) + value.key};
+      append_canonical_json(value, extension.canonical_json);
+      bytes += extension.path.size() + extension.canonical_json.size();
+      if (bytes > maximum_bytes) {
+        return false;
+      }
+      output.push_back(std::move(extension));
+    }
+    return true;
+  };
+  if (!collect(root, "$.", root_members) ||
+      !collect(data, "$.data.", data_members)) {
+    return BookNormalizationFailure::ResourceLimitExceeded;
+  }
+  std::sort(output.begin(), output.end(),
+            [](const auto &left, const auto &right) {
+              return left.path < right.path;
+            });
+  return BookNormalizationFailure::None;
+}
+
 std::optional<std::uint64_t> positive_integer(const JsonValue *value) {
   if (value == nullptr || value->kind != JsonKind::Number ||
       value->scalar.empty() || value->scalar.front() == '-' ||
@@ -476,8 +619,10 @@ std::optional<TopicParts> parse_topic(std::string_view topic) {
 bool integrity_eligible(const CaptureDatasetManifest &manifest,
                         const CaptureDatasetRecord &record,
                         const BybitBookDecodeLimits &limits) {
-  return manifest.venue == "bybit" && manifest.record_count != 0 &&
+  return manifest.format_version == "chronos-source-capture-v1" &&
+         manifest.venue == "bybit" && manifest.record_count != 0 &&
          manifest.adapter_id == "chronos.bybit.public-market-data" &&
+         manifest.schema_policy_version == "bybit-v5-public-v1" &&
          manifest.endpoint == sdk::EndpointClass::PublicMarketData &&
          manifest.data_classification ==
              sdk::DataClassification::PublicMarketData &&
@@ -560,9 +705,18 @@ BookNormalizationFailure parser_failure(JsonFailure failure) {
 } // namespace
 
 BybitBookDecodeResult
-decode_bybit_v5_book(const CaptureDatasetManifest &manifest,
-                     const CaptureDatasetRecord &record,
+decode_bybit_v5_book(const DatasetReadResult &dataset, std::size_t record_index,
+                     const BybitBookDecodePolicy &policy,
                      const BybitBookDecodeLimits &limits) {
+  if (!dataset.ok() || record_index >= dataset.records().size()) {
+    return {.failure = BookNormalizationFailure::IntegrityIneligible};
+  }
+  if (policy.product_class != book::SourceProductClass::Spot &&
+      policy.product_class != book::SourceProductClass::LinearPerpetual) {
+    return {.failure = BookNormalizationFailure::SchemaViolation};
+  }
+  const auto &manifest = dataset.manifest().value();
+  const auto &record = dataset.records()[record_index];
   if (record.raw_payload.size() > limits.maximum_payload_bytes) {
     return {.failure = BookNormalizationFailure::ResourceLimitExceeded};
   }
@@ -622,6 +776,9 @@ decode_bybit_v5_book(const CaptureDatasetManifest &manifest,
   book::DecodedBookMessage message{
       .assertions = {
           .kind = kind,
+          .venue = manifest.venue,
+          .environment = manifest.environment,
+          .product_class = policy.product_class,
           .topic = std::string(*topic),
           .source_symbol = std::string(*symbol),
           .depth = topic_parts->depth,
@@ -641,11 +798,20 @@ decode_bybit_v5_book(const CaptureDatasetManifest &manifest,
   if (failure != BookNormalizationFailure::None) {
     return {.failure = failure};
   }
+  failure = collect_extensions(*root, *data, limits.maximum_extension_bytes,
+                               message.extensions);
+  if (failure != BookNormalizationFailure::None) {
+    return {.failure = failure};
+  }
 
   return {
-      .message = std::move(message),
-      .source_lineage =
-          book::SourceCaptureLineage{
+      .enrichment = BybitBookDecoderAccess::bind(
+          std::move(message),
+          {
+              .dataset_format_version = manifest.format_version,
+              .dataset_id = manifest.dataset_id,
+              .records_sha256 = manifest.records_sha256,
+              .dataset_record_index = static_cast<std::uint64_t>(record_index),
               .source_event_id = record.source_event_id,
               .capture_session_id = manifest.capture_session_id,
               .runtime_id = manifest.runtime_id,
@@ -655,7 +821,15 @@ decode_bybit_v5_book(const CaptureDatasetManifest &manifest,
               .capture_sequence = record.capture_sequence,
               .chronos_receive_time = record.chronos_receive_time,
               .payload_digest = record.payload_digest,
-          },
+              .adapter_version = manifest.adapter_version,
+              .build_version = manifest.build_version,
+              .framing_version = manifest.framing_version,
+              .static_configuration_version =
+                  manifest.static_configuration_version,
+              .capability_manifest_version =
+                  manifest.capability_manifest_version,
+              .schema_policy_version = manifest.schema_policy_version,
+          }),
       .failure = BookNormalizationFailure::None,
   };
 }

@@ -112,10 +112,10 @@ TEST_CASE("capture dataset seals and rereads deterministically") {
   const auto read_twice = market_data::read_capture_dataset(path);
   CHECK(read_once.ok());
   CHECK(read_twice.ok());
-  CHECK(read_once.manifest->dataset_id == sealed.manifest->dataset_id);
-  CHECK(read_once.records == read_twice.records);
-  CHECK(read_once.records[0].raw_payload == one);
-  CHECK(read_once.records[1].capture_sequence == 2);
+  CHECK(read_once.manifest().value().dataset_id == sealed.manifest->dataset_id);
+  CHECK(read_once.records() == read_twice.records());
+  CHECK(read_once.records()[0].raw_payload == one);
+  CHECK(read_once.records()[1].capture_sequence == 2);
   std::filesystem::remove_all(path);
 }
 
@@ -135,7 +135,7 @@ TEST_CASE("capture dataset rejects sequence gaps and corruption") {
   records.seekp(-1, std::ios::end);
   records.put('x');
   records.close();
-  CHECK(market_data::read_capture_dataset(path).failure ==
+  CHECK(market_data::read_capture_dataset(path).failure() ==
         market_data::DatasetFailure::IntegrityMismatch);
   std::filesystem::remove_all(path);
 }

@@ -400,7 +400,7 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
   const auto manifest_size = std::filesystem::file_size(
       directory / "manifest.txt", manifest_size_error);
   if (manifest_size_error || manifest_size > kMaximumManifestBytes)
-    return {.failure = DatasetFailure::InvalidManifest};
+    return DatasetReadResult(DatasetFailure::InvalidManifest);
   std::ifstream manifest_file(directory / "manifest.txt", std::ios::binary);
   std::map<std::string, std::string> values;
   std::string line;
@@ -409,7 +409,7 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
     if (separator == std::string::npos || separator == 0 ||
         !values.emplace(line.substr(0, separator), line.substr(separator + 1))
              .second)
-      return {.failure = DatasetFailure::InvalidManifest};
+      return DatasetReadResult(DatasetFailure::InvalidManifest);
   }
   const std::array required{"dataset_id",
                             "format",
@@ -441,10 +441,10 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
                             "first_capture_sequence",
                             "last_capture_sequence"};
   if (!manifest_file.eof() || values.size() != required.size())
-    return {.failure = DatasetFailure::InvalidManifest};
+    return DatasetReadResult(DatasetFailure::InvalidManifest);
   for (const auto *key : required)
     if (!values.contains(key))
-      return {.failure = DatasetFailure::InvalidManifest};
+      return DatasetReadResult(DatasetFailure::InvalidManifest);
   const auto session =
       sdk::CaptureSessionId::parse(values["capture_session_id"]);
   const auto partition =
@@ -513,7 +513,7 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
       !parse_hex(values["records_sha256"]) ||
       values["dataset_class"] != "raw_source_capture" ||
       *replay_admissible != 0)
-    return {.failure = DatasetFailure::InvalidManifest};
+    return DatasetReadResult(DatasetFailure::InvalidManifest);
   CaptureDatasetManifest manifest{
       .format_version = values["format"],
       .dataset_id = values["dataset_id"],
@@ -552,32 +552,32 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
               canonical_manifest.size()),
           sdk::DigestCoverage::CompletePayload)
           .hex() != manifest.dataset_id)
-    return {.failure = DatasetFailure::IntegrityMismatch};
+    return DatasetReadResult(DatasetFailure::IntegrityMismatch);
   std::ifstream records_file(directory / "records.bin", std::ios::binary);
   std::error_code size_error;
   const auto file_size =
       std::filesystem::file_size(directory / "records.bin", size_error);
   if (size_error || file_size > kMaximumDatasetBytes ||
       file_size != manifest.records_bytes)
-    return {.failure = DatasetFailure::InvalidRecord};
+    return DatasetReadResult(DatasetFailure::InvalidRecord);
   std::vector<char> chars((std::istreambuf_iterator<char>(records_file)), {});
   if (records_file.bad())
-    return {.failure = DatasetFailure::Io};
+    return DatasetReadResult(DatasetFailure::Io);
   std::vector<std::byte> bytes(chars.size());
   for (std::size_t i = 0; i < chars.size(); ++i)
     bytes[i] = static_cast<std::byte>(static_cast<unsigned char>(chars[i]));
   if (sdk::sha256(bytes, sdk::DigestCoverage::CompletePayload).hex() !=
       manifest.records_sha256)
-    return {.failure = DatasetFailure::IntegrityMismatch};
+    return DatasetReadResult(DatasetFailure::IntegrityMismatch);
   if (bytes.size() < kMagic.size() ||
       !std::equal(kMagic.begin(), kMagic.end(), bytes.begin()))
-    return {.failure = DatasetFailure::InvalidRecord};
+    return DatasetReadResult(DatasetFailure::InvalidRecord);
   std::size_t offset = kMagic.size();
   while (offset < bytes.size()) {
     const auto size = take_unsigned<std::uint32_t>(bytes, offset);
     if (!size || *size > kMaximumRecordBytes ||
         bytes.size() - std::min(bytes.size(), offset) < *size)
-      return {.failure = DatasetFailure::InvalidRecord};
+      return DatasetReadResult(DatasetFailure::InvalidRecord);
     const auto record_bytes =
         std::span<const std::byte>(bytes).subspan(offset, *size);
     offset += *size;
@@ -596,7 +596,7 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
     if (!event_id || !sequence || !time_bits || !clock_id || !clock_class ||
         !precision || !original_size || !coverage ||
         record_bytes.size() - std::min(record_bytes.size(), cursor) < 32)
-      return {.failure = DatasetFailure::InvalidRecord};
+      return DatasetReadResult(DatasetFailure::InvalidRecord);
     sdk::PayloadDigest digest{.coverage =
                                   static_cast<sdk::DigestCoverage>(*coverage)};
     for (auto &byte : digest.bytes)
@@ -641,12 +641,12 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
         *payload_size >
             record_bytes.size() - std::min(record_bytes.size(), cursor) ||
         cursor + *payload_size != record_bytes.size())
-      return {.failure = DatasetFailure::InvalidRecord};
+      return DatasetReadResult(DatasetFailure::InvalidRecord);
     const auto time = contracts::TimePoint::from(
         static_cast<std::int64_t>(*time_bits), *clock_id,
         static_cast<contracts::ClockClass>(*clock_class), *precision);
     if (!time)
-      return {.failure = DatasetFailure::InvalidRecord};
+      return DatasetReadResult(DatasetFailure::InvalidRecord);
     std::vector<std::byte> payload(record_bytes.begin() +
                                        static_cast<std::ptrdiff_t>(cursor),
                                    record_bytes.end());
@@ -654,8 +654,8 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
         (digest.coverage == sdk::DigestCoverage::CompletePayload &&
          *original_size != payload.size()) ||
         sdk::sha256(payload, digest.coverage) != digest)
-      return {.failure = DatasetFailure::IntegrityMismatch};
-    result.records.push_back(
+      return DatasetReadResult(DatasetFailure::IntegrityMismatch);
+    result.records_.push_back(
         {.source_event_id = *event_id,
          .capture_sequence = *sequence,
          .chronos_receive_time = *time,
@@ -674,16 +674,17 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
              static_cast<sdk::CompressionDisposition>(*compression),
          .fragmented = *fragmented != 0});
   }
-  if (result.records.size() != manifest.record_count ||
-      result.records.front().capture_sequence !=
+  if (result.records_.size() != manifest.record_count ||
+      result.records_.front().capture_sequence !=
           manifest.first_capture_sequence ||
-      result.records.back().capture_sequence != manifest.last_capture_sequence)
-    return {.failure = DatasetFailure::SequenceMismatch};
-  for (std::size_t index = 0; index < result.records.size(); ++index)
-    if (result.records[index].capture_sequence !=
+      result.records_.back().capture_sequence != manifest.last_capture_sequence)
+    return DatasetReadResult(DatasetFailure::SequenceMismatch);
+  for (std::size_t index = 0; index < result.records_.size(); ++index)
+    if (result.records_[index].capture_sequence !=
         manifest.first_capture_sequence + index)
-      return {.failure = DatasetFailure::SequenceMismatch};
-  result.manifest = std::move(manifest);
+      return DatasetReadResult(DatasetFailure::SequenceMismatch);
+  result.manifest_ = std::move(manifest);
+  result.verified_ = true;
   return result;
 }
 

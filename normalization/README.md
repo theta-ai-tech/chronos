@@ -14,9 +14,15 @@
 - **Failure semantics:** Malformed, integrity-ineligible, unsupported,
   ambiguous, inexact, resource-exhausting, or reference-ineligible source
   messages return typed failures and no normalized fact.
-- **Reconstruction source:** One immutable capture record and manifest, pinned
-  decoder/schema/normalizer versions, and one pinned reference snapshot.
+- **Reconstruction source:** One record selected from a cryptographically
+  verified immutable capture dataset, pinned decoder/schema/normalizer
+  versions, and one pinned reference/configuration lineage and snapshot.
 
 M3.2 normalizes observations only. It does not mutate an L2 book or allocate
 normalized stream, epoch, event, or run-input positions; those remain later
 stream/dispatch and M4 authorities.
+
+Book facts retain the source dataset identity, bound capture lineage, source
+environment/product class, registered unknown-field extensions, selected
+reference semantic key, effective capture-sequence evidence, and selection
+policy versions.

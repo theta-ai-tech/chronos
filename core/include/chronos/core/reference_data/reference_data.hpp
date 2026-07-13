@@ -12,6 +12,7 @@ namespace chronos::core::reference_data {
 
 enum class ListingStatus : std::uint8_t { Active, Inactive };
 enum class ProductClass : std::uint8_t { Spot, LinearPerpetual };
+enum class VenueEnvironment : std::uint8_t { Test, Production };
 
 class EffectiveInterval final {
 public:
@@ -64,6 +65,7 @@ struct ListingDefinition final {
   contracts::CanonicalInstrumentId instrument_id;
   contracts::VersionRef version;
   std::string venue;
+  VenueEnvironment environment{VenueEnvironment::Test};
   std::string source_symbol;
   ListingStatus status{ListingStatus::Active};
   DecimalIncrement price_tick;
@@ -87,7 +89,8 @@ public:
   instrument() const noexcept;
   [[nodiscard]] const ListingDefinition &listing() const noexcept;
   [[nodiscard]] const ListingDefinition *
-  resolve(std::string_view venue, std::string_view source_symbol,
+  resolve(std::string_view venue, VenueEnvironment environment,
+          ProductClass product_class, std::string_view source_symbol,
           contracts::CapturePartitionId partition_id,
           std::uint64_t capture_sequence) const noexcept;
 

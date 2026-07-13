@@ -61,15 +61,28 @@ TEST_CASE("one canonical instrument maps to one distinct listing definition") {
   CHECK(reference.listing().listing_id.to_string() == kListingId);
   CHECK(reference.listing().version.version() == 7);
   const auto domain = id<CapturePartitionId>(kEffectiveDomain);
-  CHECK(reference.resolve("bybit", "BTCUSDT", domain, 10) != nullptr);
-  CHECK(reference.resolve("bybit", "BTCUSDT", domain, 19) != nullptr);
-  CHECK(reference.resolve("bybit", "BTCUSDT", domain, 9) == nullptr);
-  CHECK(reference.resolve("bybit", "BTCUSDT", domain, 20) == nullptr);
-  CHECK(reference.resolve("other", "BTCUSDT", domain, 10) == nullptr);
-  CHECK(reference.resolve("bybit", "BTCUSDT",
-                          id<CapturePartitionId>(kOtherDomain), 10) == nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                          "BTCUSDT", domain, 10) != nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                          "BTCUSDT", domain, 19) != nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                          "BTCUSDT", domain, 9) == nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                          "BTCUSDT", domain, 20) == nullptr);
+  CHECK(reference.resolve("other", VenueEnvironment::Test, ProductClass::Spot,
+                          "BTCUSDT", domain, 10) == nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                          "BTCUSDT", id<CapturePartitionId>(kOtherDomain),
+                          10) == nullptr);
   CHECK(snapshot(ListingStatus::Inactive)
-            .resolve("bybit", "BTCUSDT", domain, 10) == nullptr);
+            .resolve("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                     "BTCUSDT", domain, 10) == nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Production,
+                          ProductClass::Spot, "BTCUSDT", domain,
+                          10) == nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Test,
+                          ProductClass::LinearPerpetual, "BTCUSDT", domain,
+                          10) == nullptr);
 }
 
 TEST_CASE("tick and step definitions drive exact fixed-point conversion") {
