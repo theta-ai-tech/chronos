@@ -25,9 +25,10 @@ enum class JsonKind : std::uint8_t {
 
 struct JsonValue final {
   JsonKind kind{JsonKind::Null};
+  std::string key;
   std::string scalar;
   std::vector<JsonValue> array;
-  std::vector<std::pair<std::string, JsonValue>> object;
+  std::vector<JsonValue> object;
 };
 
 enum class JsonFailure : std::uint8_t {
@@ -136,9 +137,8 @@ private:
         failure_ = JsonFailure::Malformed;
         return std::nullopt;
       }
-      for (const auto &[existing, unused] : result.object) {
-        (void)unused;
-        if (existing == *key) {
+      for (const auto &existing : result.object) {
+        if (existing.key == *key) {
           failure_ = JsonFailure::DuplicateMember;
           return std::nullopt;
         }
@@ -147,7 +147,8 @@ private:
       if (!value.has_value()) {
         return std::nullopt;
       }
-      result.object.emplace_back(std::move(*key), std::move(*value));
+      value->key = std::move(*key);
+      result.object.push_back(std::move(*value));
       if (consume('}')) {
         return result;
       }
@@ -391,8 +392,8 @@ const JsonValue *member(const JsonValue &object, std::string_view key) {
   if (object.kind != JsonKind::Object) {
     return nullptr;
   }
-  for (const auto &[name, value] : object.object) {
-    if (name == key) {
+  for (const auto &value : object.object) {
+    if (value.key == key) {
       return &value;
     }
   }
