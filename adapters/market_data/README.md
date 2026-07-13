@@ -24,6 +24,11 @@ bounds plus the manifest, file and payload
 digests, record bounds, enum values, and sequence continuity before returning
 records. Normalization and replay-class selection remain M3 concerns.
 
+M3.2 adds a bounded Bybit V5 book decoder as a source-specific implementation
+behind the distinct `normalization/` authority. The decoder validates immutable
+capture eligibility and emits source assertions; it does not resolve canonical
+listings, convert amounts, allocate stream positions, or mutate market state.
+
 - **Parent:** `adapters/`
 - **Owner:** Inherits `adapters/` ownership.
 - **Plane:** Inherits `adapters/` plane.
