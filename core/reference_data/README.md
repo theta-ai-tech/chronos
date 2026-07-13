@@ -9,7 +9,8 @@
 - **Must not depend on:** Adapters, mutable configuration aliases, storage, UI,
   or telemetry implementations.
 - **Public API:** `chronos/core/reference_data/reference_data.hpp`.
-- **Failure semantics:** Invalid definitions, ambiguous resolution, inactive or
-  out-of-interval listings, and inexact numeric conversion fail explicitly.
+- **Failure semantics:** Invalid or identity-colliding definitions, ambiguous
+  resolution, wrong effective domains, inactive or out-of-interval listings,
+  and inexact numeric conversion fail explicitly.
 - **Reconstruction source:** A run- or dataset-pinned immutable reference
   snapshot version.

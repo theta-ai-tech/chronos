@@ -12,19 +12,24 @@ namespace chronos::core::reference_data {
 
 enum class ListingStatus : std::uint8_t { Active, Inactive };
 enum class ProductClass : std::uint8_t { Spot };
+struct EffectiveDomainIdTag;
+using EffectiveDomainId = contracts::OpaqueId<EffectiveDomainIdTag>;
 
 class EffectiveInterval final {
 public:
   [[nodiscard]] static std::optional<EffectiveInterval>
-  from_capture_sequence(std::uint64_t first,
+  from_capture_sequence(EffectiveDomainId domain_id, std::uint64_t first,
                         std::optional<std::uint64_t> last_exclusive);
-  [[nodiscard]] bool contains(std::uint64_t capture_sequence) const noexcept;
+  [[nodiscard]] bool contains(EffectiveDomainId domain_id,
+                              std::uint64_t capture_sequence) const noexcept;
+  [[nodiscard]] EffectiveDomainId domain_id() const noexcept;
   [[nodiscard]] std::uint64_t first() const noexcept;
   [[nodiscard]] std::optional<std::uint64_t> last_exclusive() const noexcept;
 
 private:
-  EffectiveInterval(std::uint64_t first,
+  EffectiveInterval(EffectiveDomainId domain_id, std::uint64_t first,
                     std::optional<std::uint64_t> last_exclusive) noexcept;
+  EffectiveDomainId domain_id_;
   std::uint64_t first_;
   std::optional<std::uint64_t> last_exclusive_;
 };
@@ -63,6 +68,7 @@ struct ListingDefinition final {
   ListingStatus status{ListingStatus::Active};
   DecimalIncrement price_tick;
   DecimalIncrement quantity_step;
+  std::uint64_t amount_definition_ref{};
   EffectiveInterval effective_interval;
 
   [[nodiscard]] std::optional<contracts::Price>
@@ -83,6 +89,7 @@ public:
   [[nodiscard]] const ListingDefinition &listing() const noexcept;
   [[nodiscard]] const ListingDefinition *
   resolve(std::string_view venue, std::string_view source_symbol,
+          EffectiveDomainId domain_id,
           std::uint64_t capture_sequence) const noexcept;
 
 private:

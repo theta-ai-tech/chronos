@@ -21,10 +21,13 @@ constexpr auto kListingId = "018f1f6e-7d3a-7c4b-8a91-0123456789ac";
 constexpr auto kInstrumentVersion = "018f1f6e-7d3a-7c4b-8a91-0123456789ad";
 constexpr auto kListingVersion = "018f1f6e-7d3a-7c4b-8a91-0123456789ae";
 constexpr auto kSnapshotVersion = "018f1f6e-7d3a-7c4b-8a91-0123456789af";
+constexpr auto kEffectiveDomain = "018f1f6e-7d3a-7c4b-8a91-0123456789a1";
+constexpr auto kOtherDomain = "018f1f6e-7d3a-7c4b-8a91-0123456789a2";
 
 ReferenceSnapshot snapshot(ListingStatus status = ListingStatus::Active) {
-  const auto interval =
-      EffectiveInterval::from_capture_sequence(10, 20).value();
+  const auto interval = EffectiveInterval::from_capture_sequence(
+                            id<EffectiveDomainId>(kEffectiveDomain), 10, 20)
+                            .value();
   return ReferenceSnapshot::create(
              version(kSnapshotVersion, 1),
              CanonicalInstrumentDefinition{
@@ -44,6 +47,7 @@ ReferenceSnapshot snapshot(ListingStatus status = ListingStatus::Active) {
                  .status = status,
                  .price_tick = DecimalIncrement::parse("0.10").value(),
                  .quantity_step = DecimalIncrement::parse("0.001").value(),
+                 .amount_definition_ref = 7001,
                  .effective_interval = interval,
              })
       .value();
@@ -57,13 +61,16 @@ TEST_CASE("one canonical instrument maps to one distinct listing definition") {
         reference.listing().instrument_id);
   CHECK(reference.listing().listing_id.to_string() == kListingId);
   CHECK(reference.listing().version.version() == 7);
-  CHECK(reference.resolve("bybit", "BTCUSDT", 10) != nullptr);
-  CHECK(reference.resolve("bybit", "BTCUSDT", 19) != nullptr);
-  CHECK(reference.resolve("bybit", "BTCUSDT", 9) == nullptr);
-  CHECK(reference.resolve("bybit", "BTCUSDT", 20) == nullptr);
-  CHECK(reference.resolve("other", "BTCUSDT", 10) == nullptr);
-  CHECK(snapshot(ListingStatus::Inactive).resolve("bybit", "BTCUSDT", 10) ==
-        nullptr);
+  const auto domain = id<EffectiveDomainId>(kEffectiveDomain);
+  CHECK(reference.resolve("bybit", "BTCUSDT", domain, 10) != nullptr);
+  CHECK(reference.resolve("bybit", "BTCUSDT", domain, 19) != nullptr);
+  CHECK(reference.resolve("bybit", "BTCUSDT", domain, 9) == nullptr);
+  CHECK(reference.resolve("bybit", "BTCUSDT", domain, 20) == nullptr);
+  CHECK(reference.resolve("other", "BTCUSDT", domain, 10) == nullptr);
+  CHECK(reference.resolve("bybit", "BTCUSDT",
+                          id<EffectiveDomainId>(kOtherDomain), 10) == nullptr);
+  CHECK(snapshot(ListingStatus::Inactive)
+            .resolve("bybit", "BTCUSDT", domain, 10) == nullptr);
 }
 
 TEST_CASE("tick and step definitions drive exact fixed-point conversion") {
@@ -72,19 +79,26 @@ TEST_CASE("tick and step definitions drive exact fixed-point conversion") {
   const auto quantity = listing.parse_quantity("1.234");
   CHECK(price->units() == 420001);
   CHECK(quantity->units() == 1234);
-  CHECK(price->definition_ref() == listing.version.version());
-  CHECK(quantity->definition_ref() == listing.version.version());
+  CHECK(price->definition_ref() == listing.amount_definition_ref);
+  CHECK(quantity->definition_ref() == listing.amount_definition_ref);
   CHECK(listing.price_tick.scale().exponent() == 1);
   CHECK(listing.quantity_step.scale().exponent() == 3);
   CHECK(!listing.parse_price("42000.15").has_value());
   CHECK(!listing.parse_price("42000.101").has_value());
   CHECK(!listing.parse_quantity("1.2345").has_value());
   CHECK(!listing.parse_quantity("-1.000").has_value());
+
+  auto unrelated_definition = listing;
+  unrelated_definition.amount_definition_ref = 7002;
+  const auto unrelated_price = unrelated_definition.parse_price("42000.10");
+  CHECK(!price->checked_compare(*unrelated_price).has_value());
 }
 
 TEST_CASE("reference factories reject ambiguous or invalid definitions") {
-  CHECK(!EffectiveInterval::from_capture_sequence(0, std::nullopt).has_value());
-  CHECK(!EffectiveInterval::from_capture_sequence(10, 10).has_value());
+  const auto domain = id<EffectiveDomainId>(kEffectiveDomain);
+  CHECK(!EffectiveInterval::from_capture_sequence(domain, 0, std::nullopt)
+             .has_value());
+  CHECK(!EffectiveInterval::from_capture_sequence(domain, 10, 10).has_value());
   CHECK(!DecimalIncrement::parse("0").has_value());
   CHECK(!DecimalIncrement::parse("-0.1").has_value());
   CHECK(!DecimalIncrement::parse("1e-3").has_value());
@@ -105,8 +119,20 @@ TEST_CASE("reference factories reject ambiguous or invalid definitions") {
 
   auto narrow_instrument = valid.instrument();
   narrow_instrument.effective_interval =
-      EffectiveInterval::from_capture_sequence(11, 19).value();
+      EffectiveInterval::from_capture_sequence(domain, 11, 19).value();
   CHECK(!ReferenceSnapshot::create(
              valid.version(), std::move(narrow_instrument), valid.listing())
+             .has_value());
+
+  auto no_amount_identity = valid.listing();
+  no_amount_identity.amount_definition_ref = 0;
+  CHECK(!ReferenceSnapshot::create(valid.version(), valid.instrument(),
+                                   std::move(no_amount_identity))
+             .has_value());
+
+  auto shared_definition = valid.listing();
+  shared_definition.version = valid.instrument().version;
+  CHECK(!ReferenceSnapshot::create(valid.version(), valid.instrument(),
+                                   std::move(shared_definition))
              .has_value());
 }
