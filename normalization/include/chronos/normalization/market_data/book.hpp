@@ -3,6 +3,7 @@
 #include "chronos/adapters/sdk/source_event.hpp"
 #include "chronos/contracts/fixed_point.hpp"
 #include "chronos/contracts/value_objects.hpp"
+#include "chronos/normalization/market_data/source_lineage.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -21,7 +22,6 @@ namespace chronos::normalization::market_data {
 enum class SourceBookKind : std::uint8_t { Snapshot, Delta };
 enum class SourceProductClass : std::uint8_t { Spot, LinearPerpetual };
 enum class BookLevelOperation : std::uint8_t { SetAbsolute, Delete };
-enum class SourceTimestampUnit : std::uint8_t { Milliseconds };
 enum class BookNormalizationFailure : std::uint8_t {
   None,
   IntegrityIneligible,

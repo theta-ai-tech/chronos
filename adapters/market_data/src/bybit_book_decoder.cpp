@@ -3,12 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
-#include <cstdint>
-#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 namespace chronos::adapters::market_data {
 
@@ -845,17 +842,25 @@ decode_bybit_v5_book(const DatasetReadResult &dataset, std::size_t record_index,
   if (record.raw_payload.size() > limits.maximum_payload_bytes) {
     return {.failure = BookNormalizationFailure::ResourceLimitExceeded};
   }
-  if (!integrity_eligible(manifest, record, limits)) {
+  if (!detail::capture_record_eligible(manifest, record,
+                                       limits.maximum_payload_bytes)) {
     return {.failure = BookNormalizationFailure::IntegrityIneligible};
   }
 
   const std::string_view payload{
       reinterpret_cast<const char *>(record.raw_payload.data()),
       record.raw_payload.size()};
-  if (!valid_utf8(payload)) {
+  if (!detail::valid_utf8(payload)) {
     return {.failure = BookNormalizationFailure::MalformedPayload};
   }
-  BoundedJsonParser parser(payload, limits);
+  const detail::JsonLimits json_limits{
+      .maximum_json_depth = limits.maximum_json_depth,
+      .maximum_json_nodes = limits.maximum_json_nodes,
+      .maximum_object_members = limits.maximum_object_members,
+      .maximum_string_bytes = limits.maximum_string_bytes,
+      .maximum_number_bytes = limits.maximum_number_bytes,
+  };
+  detail::BoundedJsonParser parser(payload, json_limits);
   const auto root = parser.parse();
   if (!root.has_value()) {
     return {.failure = parser_failure(parser.failure())};
@@ -864,10 +869,11 @@ decode_bybit_v5_book(const DatasetReadResult &dataset, std::size_t record_index,
     return {.failure = BookNormalizationFailure::SchemaViolation};
   }
 
-  const auto topic = string_value(member(*root, "topic"));
-  const auto type = string_value(member(*root, "type"));
-  const auto system_timestamp = positive_integer(member(*root, "ts"));
-  const auto *data = member(*root, "data");
+  const auto topic = detail::string_value(detail::member(*root, "topic"));
+  const auto type = detail::string_value(detail::member(*root, "type"));
+  const auto system_timestamp =
+      detail::positive_integer(detail::member(*root, "ts"));
+  const auto *data = detail::member(*root, "data");
   if (!topic.has_value() || !type.has_value() ||
       !system_timestamp.has_value() || data == nullptr ||
       data->kind != JsonKind::Object) {
@@ -884,15 +890,16 @@ decode_bybit_v5_book(const DatasetReadResult &dataset, std::size_t record_index,
   }
 
   const auto topic_parts = parse_topic(*topic);
-  const auto symbol = string_value(member(*data, "s"));
+  const auto symbol = detail::string_value(detail::member(*data, "s"));
   if (!topic_parts.has_value() || topic_parts->depth != limits.expected_depth ||
       !symbol.has_value() || topic_parts->symbol != *symbol) {
     return {.failure = BookNormalizationFailure::WrongTopicOrSymbol};
   }
 
-  const auto update_id = positive_integer(member(*data, "u"));
-  const auto sequence = positive_integer(member(*data, "seq"));
-  const auto matching_timestamp = positive_integer(member(*root, "cts"));
+  const auto update_id = detail::positive_integer(detail::member(*data, "u"));
+  const auto sequence = detail::positive_integer(detail::member(*data, "seq"));
+  const auto matching_timestamp =
+      detail::positive_integer(detail::member(*root, "cts"));
   if (!update_id.has_value() || !sequence.has_value() ||
       !matching_timestamp.has_value()) {
     return {.failure = BookNormalizationFailure::InvalidNumeric};
@@ -914,11 +921,11 @@ decode_bybit_v5_book(const DatasetReadResult &dataset, std::size_t record_index,
           .system_timestamp_milliseconds = *system_timestamp,
           .matching_timestamp_milliseconds = *matching_timestamp,
           .timestamp_unit = book::SourceTimestampUnit::Milliseconds}};
-  auto failure = parse_levels(member(*data, "b"),
+  auto failure = parse_levels(detail::member(*data, "b"),
                               limits.maximum_levels_per_side, message.bids);
   if (failure == BookNormalizationFailure::None) {
-    failure = parse_levels(member(*data, "a"), limits.maximum_levels_per_side,
-                           message.asks);
+    failure = parse_levels(detail::member(*data, "a"),
+                           limits.maximum_levels_per_side, message.asks);
   }
   if (failure != BookNormalizationFailure::None) {
     return {.failure = failure};
