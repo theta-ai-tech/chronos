@@ -90,14 +90,10 @@ adapter::CaptureDatasetRecord record(std::string_view payload) {
   };
 }
 
-reference::EffectiveDomainId effective_domain() {
-  return id<reference::EffectiveDomainId>(6);
-}
-
 reference::ReferenceSnapshot reference_snapshot(
     reference::ListingStatus status = reference::ListingStatus::Active) {
   const auto interval = reference::EffectiveInterval::from_capture_sequence(
-                            effective_domain(), 1, 20)
+                            manifest().capture_partition_id, 1, 20)
                             .value();
   return reference::ReferenceSnapshot::create(
              version(7, 2),
@@ -105,7 +101,7 @@ reference::ReferenceSnapshot reference_snapshot(
               .version = version(9, 3),
               .base_asset = "BTC",
               .quote_asset = "USDT",
-              .product_class = reference::ProductClass::Spot,
+              .product_class = reference::ProductClass::LinearPerpetual,
               .effective_interval = interval},
              {.listing_id = id<contracts::ListingId>(10),
               .instrument_id = id<contracts::CanonicalInstrumentId>(8),
@@ -116,7 +112,6 @@ reference::ReferenceSnapshot reference_snapshot(
               .price_tick = reference::DecimalIncrement::parse("0.10").value(),
               .quantity_step =
                   reference::DecimalIncrement::parse("0.001").value(),
-              .amount_definition_ref = 7001,
               .effective_interval = interval})
       .value();
 }
@@ -134,22 +129,23 @@ book::BookNormalizationResult normalize(std::string_view payload) {
     return {.failure = decoded.failure};
   }
   return book::normalize_book(*decoded.message, *decoded.source_lineage,
-                              "bybit", reference_snapshot(), effective_domain(),
+                              "bybit", reference_snapshot(),
                               id<contracts::ClockDomainId>(12), kVersions);
 }
 
 constexpr std::string_view kSnapshot = R"({
   "data":{"a":[["42000.50","0.200"],["42000.30","0.100"]],
-          "seq":7961638724,"s":"BTCUSDT","cts":1672304486868,
+          "seq":7961638724,"s":"BTCUSDT",
           "b":[["42000.00","1.000"],["42000.20","0.500"]],"u":18521288},
-  "ts":1672304486869,"type":"snapshot","topic":"orderbook.50.BTCUSDT"
+  "cts":1672304486868,"ts":1672304486869,"type":"snapshot",
+  "topic":"orderbook.50.BTCUSDT"
 })";
 
 constexpr std::string_view kDelta = R"({
   "topic":"orderbook.50.BTCUSDT","type":"delta","ts":1672304486870,
   "data":{"s":"BTCUSDT","b":[["42000.00","0"],["42000.20","0.750"]],
-          "a":[["42000.30","0.300"]],"u":18521289,"seq":7961638725,
-          "cts":1672304486869}
+          "a":[["42000.30","0.300"]],"u":18521289,"seq":7961638725},
+  "cts":1672304486869
 })";
 
 } // namespace
@@ -219,6 +215,14 @@ TEST_CASE("decoder returns typed failures for malformed and ineligible input") {
   bad_record.integrity_status = sdk::CaptureIntegrityStatus::Truncated;
   CHECK(adapter::decode_bybit_v5_book(manifest(), bad_record).failure ==
         book::BookNormalizationFailure::IntegrityIneligible);
+  auto fragmented = record(kSnapshot);
+  fragmented.fragmented = true;
+  CHECK(adapter::decode_bybit_v5_book(manifest(), fragmented).ok());
+  auto wrong_adapter = manifest();
+  wrong_adapter.adapter_id = "other.bybit.adapter";
+  CHECK(
+      adapter::decode_bybit_v5_book(wrong_adapter, record(kSnapshot)).failure ==
+      book::BookNormalizationFailure::IntegrityIneligible);
   CHECK(
       adapter::decode_bybit_v5_book(manifest(), record("{not-json")).failure ==
       book::BookNormalizationFailure::MalformedPayload);
@@ -250,29 +254,35 @@ TEST_CASE("decoder returns typed failures for malformed and ineligible input") {
 }
 
 TEST_CASE("topic symbol and message family mismatches fail visibly") {
-  CHECK(normalize(R"({"topic":"orderbook.50.ETHUSDT","type":"snapshot","ts":1,
-    "data":{"s":"BTCUSDT","b":[],"a":[],"u":1,"seq":1,"cts":1}})")
+  CHECK(normalize(R"({"topic":"orderbook.200.BTCUSDT","type":"snapshot","ts":1,
+    "data":{"s":"BTCUSDT","b":[],"a":[],"u":1,"seq":1},"cts":1})")
             .failure == book::BookNormalizationFailure::WrongTopicOrSymbol);
   CHECK(normalize(R"({"topic":"orderbook.50.ETHUSDT","type":"snapshot","ts":1,
-    "data":{"s":"ETHUSDT","b":[],"a":[],"u":1,"seq":1,"cts":1}})")
+    "data":{"s":"BTCUSDT","b":[],"a":[],"u":1,"seq":1},"cts":1})")
+            .failure == book::BookNormalizationFailure::WrongTopicOrSymbol);
+  CHECK(normalize(R"({"topic":"orderbook.50.ETHUSDT","type":"snapshot","ts":1,
+    "data":{"s":"ETHUSDT","b":[],"a":[],"u":1,"seq":1},"cts":1})")
             .failure == book::BookNormalizationFailure::WrongTopicOrSymbol);
   CHECK(normalize(R"({"topic":"orderbook.50.BTCUSDT","type":"trade","ts":1,
-    "data":{"s":"BTCUSDT","b":[],"a":[],"u":1,"seq":1,"cts":1}})")
+    "data":{"s":"BTCUSDT","b":[],"a":[],"u":1,"seq":1},"cts":1})")
             .failure == book::BookNormalizationFailure::UnsupportedMessage);
+  CHECK(normalize(R"({"topic":"orderbook.50.BTCUSDT","type":"snapshot","ts":1,
+    "data":{"s":"BTCUSDT","b":[],"a":[],"u":1,"seq":1,"cts":1}})")
+            .failure == book::BookNormalizationFailure::InvalidNumeric);
 }
 
 TEST_CASE("inexact and duplicate canonical levels fail without repair") {
   CHECK(normalize(R"({"topic":"orderbook.50.BTCUSDT","type":"snapshot","ts":1,
     "data":{"s":"BTCUSDT","b":[["42000.15","1.000"]],"a":[],
-    "u":1,"seq":1,"cts":1}})")
+    "u":1,"seq":1},"cts":1})")
             .failure == book::BookNormalizationFailure::InvalidNumeric);
   CHECK(normalize(R"({"topic":"orderbook.50.BTCUSDT","type":"delta","ts":1,
     "data":{"s":"BTCUSDT","b":[["42000.10","1.000"],["42000.100","2.000"]],
-    "a":[],"u":1,"seq":1,"cts":1}})")
+    "a":[],"u":1,"seq":1},"cts":1})")
             .failure == book::BookNormalizationFailure::AmbiguousDuplicate);
   CHECK(normalize(R"({"topic":"orderbook.50.BTCUSDT","type":"snapshot","ts":1,
     "data":{"s":"BTCUSDT","b":[["42000.10","0"]],"a":[],
-    "u":1,"seq":1,"cts":1}})")
+    "u":1,"seq":1},"cts":1})")
             .failure == book::BookNormalizationFailure::InvalidNumeric);
 }
 
@@ -283,14 +293,14 @@ TEST_CASE("reference and timestamp eligibility are explicit failures") {
   CHECK(book::normalize_book(
             *decoded.message, *decoded.source_lineage, "bybit",
             reference_snapshot(reference::ListingStatus::Inactive),
-            effective_domain(), id<contracts::ClockDomainId>(12), kVersions)
+            id<contracts::ClockDomainId>(12), kVersions)
             .failure == book::BookNormalizationFailure::ReferenceUnavailable);
 
   auto overflow = *decoded.message;
   overflow.assertions.matching_timestamp_milliseconds =
       std::numeric_limits<std::uint64_t>::max();
   CHECK(book::normalize_book(overflow, *decoded.source_lineage, "bybit",
-                             reference_snapshot(), effective_domain(),
+                             reference_snapshot(),
                              id<contracts::ClockDomainId>(12), kVersions)
             .failure == book::BookNormalizationFailure::InvalidNumeric);
 }

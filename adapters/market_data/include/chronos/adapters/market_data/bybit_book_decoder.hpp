@@ -4,11 +4,13 @@
 #include "chronos/normalization/market_data/book.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 
 namespace chronos::adapters::market_data {
 
 struct BybitBookDecodeLimits final {
+  std::uint32_t expected_depth{50};
   std::size_t maximum_payload_bytes{1U << 20U};
   std::size_t maximum_levels_per_side{1000};
   std::size_t maximum_json_depth{16};

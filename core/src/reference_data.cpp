@@ -81,7 +81,8 @@ bool valid(ListingStatus status) {
 }
 
 bool valid(ProductClass product_class) {
-  return product_class == ProductClass::Spot;
+  return product_class == ProductClass::Spot ||
+         product_class == ProductClass::LinearPerpetual;
 }
 
 bool contained_by(const EffectiveInterval &inner,

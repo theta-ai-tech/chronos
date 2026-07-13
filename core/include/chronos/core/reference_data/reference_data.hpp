@@ -11,7 +11,7 @@
 namespace chronos::core::reference_data {
 
 enum class ListingStatus : std::uint8_t { Active, Inactive };
-enum class ProductClass : std::uint8_t { Spot };
+enum class ProductClass : std::uint8_t { Spot, LinearPerpetual };
 
 class EffectiveInterval final {
 public:

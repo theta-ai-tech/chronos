@@ -101,7 +101,6 @@ normalize_book(const DecodedBookMessage &message,
                const SourceCaptureLineage &lineage,
                std::string_view source_venue,
                const core::reference_data::ReferenceSnapshot &reference,
-               core::reference_data::EffectiveDomainId effective_domain_id,
                contracts::ClockDomainId source_wall_clock_domain_id,
                const BookNormalizerVersions &versions) {
   if (!valid_version(versions.decoder_version) ||
@@ -117,7 +116,7 @@ normalize_book(const DecodedBookMessage &message,
   }
   const auto *listing =
       reference.resolve(source_venue, message.assertions.source_symbol,
-                        effective_domain_id, lineage.capture_sequence);
+                        lineage.capture_partition_id, lineage.capture_sequence);
   if (listing == nullptr) {
     return {.failure = BookNormalizationFailure::ReferenceUnavailable};
   }

@@ -62,15 +62,13 @@ struct DecodedBookMessage final {
   bool operator==(const DecodedBookMessage &) const = default;
 };
 
-// Capture IDs remain adapter-SDK types until the reviewed M3.1 canonical-ID
-// change lands. Keeping that dependency here isolates the later type swap.
 struct SourceCaptureLineage final {
   contracts::SourceEventId source_event_id;
   adapters::sdk::CaptureSessionId capture_session_id;
   contracts::RuntimeId runtime_id;
   std::optional<adapters::sdk::SourceConnectionId> connection_id;
   std::optional<adapters::sdk::SourceSubscriptionId> subscription_id;
-  adapters::sdk::CapturePartitionId capture_partition_id;
+  contracts::CapturePartitionId capture_partition_id;
   std::uint64_t capture_sequence{};
   contracts::TimePoint chronos_receive_time;
   adapters::sdk::PayloadDigest payload_digest;

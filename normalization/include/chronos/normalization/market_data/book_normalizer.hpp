@@ -29,7 +29,6 @@ normalize_book(const DecodedBookMessage &message,
                const SourceCaptureLineage &lineage,
                std::string_view source_venue,
                const core::reference_data::ReferenceSnapshot &reference,
-               core::reference_data::EffectiveDomainId effective_domain_id,
                contracts::ClockDomainId source_wall_clock_domain_id,
                const BookNormalizerVersions &versions);
 

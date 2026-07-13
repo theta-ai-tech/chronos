@@ -476,6 +476,11 @@ bool integrity_eligible(const CaptureDatasetManifest &manifest,
                         const CaptureDatasetRecord &record,
                         const BybitBookDecodeLimits &limits) {
   return manifest.venue == "bybit" && manifest.record_count != 0 &&
+         manifest.adapter_id == "chronos.bybit.public-market-data" &&
+         manifest.endpoint == sdk::EndpointClass::PublicMarketData &&
+         manifest.data_classification ==
+             sdk::DataClassification::PublicMarketData &&
+         manifest.dataset_class == "raw_source_capture" &&
          manifest.maximum_retained_payload_bytes != 0 &&
          record.capture_sequence >= manifest.first_capture_sequence &&
          record.capture_sequence <= manifest.last_capture_sequence &&
@@ -494,8 +499,7 @@ bool integrity_eligible(const CaptureDatasetManifest &manifest,
          record.parse_status == sdk::ParseStatus::NotAttempted &&
          record.content_encoding == sdk::ContentEncoding::Utf8Text &&
          record.compression_disposition !=
-             sdk::CompressionDisposition::CompressedOpaque &&
-         !record.fragmented;
+             sdk::CompressionDisposition::CompressedOpaque;
 }
 
 bool valid_utf8(std::string_view value) {
@@ -601,14 +605,14 @@ decode_bybit_v5_book(const CaptureDatasetManifest &manifest,
 
   const auto topic_parts = parse_topic(*topic);
   const auto symbol = string_value(member(*data, "s"));
-  if (!topic_parts.has_value() || !symbol.has_value() ||
-      topic_parts->symbol != *symbol) {
+  if (!topic_parts.has_value() || topic_parts->depth != limits.expected_depth ||
+      !symbol.has_value() || topic_parts->symbol != *symbol) {
     return {.failure = BookNormalizationFailure::WrongTopicOrSymbol};
   }
 
   const auto update_id = positive_integer(member(*data, "u"));
   const auto sequence = positive_integer(member(*data, "seq"));
-  const auto matching_timestamp = positive_integer(member(*data, "cts"));
+  const auto matching_timestamp = positive_integer(member(*root, "cts"));
   if (!update_id.has_value() || !sequence.has_value() ||
       !matching_timestamp.has_value()) {
     return {.failure = BookNormalizationFailure::InvalidNumeric};
