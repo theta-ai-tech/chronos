@@ -49,8 +49,6 @@ TransportFailure map_curl_failure(CURLcode code) noexcept {
     return TransportFailure::Timeout;
   case CURLE_GOT_NOTHING:
     return TransportFailure::Closed;
-  case CURLE_TOO_LARGE:
-    return TransportFailure::MessageTooLarge;
   default:
     return TransportFailure::Receive;
   }
