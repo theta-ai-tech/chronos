@@ -212,7 +212,9 @@ void write_version(Writer &writer, const VersionRef &value) {
 }
 
 VersionRef read_version(Reader &reader) {
-  const auto result = VersionRef::from(reader.id<DefinitionId>(), reader.u64());
+  const auto definition_id = reader.id<DefinitionId>();
+  const auto version = reader.u64();
+  const auto result = VersionRef::from(definition_id, version);
   if (!result.has_value()) {
     throw std::runtime_error("invalid version reference");
   }
@@ -227,9 +229,12 @@ void write_time(Writer &writer, const TimePoint &value) {
 }
 
 TimePoint read_time(Reader &reader) {
-  const auto result =
-      TimePoint::from(reader.i64(), reader.id<ClockDomainId>(),
-                      static_cast<ClockClass>(reader.u8()), reader.u32());
+  const auto nanoseconds = reader.i64();
+  const auto clock_domain_id = reader.id<ClockDomainId>();
+  const auto clock_class = static_cast<ClockClass>(reader.u8());
+  const auto precision_nanoseconds = reader.u32();
+  const auto result = TimePoint::from(nanoseconds, clock_domain_id, clock_class,
+                                      precision_nanoseconds);
   if (!result.has_value()) {
     throw std::runtime_error("invalid time point");
   }
@@ -348,8 +353,11 @@ void write_position(Writer &writer, const EventPosition &value) {
 }
 
 EventPosition read_position(Reader &reader) {
+  const auto stream_id = reader.id<StreamId>();
+  const auto stream_epoch = reader.u64();
+  const auto stream_sequence = reader.u64();
   const auto result =
-      EventPosition::from(reader.id<StreamId>(), reader.u64(), reader.u64());
+      EventPosition::from(stream_id, stream_epoch, stream_sequence);
   if (!result.has_value()) {
     throw std::runtime_error("invalid event position");
   }
@@ -476,8 +484,9 @@ EventEnvelope read_envelope(Reader &reader,
   auto accept_time = read_time(reader);
   auto handoff_time = reader.optional([&] { return read_time(reader); });
   auto record_time = reader.optional([&] { return read_time(reader); });
-  const auto quality =
-      DataQuality::from(static_cast<QualityStatus>(reader.u8()), reader.u32());
+  const auto quality_status = static_cast<QualityStatus>(reader.u8());
+  const auto quality_reason = reader.u32();
+  const auto quality = DataQuality::from(quality_status, quality_reason);
   if (!quality.has_value()) {
     throw std::runtime_error("invalid data quality");
   }
@@ -548,10 +557,16 @@ decode_conformance_frame(std::span<const std::uint8_t> bytes) noexcept {
       }
     }
     const auto scale = DecimalScale::from_exponent(reader.u8());
-    const auto price = Price::from_units(reader.i64(), read_version(reader));
+    const auto price_units = reader.i64();
+    const auto price_definition = read_version(reader);
+    const auto quantity_units = reader.i64();
+    const auto quantity_definition = read_version(reader);
+    const auto money_units = reader.i64();
+    const auto money_definition = read_version(reader);
+    const auto price = Price::from_units(price_units, price_definition);
     const auto quantity =
-        Quantity::from_units(reader.i64(), read_version(reader));
-    const auto money = Money::from_units(reader.i64(), read_version(reader));
+        Quantity::from_units(quantity_units, quantity_definition);
+    const auto money = Money::from_units(money_units, money_definition);
     if (!scale.has_value() || !price.has_value() || !quantity.has_value() ||
         !money.has_value()) {
       return std::nullopt;
