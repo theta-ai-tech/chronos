@@ -10,6 +10,10 @@ add_library(chronos_warnings INTERFACE)
 set(_chronos_warnings
   -Wall
   -Wextra
+  # C++20 designated initializers intentionally rely on member defaults for
+  # omitted fields. Clang 18 warns for that valid pattern while AppleClang does
+  # not, so keep the shared Linux/macOS policy deterministic.
+  -Wno-missing-field-initializers
   -Wpedantic
   -Wshadow
   -Wconversion
