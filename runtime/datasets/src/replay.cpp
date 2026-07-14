@@ -119,6 +119,7 @@ normalized_dataset_identity(const std::vector<NormalizedFactRecord> &records) {
     append_digest(canonical, record.source_dataset_identity);
     append_id(canonical, record.source_event_id);
     append_id(canonical, record.source_decode_enrichment_id);
+    append_id(canonical, record.acceptance_evidence_id);
     append_string(canonical, record.normalizer_version);
     append_version(canonical, record.reference_lineage_version);
     append_string(canonical, record.event_type);
@@ -256,11 +257,18 @@ replay_capture_order(const ReplayRunManifest &manifest,
         .semantic_checksum = source_checksum(record.payload_digest),
         .source_event_id = record.source_event_id,
         .capture_sequence = record.capture_sequence,
+        .source_dataset_identity = manifest.dataset_identity(),
     };
     if (!sink.accept(input))
       return {.dispatched_count = result.dispatched_count,
               .failure = ReplayFailure::DispatchRejected};
     ++result.dispatched_count;
+  }
+  const auto reconstructed = sink.completed_normalized_dataset_identity();
+  if (!reconstructed.has_value() ||
+      *reconstructed != *manifest.pins().expected_normalized_dataset_identity) {
+    return {.dispatched_count = result.dispatched_count,
+            .failure = ReplayFailure::SemanticMismatch};
   }
   return result;
 }
@@ -281,7 +289,15 @@ ReplayResult replay_normalized_facts(const ReplayRunManifest &manifest,
         .event_type = record.event_type,
         .semantic_payload = record.semantic_payload,
         .semantic_checksum = record.semantic_checksum,
+        .source_event_id = record.source_event_id,
         .normalized_position = record.normalized_position,
+        .normalized_stream_id = record.normalized_stream_id,
+        .normalized_stream_epoch = record.normalized_stream_epoch,
+        .source_dataset_identity = record.source_dataset_identity,
+        .source_decode_enrichment_id = record.source_decode_enrichment_id,
+        .acceptance_evidence_id = record.acceptance_evidence_id,
+        .normalizer_version = record.normalizer_version,
+        .reference_lineage_version = record.reference_lineage_version,
     };
     if (!sink.accept(input))
       return {.dispatched_count = result.dispatched_count,

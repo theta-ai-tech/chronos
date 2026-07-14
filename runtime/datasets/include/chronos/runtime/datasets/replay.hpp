@@ -24,6 +24,7 @@ enum class ReplayFailure : std::uint8_t {
   DatasetIneligible,
   DatasetMismatch,
   DispatchRejected,
+  SemanticMismatch,
 };
 
 struct ReplayVersionPins final {
@@ -71,6 +72,7 @@ struct NormalizedFactRecord final {
   contracts::Sha256Digest source_dataset_identity;
   contracts::SourceEventId source_event_id;
   contracts::SourceDecodeEnrichmentId source_decode_enrichment_id;
+  contracts::IntegrityId acceptance_evidence_id;
   std::string normalizer_version;
   contracts::VersionRef reference_lineage_version;
   std::string event_type;
@@ -113,12 +115,24 @@ struct ReplayDispatchInput final {
   std::optional<contracts::SourceEventId> source_event_id;
   std::optional<std::uint64_t> capture_sequence;
   std::optional<std::uint64_t> normalized_position;
+  std::optional<contracts::StreamId> normalized_stream_id;
+  std::optional<std::uint64_t> normalized_stream_epoch;
+  std::optional<contracts::Sha256Digest> source_dataset_identity;
+  std::optional<contracts::SourceDecodeEnrichmentId>
+      source_decode_enrichment_id;
+  std::optional<contracts::IntegrityId> acceptance_evidence_id;
+  std::string_view normalizer_version;
+  std::optional<contracts::VersionRef> reference_lineage_version;
 };
 
 class ReplayDispatchSink {
 public:
   virtual ~ReplayDispatchSink() = default;
   [[nodiscard]] virtual bool accept(const ReplayDispatchInput &input) = 0;
+  [[nodiscard]] virtual std::optional<contracts::Sha256Digest>
+  completed_normalized_dataset_identity() const {
+    return std::nullopt;
+  }
 };
 
 struct ReplayResult final {

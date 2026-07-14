@@ -137,6 +137,7 @@ replay::NormalizedFactRecord fact(std::uint64_t position, std::string_view type,
       .source_event_id = id<contracts::SourceEventId>(21),
       .source_decode_enrichment_id =
           id<contracts::SourceDecodeEnrichmentId>(22),
+      .acceptance_evidence_id = id<contracts::IntegrityId>(24),
       .normalizer_version = "chronos-market-normalizer-v1",
       .reference_lineage_version =
           contracts::VersionRef::from(id<contracts::DefinitionId>(23), 1)
@@ -156,6 +157,14 @@ struct ObservedInput final {
   std::optional<contracts::SourceEventId> source_event_id;
   std::optional<std::uint64_t> capture_sequence;
   std::optional<std::uint64_t> normalized_position;
+  std::optional<contracts::StreamId> normalized_stream_id;
+  std::optional<std::uint64_t> normalized_stream_epoch;
+  std::optional<contracts::Sha256Digest> source_dataset_identity;
+  std::optional<contracts::SourceDecodeEnrichmentId>
+      source_decode_enrichment_id;
+  std::optional<contracts::IntegrityId> acceptance_evidence_id;
+  std::string normalizer_version;
+  std::optional<contracts::VersionRef> reference_lineage_version;
 
   bool operator==(const ObservedInput &) const = default;
 };
@@ -175,11 +184,25 @@ public:
         .source_event_id = input.source_event_id,
         .capture_sequence = input.capture_sequence,
         .normalized_position = input.normalized_position,
+        .normalized_stream_id = input.normalized_stream_id,
+        .normalized_stream_epoch = input.normalized_stream_epoch,
+        .source_dataset_identity = input.source_dataset_identity,
+        .source_decode_enrichment_id = input.source_decode_enrichment_id,
+        .acceptance_evidence_id = input.acceptance_evidence_id,
+        .normalizer_version = std::string(input.normalizer_version),
+        .reference_lineage_version = input.reference_lineage_version,
     });
     return true;
   }
 
+  std::optional<contracts::Sha256Digest>
+  completed_normalized_dataset_identity() const override {
+    return completed_identity;
+  }
+
   std::uint64_t reject_at{};
+  std::optional<contracts::Sha256Digest> completed_identity{
+      contracts::sha256(bytes("expected-normalized-output"))};
   std::vector<ObservedInput> observed;
 };
 
@@ -236,6 +259,8 @@ TEST_CASE("faithful provider dispatches verified capture order exactly") {
   CHECK(first.observed[0].payload == bytes("first"));
   CHECK(first.observed[1].payload == bytes("second"));
   CHECK(first.observed[0].source_event_id == id<contracts::SourceEventId>(10));
+  CHECK(first.observed[0].source_dataset_identity ==
+        manifest.dataset_identity());
 
   RecordingSink rejected;
   rejected.reject_at = 2;
@@ -244,6 +269,17 @@ TEST_CASE("faithful provider dispatches verified capture order exactly") {
   CHECK(failure.failure == replay::ReplayFailure::DispatchRejected);
   CHECK(failure.dispatched_count == 1);
   CHECK(rejected.observed.size() == 1);
+
+  RecordingSink semantic_mismatch;
+  semantic_mismatch.completed_identity = contracts::sha256(bytes("different"));
+  const auto mismatched =
+      replay::replay_capture_order(manifest, dataset, semantic_mismatch);
+  CHECK(mismatched.failure == replay::ReplayFailure::SemanticMismatch);
+  CHECK(mismatched.dispatched_count == 2);
+  RecordingSink missing_completion;
+  missing_completion.completed_identity = std::nullopt;
+  CHECK(replay::replay_capture_order(manifest, dataset, missing_completion)
+            .failure == replay::ReplayFailure::SemanticMismatch);
 
   const auto wrong_manifest =
       replay::ReplayRunManifest::create(
@@ -276,7 +312,14 @@ TEST_CASE(
   CHECK(sink.observed[1].event_type == "market.trade.observed");
   CHECK(sink.observed[0].normalized_position == 1);
   CHECK(sink.observed[1].normalized_position == 2);
-  CHECK(!sink.observed[0].source_event_id.has_value());
+  CHECK(sink.observed[0].source_event_id == id<contracts::SourceEventId>(21));
+  CHECK(sink.observed[0].normalized_stream_id == id<contracts::StreamId>(20));
+  CHECK(sink.observed[0].normalized_stream_epoch == 1);
+  CHECK(sink.observed[0].source_decode_enrichment_id ==
+        id<contracts::SourceDecodeEnrichmentId>(22));
+  CHECK(sink.observed[0].acceptance_evidence_id ==
+        id<contracts::IntegrityId>(24));
+  CHECK(sink.observed[0].normalizer_version == "chronos-market-normalizer-v1");
 
   const auto wrong_manifest =
       replay::ReplayRunManifest::create(
