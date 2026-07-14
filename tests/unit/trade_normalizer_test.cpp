@@ -291,6 +291,12 @@ TEST_CASE("trade decoder rejects malformed ineligible and bounded input") {
   limits.maximum_json_depth = 1;
   CHECK(decode(kTrades, {}, limits).failure ==
         trade::TradeNormalizationFailure::ResourceLimitExceeded);
+  limits = {};
+  limits.maximum_normalized_output_bytes = 1024;
+  const auto amplified = decode(kTrades, {}, limits);
+  CHECK(amplified.failure ==
+        trade::TradeNormalizationFailure::ResourceLimitExceeded);
+  CHECK(!amplified.enrichment.has_value());
 }
 
 TEST_CASE("trade topic symbol and message family mismatches fail visibly") {

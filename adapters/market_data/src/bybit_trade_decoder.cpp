@@ -307,6 +307,50 @@ std::optional<trade::SourceDecodeEvidence> decode_evidence(
   };
 }
 
+bool add_bounded(std::size_t &total, std::size_t value, std::size_t maximum) {
+  if (value > maximum || total > maximum - value)
+    return false;
+  total += value;
+  return true;
+}
+
+std::size_t
+extension_bytes(const std::vector<trade::SourceExtensionField> &extensions) {
+  std::size_t total{};
+  for (const auto &extension : extensions)
+    total += extension.json_pointer.size() + extension.canonical_json.size();
+  return total;
+}
+
+bool normalized_output_within_limit(const trade::DecodedTradeMessage &message,
+                                    std::size_t maximum) {
+  constexpr std::size_t fixed_fact_bytes = 512;
+  const auto envelope_bytes = extension_bytes(message.envelope_extensions);
+  std::size_t total{};
+  for (const auto &member : message.members) {
+    std::size_t member_bytes = fixed_fact_bytes;
+    const std::array strings{std::string_view(member.venue),
+                             std::string_view(member.topic),
+                             std::string_view(member.source_symbol),
+                             std::string_view(member.source_trade_id),
+                             std::string_view(member.source_side),
+                             std::string_view(member.price_decimal),
+                             std::string_view(member.quantity_decimal),
+                             std::string_view(member.tick_direction)};
+    for (const auto value : strings) {
+      if (!add_bounded(member_bytes, value.size(), maximum))
+        return false;
+    }
+    if (!add_bounded(member_bytes, extension_bytes(member.extensions),
+                     maximum) ||
+        !add_bounded(member_bytes, envelope_bytes, maximum) ||
+        !add_bounded(total, member_bytes, maximum)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace
 
 BybitTradeDecodeResult
@@ -403,6 +447,11 @@ decode_bybit_v5_trades(const DatasetReadResult &dataset,
       return {.failure = TradeNormalizationFailure::AmbiguousDuplicate};
     }
     message.members.push_back(std::move(assertions));
+  }
+
+  if (!normalized_output_within_limit(message,
+                                      limits.maximum_normalized_output_bytes)) {
+    return {.failure = TradeNormalizationFailure::ResourceLimitExceeded};
   }
 
   auto lineage = source_lineage(manifest, record, record_index);

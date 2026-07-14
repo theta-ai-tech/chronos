@@ -16,6 +16,7 @@ struct BybitTradeDecodeLimits final {
   std::size_t maximum_object_members{64};
   std::size_t maximum_string_bytes{128};
   std::size_t maximum_number_bytes{32};
+  std::size_t maximum_normalized_output_bytes{8U << 20U};
 };
 
 struct BybitTradeDecodeResult final {

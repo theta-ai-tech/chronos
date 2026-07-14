@@ -174,6 +174,10 @@ private:
       return result;
     }
     while (true) {
+      if (result.array.size() >= limits_.maximum_json_nodes) {
+        failure_ = JsonFailure::ResourceLimit;
+        return std::nullopt;
+      }
       auto value = parse_value(depth + 1);
       if (!value.has_value()) {
         return std::nullopt;
