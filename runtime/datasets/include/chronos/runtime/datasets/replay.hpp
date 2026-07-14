@@ -33,6 +33,7 @@ struct ReplayVersionPins final {
   std::string canonicalization_version;
   std::optional<std::string> normalizer_version;
   std::optional<contracts::VersionRef> reference_lineage_version;
+  std::optional<contracts::Sha256Digest> expected_normalized_dataset_identity;
 
   bool operator==(const ReplayVersionPins &) const = default;
 };
@@ -65,6 +66,13 @@ private:
 
 struct NormalizedFactRecord final {
   std::uint64_t normalized_position{};
+  contracts::StreamId normalized_stream_id;
+  std::uint64_t normalized_stream_epoch{};
+  contracts::Sha256Digest source_dataset_identity;
+  contracts::SourceEventId source_event_id;
+  contracts::SourceDecodeEnrichmentId source_decode_enrichment_id;
+  std::string normalizer_version;
+  contracts::VersionRef reference_lineage_version;
   std::string event_type;
   std::vector<std::byte> semantic_payload;
   contracts::Sha256Digest semantic_checksum;
@@ -72,10 +80,17 @@ struct NormalizedFactRecord final {
   bool operator==(const NormalizedFactRecord &) const = default;
 };
 
+struct NormalizedFactDatasetLimits final {
+  std::size_t maximum_records{1U << 20U};
+  std::size_t maximum_payload_bytes{1U << 20U};
+  std::size_t maximum_total_payload_bytes{64U << 20U};
+};
+
 class NormalizedFactDataset final {
 public:
   [[nodiscard]] static std::optional<NormalizedFactDataset>
-  create(std::vector<NormalizedFactRecord> records);
+  create(std::vector<NormalizedFactRecord> records,
+         const NormalizedFactDatasetLimits &limits = {});
 
   [[nodiscard]] const contracts::Sha256Digest &identity() const noexcept;
   [[nodiscard]] const std::vector<NormalizedFactRecord> &

@@ -100,6 +100,10 @@ manifest_identity(contracts::RunId run_id, ReplayClass replay_class,
   append_u64(canonical, pins.reference_lineage_version.has_value() ? 1U : 0U);
   if (pins.reference_lineage_version.has_value())
     append_version(canonical, *pins.reference_lineage_version);
+  append_u64(canonical,
+             pins.expected_normalized_dataset_identity.has_value() ? 1U : 0U);
+  if (pins.expected_normalized_dataset_identity.has_value())
+    append_digest(canonical, *pins.expected_normalized_dataset_identity);
   return contracts::sha256(canonical);
 }
 
@@ -110,6 +114,13 @@ normalized_dataset_identity(const std::vector<NormalizedFactRecord> &records) {
   append_u64(canonical, static_cast<std::uint64_t>(records.size()));
   for (const auto &record : records) {
     append_u64(canonical, record.normalized_position);
+    append_id(canonical, record.normalized_stream_id);
+    append_u64(canonical, record.normalized_stream_epoch);
+    append_digest(canonical, record.source_dataset_identity);
+    append_id(canonical, record.source_event_id);
+    append_id(canonical, record.source_decode_enrichment_id);
+    append_string(canonical, record.normalizer_version);
+    append_version(canonical, record.reference_lineage_version);
     append_string(canonical, record.event_type);
     append_u64(canonical,
                static_cast<std::uint64_t>(record.semantic_payload.size()));
@@ -149,8 +160,11 @@ ReplayRunManifest::create(contracts::RunId run_id, ReplayClass replay_class,
   const auto faithful = replay_class == ReplayClass::FaithfulCaptureOrder;
   if (faithful != pins.normalizer_version.has_value() ||
       faithful != pins.reference_lineage_version.has_value() ||
+      faithful != pins.expected_normalized_dataset_identity.has_value() ||
       (pins.normalizer_version.has_value() &&
-       !valid_version(*pins.normalizer_version))) {
+       !valid_version(*pins.normalizer_version)) ||
+      (pins.expected_normalized_dataset_identity.has_value() &&
+       !nonzero(*pins.expected_normalized_dataset_identity))) {
     return std::nullopt;
   }
   const auto identity =
@@ -183,17 +197,28 @@ NormalizedFactDataset::NormalizedFactDataset(
     : identity_(identity), records_(std::move(records)) {}
 
 std::optional<NormalizedFactDataset>
-NormalizedFactDataset::create(std::vector<NormalizedFactRecord> records) {
-  if (records.empty())
+NormalizedFactDataset::create(std::vector<NormalizedFactRecord> records,
+                              const NormalizedFactDatasetLimits &limits) {
+  if (records.empty() || records.size() > limits.maximum_records ||
+      limits.maximum_records == 0 || limits.maximum_payload_bytes == 0 ||
+      limits.maximum_total_payload_bytes == 0)
     return std::nullopt;
+  std::size_t total_payload_bytes{};
   for (std::size_t index = 0; index < records.size(); ++index) {
     const auto &record = records[index];
     if (record.normalized_position != index + 1 ||
+        record.normalized_stream_epoch == 0 ||
+        !nonzero(record.source_dataset_identity) ||
+        !valid_version(record.normalizer_version) ||
         !valid_version(record.event_type) || record.semantic_payload.empty() ||
+        record.semantic_payload.size() > limits.maximum_payload_bytes ||
+        record.semantic_payload.size() >
+            limits.maximum_total_payload_bytes - total_payload_bytes ||
         record.semantic_checksum !=
             contracts::sha256(record.semantic_payload)) {
       return std::nullopt;
     }
+    total_payload_bytes += record.semantic_payload.size();
   }
   const auto identity = normalized_dataset_identity(records);
   return NormalizedFactDataset(identity, std::move(records));

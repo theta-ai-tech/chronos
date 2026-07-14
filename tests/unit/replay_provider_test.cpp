@@ -112,6 +112,8 @@ replay::ReplayVersionPins faithful_pins() {
       .normalizer_version = "chronos-book-normalizer-v1",
       .reference_lineage_version =
           contracts::VersionRef::from(id<contracts::DefinitionId>(5), 1),
+      .expected_normalized_dataset_identity =
+          contracts::sha256(bytes("expected-normalized-output")),
   };
 }
 
@@ -129,6 +131,16 @@ replay::NormalizedFactRecord fact(std::uint64_t position, std::string_view type,
   auto semantic_payload = bytes(payload);
   return {
       .normalized_position = position,
+      .normalized_stream_id = id<contracts::StreamId>(20),
+      .normalized_stream_epoch = 1,
+      .source_dataset_identity = contracts::sha256(bytes("source-dataset")),
+      .source_event_id = id<contracts::SourceEventId>(21),
+      .source_decode_enrichment_id =
+          id<contracts::SourceDecodeEnrichmentId>(22),
+      .normalizer_version = "chronos-market-normalizer-v1",
+      .reference_lineage_version =
+          contracts::VersionRef::from(id<contracts::DefinitionId>(23), 1)
+              .value(),
       .event_type = std::string(type),
       .semantic_payload = semantic_payload,
       .semantic_checksum = contracts::sha256(semantic_payload),
@@ -289,5 +301,24 @@ TEST_CASE("normalized datasets reject gaps and semantic corruption") {
   auto corrupted = fact(1, "market.trade.observed", "trade");
   corrupted.semantic_payload[0] = std::byte{'x'};
   CHECK(!replay::NormalizedFactDataset::create({std::move(corrupted)})
+             .has_value());
+
+  auto missing_epoch = fact(1, "market.trade.observed", "trade");
+  missing_epoch.normalized_stream_epoch = 0;
+  CHECK(!replay::NormalizedFactDataset::create({std::move(missing_epoch)})
+             .has_value());
+
+  CHECK(!replay::NormalizedFactDataset::create(
+             {fact(1, "market.trade.observed", "too-large")},
+             {.maximum_records = 1,
+              .maximum_payload_bytes = 4,
+              .maximum_total_payload_bytes = 4})
+             .has_value());
+  CHECK(!replay::NormalizedFactDataset::create(
+             {fact(1, "market.trade.observed", "1234"),
+              fact(2, "market.trade.observed", "5678")},
+             {.maximum_records = 2,
+              .maximum_payload_bytes = 4,
+              .maximum_total_payload_bytes = 7})
              .has_value());
 }
