@@ -10,17 +10,7 @@
 namespace chronos::normalization::market_data {
 
 struct BookNormalizerVersions final {
-  std::string decoder_version;
-  std::string source_schema_version;
   std::string normalizer_version;
-};
-
-struct ReferenceSelectionPolicy final {
-  contracts::DefinitionId reference_configuration_lineage_id;
-  std::string lineage_schema_version;
-  std::string semantic_key_policy_version;
-  std::string effective_basis_policy_version;
-  std::string selection_policy_version;
 };
 
 struct BookNormalizationResult final {
@@ -34,9 +24,9 @@ struct BookNormalizationResult final {
 
 [[nodiscard]] BookNormalizationResult
 normalize_book(const DecodedBookEnrichment &enrichment,
-               const core::reference_data::ReferenceSnapshot &reference,
+               const core::reference_data::ReferenceConfigurationLineage
+                   &reference_lineage,
                contracts::ClockDomainId source_wall_clock_domain_id,
-               const ReferenceSelectionPolicy &selection_policy,
                const BookNormalizerVersions &versions);
 
 } // namespace chronos::normalization::market_data

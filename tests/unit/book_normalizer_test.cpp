@@ -36,6 +36,7 @@ std::vector<std::byte> bytes(std::string_view value) {
 
 struct DatasetOptions final {
   sdk::EnvironmentClass environment{sdk::EnvironmentClass::Test};
+  sdk::MarketClass market{sdk::MarketClass::LinearPerpetual};
   sdk::CaptureIntegrityStatus integrity_status{
       sdk::CaptureIntegrityStatus::Complete};
   std::string adapter_id{"chronos.bybit.public-market-data"};
@@ -50,6 +51,7 @@ sdk::SourceCaptureContext capture_context(const DatasetOptions &options = {}) {
       .build_version = "test",
       .venue = "bybit",
       .environment = options.environment,
+      .market = options.market,
       .endpoint = sdk::EndpointClass::PublicMarketData,
       .trust_class = sdk::SourceTrustClass::PublicUnauthenticated,
       .capture_session_id = id<sdk::CaptureSessionId>(1),
@@ -111,21 +113,10 @@ verified_dataset(std::string_view payload, const DatasetOptions &options = {}) {
 
 adapter::BybitBookDecodeResult
 decode(std::string_view payload, const DatasetOptions &options = {},
-       book::SourceProductClass product_class =
-           book::SourceProductClass::LinearPerpetual,
        const adapter::BybitBookDecodeLimits &limits = {}) {
   const auto dataset = verified_dataset(payload, options);
-  return adapter::decode_bybit_v5_book(
-      dataset, 0, {.product_class = product_class}, limits);
+  return adapter::decode_bybit_v5_book(dataset, 0, limits);
 }
-
-const book::ReferenceSelectionPolicy kSelectionPolicy{
-    .reference_configuration_lineage_id = id<contracts::DefinitionId>(15),
-    .lineage_schema_version = "reference-lineage-v1",
-    .semantic_key_policy_version = "bybit-semantic-key-v1",
-    .effective_basis_policy_version = "capture-sequence-v1",
-    .selection_policy_version = "exact-single-match-v1",
-};
 
 adapter::CaptureDatasetRecord record(std::string_view payload) {
   const auto dataset = verified_dataset(payload);
@@ -164,9 +155,19 @@ reference::ReferenceSnapshot reference_snapshot(
       .value();
 }
 
+reference::ReferenceConfigurationLineage reference_lineage(
+    reference::ListingStatus status = reference::ListingStatus::Active,
+    std::uint8_t lineage_seed = 15) {
+  std::vector<reference::ReferenceSnapshot> snapshots;
+  snapshots.push_back(reference_snapshot(status));
+  return reference::ReferenceConfigurationLineage::create(
+             version(lineage_seed, 1), "reference-lineage-v1",
+             "bybit-semantic-key-v1", "capture-sequence-v1",
+             "exact-single-match-v1", std::move(snapshots))
+      .value();
+}
+
 const book::BookNormalizerVersions kVersions{
-    .decoder_version = "bybit-book-decoder-v1",
-    .source_schema_version = "bybit-v5-orderbook-v1",
     .normalizer_version = "chronos-book-normalizer-v1",
 };
 
@@ -175,9 +176,8 @@ book::BookNormalizationResult normalize(std::string_view payload) {
   if (!decoded.ok()) {
     return {.failure = decoded.failure};
   }
-  return book::normalize_book(*decoded.enrichment, reference_snapshot(),
-                              id<contracts::ClockDomainId>(12),
-                              kSelectionPolicy, kVersions);
+  return book::normalize_book(*decoded.enrichment, reference_lineage(),
+                              id<contracts::ClockDomainId>(12), kVersions);
 }
 
 constexpr std::string_view kSnapshot = R"({
@@ -207,8 +207,8 @@ TEST_CASE("Bybit snapshots map to canonical fully-lineaged observations") {
   CHECK(fact.listing_id == reference_snapshot().listing().listing_id);
   CHECK(fact.reference_snapshot_version == reference_snapshot().version());
   CHECK(fact.listing_version == reference_snapshot().listing().version);
-  CHECK(fact.reference_selection.reference_configuration_lineage_id ==
-        kSelectionPolicy.reference_configuration_lineage_id);
+  CHECK(fact.reference_selection.reference_configuration_lineage_version ==
+        reference_lineage().version());
   CHECK(fact.reference_selection.semantic_key.venue == "bybit");
   CHECK(fact.reference_selection.semantic_key.environment ==
         sdk::EnvironmentClass::Test);
@@ -217,7 +217,7 @@ TEST_CASE("Bybit snapshots map to canonical fully-lineaged observations") {
   CHECK(fact.reference_selection.semantic_key.source_listing_key == "BTCUSDT");
   CHECK(fact.reference_selection.effective_capture_sequence == 1);
   CHECK(fact.source_lineage.dataset_format_version ==
-        "chronos-source-capture-v1");
+        "chronos-source-capture-v2");
   CHECK(fact.source_lineage.dataset_id.size() == 64);
   CHECK(fact.source_lineage.records_sha256.size() == 64);
   CHECK(fact.source_lineage.dataset_record_index == 0);
@@ -234,6 +234,14 @@ TEST_CASE("Bybit snapshots map to canonical fully-lineaged observations") {
   CHECK(fact.source_lineage.chronos_receive_time ==
         record(kSnapshot).chronos_receive_time);
   CHECK(fact.source_lineage.payload_digest == record(kSnapshot).payload_digest);
+  CHECK(fact.source_decode_evidence.source_member_index == 0);
+  CHECK(fact.source_decode_evidence.decoder_version == "bybit-book-decoder-v2");
+  CHECK(fact.source_decode_evidence.source_schema_version ==
+        "bybit-v5-orderbook-v1");
+  CHECK(fact.source_decode_evidence.registry_version ==
+        "bybit-v5-public-registry-v1");
+  CHECK(fact.source_decode_evidence.semantic_checksum.coverage ==
+        sdk::DigestCoverage::CompletePayload);
   CHECK(fact.source_assertions.sequence == 7961638724ULL);
   CHECK(fact.source_assertions.sequence_scope ==
         sdk::SourceSequenceScope::VenueCrossSequence);
@@ -275,22 +283,31 @@ TEST_CASE("source environment and product class participate in resolution") {
   const auto production =
       decode(kSnapshot, {.environment = sdk::EnvironmentClass::Production});
   CHECK(production.ok());
-  CHECK(book::normalize_book(*production.enrichment, reference_snapshot(),
-                             id<contracts::ClockDomainId>(12), kSelectionPolicy,
-                             kVersions)
-            .failure == book::BookNormalizationFailure::WrongTopicOrSymbol);
+  CHECK(book::normalize_book(*production.enrichment, reference_lineage(),
+                             id<contracts::ClockDomainId>(12), kVersions)
+            .failure == book::BookNormalizationFailure::ReferenceUnavailable);
 
-  const auto spot = decode(kSnapshot, {}, book::SourceProductClass::Spot);
+  const auto spot = decode(kSnapshot, {.market = sdk::MarketClass::Spot});
   CHECK(spot.ok());
-  CHECK(book::normalize_book(*spot.enrichment, reference_snapshot(),
-                             id<contracts::ClockDomainId>(12), kSelectionPolicy,
-                             kVersions)
-            .failure == book::BookNormalizationFailure::WrongTopicOrSymbol);
+  const auto linear = decode(kSnapshot);
+  CHECK(linear.ok());
+  CHECK(spot.enrichment->message().assertions.product_class ==
+        book::SourceProductClass::Spot);
+  CHECK(linear.enrichment->message().assertions.product_class ==
+        book::SourceProductClass::LinearPerpetual);
+  CHECK(spot.enrichment->decode_evidence().source_decode_enrichment_id !=
+        linear.enrichment->decode_evidence().source_decode_enrichment_id);
+  CHECK(spot.enrichment->decode_evidence().semantic_checksum !=
+        linear.enrichment->decode_evidence().semantic_checksum);
+  CHECK(book::normalize_book(*spot.enrichment, reference_lineage(),
+                             id<contracts::ClockDomainId>(12), kVersions)
+            .failure == book::BookNormalizationFailure::ReferenceUnavailable);
 }
 
 TEST_CASE("registered unknown fields are preserved as canonical extensions") {
   constexpr std::string_view payload = R"({
-    "z":{"b":2,"a":"x"},"topic":"orderbook.50.BTCUSDT",
+    "z":{"b":2,"a":"x"},"data/extra":4,
+    "topic":"orderbook.50.BTCUSDT",
     "type":"snapshot","ts":1672304486869,
     "data":{"s":"BTCUSDT","b":[],"extra":[3,true],"a":[],
             "u":18521288,"seq":7961638724},"cts":1672304486868
@@ -298,25 +315,25 @@ TEST_CASE("registered unknown fields are preserved as canonical extensions") {
   const auto decoded = decode(payload);
   CHECK(decoded.ok());
   const auto &extensions = decoded.enrichment->message().extensions;
-  CHECK(extensions.size() == 2);
-  CHECK(extensions[0].path == "$.data.extra");
+  CHECK(extensions.size() == 3);
+  CHECK(extensions[0].json_pointer == "/data/extra");
   CHECK(extensions[0].canonical_json == "[3,true]");
-  CHECK(extensions[1].path == "$.z");
-  CHECK(extensions[1].canonical_json == R"({"a":"x","b":2})");
+  CHECK(extensions[1].json_pointer == "/data~1extra");
+  CHECK(extensions[1].canonical_json == "4");
+  CHECK(extensions[2].json_pointer == "/z");
+  CHECK(extensions[2].canonical_json == R"({"a":"x","b":2})");
 
-  const auto normalized = book::normalize_book(
-      *decoded.enrichment, reference_snapshot(),
-      id<contracts::ClockDomainId>(12), kSelectionPolicy, kVersions);
+  const auto normalized =
+      book::normalize_book(*decoded.enrichment, reference_lineage(),
+                           id<contracts::ClockDomainId>(12), kVersions);
   CHECK(normalized.ok());
   CHECK(normalized.fact->source_extensions == extensions);
 }
 
 TEST_CASE("decoder only accepts records from a verified dataset result") {
   const auto dataset = verified_dataset(kSnapshot);
-  CHECK(adapter::decode_bybit_v5_book(
-            dataset, 1,
-            {.product_class = book::SourceProductClass::LinearPerpetual})
-            .failure == book::BookNormalizationFailure::IntegrityIneligible);
+  CHECK(adapter::decode_bybit_v5_book(dataset, 1).failure ==
+        book::BookNormalizationFailure::IntegrityIneligible);
 }
 
 TEST_CASE("decoder returns typed failures for malformed and ineligible input") {
@@ -336,16 +353,16 @@ TEST_CASE("decoder returns typed failures for malformed and ineligible input") {
 
   auto limits = adapter::BybitBookDecodeLimits{};
   limits.maximum_payload_bytes = 8;
-  CHECK(decode(kSnapshot, {}, book::SourceProductClass::LinearPerpetual, limits)
-            .failure == book::BookNormalizationFailure::ResourceLimitExceeded);
+  CHECK(decode(kSnapshot, {}, limits).failure ==
+        book::BookNormalizationFailure::ResourceLimitExceeded);
   limits = {};
   limits.maximum_levels_per_side = 1;
-  CHECK(decode(kSnapshot, {}, book::SourceProductClass::LinearPerpetual, limits)
-            .failure == book::BookNormalizationFailure::ResourceLimitExceeded);
+  CHECK(decode(kSnapshot, {}, limits).failure ==
+        book::BookNormalizationFailure::ResourceLimitExceeded);
   limits = {};
   limits.maximum_json_depth = 1;
-  CHECK(decode(kSnapshot, {}, book::SourceProductClass::LinearPerpetual, limits)
-            .failure == book::BookNormalizationFailure::ResourceLimitExceeded);
+  CHECK(decode(kSnapshot, {}, limits).failure ==
+        book::BookNormalizationFailure::ResourceLimitExceeded);
 
   std::string invalid_utf8 = "{\"bad\":\"";
   invalid_utf8.push_back(static_cast<char>(0xFF));
@@ -363,7 +380,7 @@ TEST_CASE("topic symbol and message family mismatches fail visibly") {
             .failure == book::BookNormalizationFailure::WrongTopicOrSymbol);
   CHECK(normalize(R"({"topic":"orderbook.50.ETHUSDT","type":"snapshot","ts":1,
     "data":{"s":"ETHUSDT","b":[],"a":[],"u":1,"seq":1},"cts":1})")
-            .failure == book::BookNormalizationFailure::WrongTopicOrSymbol);
+            .failure == book::BookNormalizationFailure::ReferenceUnavailable);
   CHECK(normalize(R"({"topic":"orderbook.50.BTCUSDT","type":"trade","ts":1,
     "data":{"s":"BTCUSDT","b":[],"a":[],"u":1,"seq":1},"cts":1})")
             .failure == book::BookNormalizationFailure::UnsupportedMessage);
@@ -392,9 +409,36 @@ TEST_CASE("reference and timestamp eligibility are explicit failures") {
   CHECK(decoded.ok());
   CHECK(book::normalize_book(
             *decoded.enrichment,
-            reference_snapshot(reference::ListingStatus::Inactive),
-            id<contracts::ClockDomainId>(12), kSelectionPolicy, kVersions)
+            reference_lineage(reference::ListingStatus::Inactive),
+            id<contracts::ClockDomainId>(12), kVersions)
             .failure == book::BookNormalizationFailure::ReferenceUnavailable);
+
+  const auto alternate_lineage =
+      reference_lineage(reference::ListingStatus::Active, 16);
+  const auto primary_fact =
+      book::normalize_book(*decoded.enrichment, reference_lineage(),
+                           id<contracts::ClockDomainId>(12), kVersions);
+  const auto alternate_fact =
+      book::normalize_book(*decoded.enrichment, alternate_lineage,
+                           id<contracts::ClockDomainId>(12), kVersions);
+  CHECK(primary_fact.ok());
+  CHECK(alternate_fact.ok());
+  CHECK(primary_fact.fact != alternate_fact.fact);
+
+  auto primary_snapshot = reference_snapshot();
+  auto duplicate_snapshot = reference::ReferenceSnapshot::create(
+                                version(17, 5), primary_snapshot.instrument(),
+                                primary_snapshot.listing())
+                                .value();
+  auto ambiguous_lineage =
+      reference::ReferenceConfigurationLineage::create(
+          version(18, 1), "reference-lineage-v1", "bybit-semantic-key-v1",
+          "capture-sequence-v1", "exact-single-match-v1",
+          {primary_snapshot, duplicate_snapshot})
+          .value();
+  CHECK(book::normalize_book(*decoded.enrichment, ambiguous_lineage,
+                             id<contracts::ClockDomainId>(12), kVersions)
+            .failure == book::BookNormalizationFailure::ReferenceAmbiguous);
 
   CHECK(normalize(R"({"topic":"orderbook.50.BTCUSDT","type":"snapshot",
     "ts":1,"data":{"s":"BTCUSDT","b":[],"a":[],"u":1,"seq":1},

@@ -16,8 +16,10 @@ class BybitBookDecoderAccess final {
 public:
   static normalization::market_data::DecodedBookEnrichment
   bind(normalization::market_data::DecodedBookMessage message,
-       normalization::market_data::SourceCaptureLineage source_lineage) {
-    return {std::move(message), std::move(source_lineage)};
+       normalization::market_data::SourceCaptureLineage source_lineage,
+       normalization::market_data::SourceDecodeEvidence decode_evidence) {
+    return {std::move(message), std::move(source_lineage),
+            std::move(decode_evidence)};
   }
 };
 
@@ -25,6 +27,97 @@ namespace {
 
 namespace book = chronos::normalization::market_data;
 using book::BookNormalizationFailure;
+
+constexpr std::string_view kDecoderVersion = "bybit-book-decoder-v2";
+constexpr std::string_view kSourceSchemaVersion = "bybit-v5-orderbook-v1";
+constexpr std::string_view kRegistryVersion = "bybit-v5-public-registry-v1";
+constexpr std::string_view kCanonicalizationVersion =
+    "chronos-source-enrichment-v1";
+
+void append_u64(std::vector<std::byte> &output, std::uint64_t value) {
+  for (std::size_t index = 0; index < sizeof(value); ++index) {
+    output.push_back(static_cast<std::byte>(value >> (index * 8U)));
+  }
+}
+
+void append_string(std::vector<std::byte> &output, std::string_view value) {
+  append_u64(output, static_cast<std::uint64_t>(value.size()));
+  if (value.empty())
+    return;
+  const auto *begin = reinterpret_cast<const std::byte *>(value.data());
+  output.insert(output.end(), begin, begin + value.size());
+}
+
+template <typename Id>
+void append_id(std::vector<std::byte> &output, const Id &value) {
+  for (const auto byte : value.bytes()) {
+    output.push_back(static_cast<std::byte>(byte));
+  }
+}
+
+std::optional<book::SourceDecodeEvidence>
+make_decode_evidence(const book::DecodedBookMessage &message,
+                     const book::SourceCaptureLineage &lineage) {
+  std::vector<std::byte> semantic;
+  semantic.reserve(512 + message.bids.size() * 32 + message.asks.size() * 32);
+  append_string(semantic, kDecoderVersion);
+  append_string(semantic, kSourceSchemaVersion);
+  append_string(semantic, kRegistryVersion);
+  append_string(semantic, kCanonicalizationVersion);
+  append_string(semantic, lineage.dataset_id);
+  append_id(semantic, lineage.source_event_id);
+  append_u64(semantic, lineage.capture_sequence);
+  append_u64(semantic, static_cast<std::uint64_t>(message.assertions.kind));
+  append_string(semantic, message.assertions.venue);
+  append_u64(semantic,
+             static_cast<std::uint64_t>(message.assertions.environment));
+  append_u64(semantic,
+             static_cast<std::uint64_t>(message.assertions.product_class));
+  append_string(semantic, message.assertions.topic);
+  append_string(semantic, message.assertions.source_symbol);
+  append_u64(semantic, message.assertions.depth);
+  append_u64(semantic, message.assertions.sequence);
+  append_u64(semantic,
+             static_cast<std::uint64_t>(message.assertions.sequence_scope));
+  append_u64(semantic, message.assertions.update_id);
+  append_u64(semantic,
+             static_cast<std::uint64_t>(message.assertions.update_id_scope));
+  append_u64(semantic, message.assertions.system_timestamp_milliseconds);
+  append_u64(semantic, message.assertions.matching_timestamp_milliseconds);
+  const auto append_levels = [&semantic](const auto &levels) {
+    append_u64(semantic, static_cast<std::uint64_t>(levels.size()));
+    for (const auto &level : levels) {
+      append_string(semantic, level.price_decimal);
+      append_string(semantic, level.quantity_decimal);
+    }
+  };
+  append_levels(message.bids);
+  append_levels(message.asks);
+  append_u64(semantic, static_cast<std::uint64_t>(message.extensions.size()));
+  for (const auto &extension : message.extensions) {
+    append_string(semantic, extension.json_pointer);
+    append_string(semantic, extension.canonical_json);
+  }
+  const auto checksum =
+      sdk::sha256(semantic, sdk::DigestCoverage::CompletePayload);
+  contracts::SourceDecodeEnrichmentId::bytes_type identity_bytes{};
+  std::copy_n(checksum.bytes.begin(), identity_bytes.size(),
+              identity_bytes.begin());
+  const auto identity =
+      contracts::SourceDecodeEnrichmentId::from_bytes(identity_bytes);
+  if (!identity.has_value()) {
+    return std::nullopt;
+  }
+  return book::SourceDecodeEvidence{
+      .source_decode_enrichment_id = *identity,
+      .source_member_index = 0,
+      .decoder_version = std::string(kDecoderVersion),
+      .source_schema_version = std::string(kSourceSchemaVersion),
+      .registry_version = std::string(kRegistryVersion),
+      .canonicalization_version = std::string(kCanonicalizationVersion),
+      .semantic_checksum = checksum,
+  };
+}
 
 enum class JsonKind : std::uint8_t {
   Null,
@@ -505,6 +598,21 @@ bool known_member(std::string_view key,
   return std::find(known.begin(), known.end(), key) != known.end();
 }
 
+std::string json_pointer_token(std::string_view value) {
+  std::string result;
+  result.reserve(value.size());
+  for (const auto character : value) {
+    if (character == '~') {
+      result += "~0";
+    } else if (character == '/') {
+      result += "~1";
+    } else {
+      result.push_back(character);
+    }
+  }
+  return result;
+}
+
 BookNormalizationFailure
 collect_extensions(const JsonValue &root, const JsonValue &data,
                    std::size_t maximum_bytes,
@@ -521,10 +629,10 @@ collect_extensions(const JsonValue &root, const JsonValue &data,
       if (known_member(value.key, known)) {
         continue;
       }
-      book::SourceExtensionField extension{.path =
-                                               std::string(prefix) + value.key};
+      book::SourceExtensionField extension{
+          .json_pointer = std::string(prefix) + json_pointer_token(value.key)};
       append_canonical_json(value, extension.canonical_json);
-      bytes += extension.path.size() + extension.canonical_json.size();
+      bytes += extension.json_pointer.size() + extension.canonical_json.size();
       if (bytes > maximum_bytes) {
         return false;
       }
@@ -532,14 +640,19 @@ collect_extensions(const JsonValue &root, const JsonValue &data,
     }
     return true;
   };
-  if (!collect(root, "$.", root_members) ||
-      !collect(data, "$.data.", data_members)) {
+  if (!collect(root, "/", root_members) ||
+      !collect(data, "/data/", data_members)) {
     return BookNormalizationFailure::ResourceLimitExceeded;
   }
   std::sort(output.begin(), output.end(),
             [](const auto &left, const auto &right) {
-              return left.path < right.path;
+              return left.json_pointer < right.json_pointer;
             });
+  for (std::size_t index = 1; index < output.size(); ++index) {
+    if (output[index - 1].json_pointer == output[index].json_pointer) {
+      return BookNormalizationFailure::AmbiguousDuplicate;
+    }
+  }
   return BookNormalizationFailure::None;
 }
 
@@ -619,7 +732,7 @@ std::optional<TopicParts> parse_topic(std::string_view topic) {
 bool integrity_eligible(const CaptureDatasetManifest &manifest,
                         const CaptureDatasetRecord &record,
                         const BybitBookDecodeLimits &limits) {
-  return manifest.format_version == "chronos-source-capture-v1" &&
+  return manifest.format_version == "chronos-source-capture-v2" &&
          manifest.venue == "bybit" && manifest.record_count != 0 &&
          manifest.adapter_id == "chronos.bybit.public-market-data" &&
          manifest.schema_policy_version == "bybit-v5-public-v1" &&
@@ -702,21 +815,33 @@ BookNormalizationFailure parser_failure(JsonFailure failure) {
   return BookNormalizationFailure::MalformedPayload;
 }
 
+std::optional<book::SourceProductClass>
+source_product_class(sdk::MarketClass market) {
+  switch (market) {
+  case sdk::MarketClass::Spot:
+    return book::SourceProductClass::Spot;
+  case sdk::MarketClass::LinearPerpetual:
+    return book::SourceProductClass::LinearPerpetual;
+  case sdk::MarketClass::InversePerpetual:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
 } // namespace
 
 BybitBookDecodeResult
 decode_bybit_v5_book(const DatasetReadResult &dataset, std::size_t record_index,
-                     const BybitBookDecodePolicy &policy,
                      const BybitBookDecodeLimits &limits) {
   if (!dataset.ok() || record_index >= dataset.records().size()) {
     return {.failure = BookNormalizationFailure::IntegrityIneligible};
   }
-  if (policy.product_class != book::SourceProductClass::Spot &&
-      policy.product_class != book::SourceProductClass::LinearPerpetual) {
-    return {.failure = BookNormalizationFailure::SchemaViolation};
-  }
   const auto &manifest = dataset.manifest().value();
   const auto &record = dataset.records()[record_index];
+  const auto product_class = source_product_class(manifest.market);
+  if (!product_class.has_value()) {
+    return {.failure = BookNormalizationFailure::UnsupportedMessage};
+  }
   if (record.raw_payload.size() > limits.maximum_payload_bytes) {
     return {.failure = BookNormalizationFailure::ResourceLimitExceeded};
   }
@@ -778,7 +903,7 @@ decode_bybit_v5_book(const DatasetReadResult &dataset, std::size_t record_index,
           .kind = kind,
           .venue = manifest.venue,
           .environment = manifest.environment,
-          .product_class = policy.product_class,
+          .product_class = *product_class,
           .topic = std::string(*topic),
           .source_symbol = std::string(*symbol),
           .depth = topic_parts->depth,
@@ -804,32 +929,35 @@ decode_bybit_v5_book(const DatasetReadResult &dataset, std::size_t record_index,
     return {.failure = failure};
   }
 
+  book::SourceCaptureLineage source_lineage{
+      .dataset_format_version = manifest.format_version,
+      .dataset_id = manifest.dataset_id,
+      .records_sha256 = manifest.records_sha256,
+      .dataset_record_index = static_cast<std::uint64_t>(record_index),
+      .source_event_id = record.source_event_id,
+      .capture_session_id = manifest.capture_session_id,
+      .runtime_id = manifest.runtime_id,
+      .connection_id = manifest.connection_id,
+      .subscription_id = manifest.subscription_id,
+      .capture_partition_id = manifest.capture_partition_id,
+      .capture_sequence = record.capture_sequence,
+      .chronos_receive_time = record.chronos_receive_time,
+      .payload_digest = record.payload_digest,
+      .adapter_version = manifest.adapter_version,
+      .build_version = manifest.build_version,
+      .framing_version = manifest.framing_version,
+      .static_configuration_version = manifest.static_configuration_version,
+      .capability_manifest_version = manifest.capability_manifest_version,
+      .schema_policy_version = manifest.schema_policy_version,
+  };
+  auto decode_evidence = make_decode_evidence(message, source_lineage);
+  if (!decode_evidence.has_value()) {
+    return {.failure = BookNormalizationFailure::SchemaViolation};
+  }
   return {
-      .enrichment = BybitBookDecoderAccess::bind(
-          std::move(message),
-          {
-              .dataset_format_version = manifest.format_version,
-              .dataset_id = manifest.dataset_id,
-              .records_sha256 = manifest.records_sha256,
-              .dataset_record_index = static_cast<std::uint64_t>(record_index),
-              .source_event_id = record.source_event_id,
-              .capture_session_id = manifest.capture_session_id,
-              .runtime_id = manifest.runtime_id,
-              .connection_id = manifest.connection_id,
-              .subscription_id = manifest.subscription_id,
-              .capture_partition_id = manifest.capture_partition_id,
-              .capture_sequence = record.capture_sequence,
-              .chronos_receive_time = record.chronos_receive_time,
-              .payload_digest = record.payload_digest,
-              .adapter_version = manifest.adapter_version,
-              .build_version = manifest.build_version,
-              .framing_version = manifest.framing_version,
-              .static_configuration_version =
-                  manifest.static_configuration_version,
-              .capability_manifest_version =
-                  manifest.capability_manifest_version,
-              .schema_policy_version = manifest.schema_policy_version,
-          }),
+      .enrichment = BybitBookDecoderAccess::bind(std::move(message),
+                                                 std::move(source_lineage),
+                                                 std::move(*decode_evidence)),
       .failure = BookNormalizationFailure::None,
   };
 }

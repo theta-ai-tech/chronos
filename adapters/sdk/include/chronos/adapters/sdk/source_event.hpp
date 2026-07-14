@@ -72,6 +72,7 @@ struct SourceCaptureContext final {
   std::string build_version;
   std::string venue;
   EnvironmentClass environment{EnvironmentClass::Test};
+  MarketClass market{MarketClass::Spot};
   EndpointClass endpoint{EndpointClass::PublicMarketData};
   SourceTrustClass trust_class{SourceTrustClass::PublicUnauthenticated};
   CaptureSessionId capture_session_id;

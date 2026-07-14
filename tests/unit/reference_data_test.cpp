@@ -107,6 +107,35 @@ TEST_CASE("tick and step definitions drive exact fixed-point conversion") {
   CHECK(!price->checked_compare(*unrelated_price).has_value());
 }
 
+TEST_CASE("reference lineage binds allowed facts and selection policies") {
+  auto primary = snapshot();
+  auto alternate = ReferenceSnapshot::create(
+                       version("018f1f6e-7d3a-7c4b-8a91-0123456789a4", 2),
+                       primary.instrument(), primary.listing())
+                       .value();
+  const auto lineage_version =
+      version("018f1f6e-7d3a-7c4b-8a91-0123456789a5", 3);
+  const auto lineage = ReferenceConfigurationLineage::create(
+      lineage_version, "reference-lineage-v1", "bybit-semantic-key-v1",
+      "capture-sequence-v1", "exact-single-match-v1", {primary});
+  CHECK(lineage.has_value());
+  CHECK(lineage->version() == lineage_version);
+  const auto selected =
+      lineage->select("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                      "BTCUSDT", id<CapturePartitionId>(kEffectiveDomain), 10);
+  CHECK(selected.ok());
+  CHECK(selected.snapshot->version() == primary.version());
+
+  const auto ambiguous = ReferenceConfigurationLineage::create(
+      lineage_version, "reference-lineage-v1", "bybit-semantic-key-v1",
+      "capture-sequence-v1", "exact-single-match-v1", {primary, alternate});
+  CHECK(ambiguous.has_value());
+  CHECK(ambiguous
+            ->select("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                     "BTCUSDT", id<CapturePartitionId>(kEffectiveDomain), 10)
+            .failure == ReferenceSelectionFailure::Ambiguous);
+}
+
 TEST_CASE("reference factories reject ambiguous or invalid definitions") {
   const auto domain = id<CapturePartitionId>(kEffectiveDomain);
   CHECK(!EffectiveInterval::from_capture_sequence(domain, 0, std::nullopt)

@@ -22,7 +22,10 @@ M3.2 normalizes observations only. It does not mutate an L2 book or allocate
 normalized stream, epoch, event, or run-input positions; those remain later
 stream/dispatch and M4 authorities.
 
-Book facts retain the source dataset identity, bound capture lineage, source
-environment/product class, registered unknown-field extensions, selected
-reference semantic key, effective capture-sequence evidence, and selection
-policy versions.
+Book facts retain the source dataset identity, bound capture lineage, immutable
+decode-enrichment identity and semantic checksum, source environment/product
+class, JSON Pointer-addressed unknown-field extensions, selected reference
+semantic key, effective capture-sequence evidence, and a reference snapshot
+selected through one versioned configuration-lineage authority. Capture format
+v2 includes market class in the manifest hash, so callers cannot relabel a
+verified record as another product class.

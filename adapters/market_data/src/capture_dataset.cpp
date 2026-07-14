@@ -16,7 +16,7 @@
 
 namespace chronos::adapters::market_data {
 namespace {
-constexpr std::string_view kFormat = "chronos-source-capture-v1";
+constexpr std::string_view kFormat = "chronos-source-capture-v2";
 constexpr std::uint64_t kMaximumRecordBytes = 8U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumDatasetBytes = 64U * 1024U * 1024U;
 constexpr std::uint64_t kMaximumManifestBytes = 16U * 1024U;
@@ -128,6 +128,7 @@ std::string manifest_body(const CaptureDatasetManifest &manifest) {
       << "build_version=" << manifest.build_version << '\n'
       << "venue=" << manifest.venue << '\n'
       << "environment=" << static_cast<unsigned>(manifest.environment) << '\n'
+      << "market=" << static_cast<unsigned>(manifest.market) << '\n'
       << "endpoint=" << static_cast<unsigned>(manifest.endpoint) << '\n'
       << "trust_class=" << static_cast<unsigned>(manifest.trust_class) << '\n'
       << "framing_version=" << manifest.framing_version << '\n'
@@ -231,6 +232,7 @@ CaptureDatasetWriter::create(std::filesystem::path destination,
       !safe_manifest_value(context.static_configuration_version) ||
       !safe_manifest_value(context.capability_manifest_version) ||
       !safe_manifest_value(context.schema_policy_version) ||
+      !sdk::detail::known(context.market) ||
       context.maximum_retained_payload_bytes == 0 ||
       context.maximum_retained_payload_bytes > kMaximumRecordBytes ||
       context.maximum_source_events == 0 ||
@@ -265,6 +267,7 @@ DatasetFailure CaptureDatasetWriter::append(const sdk::SourceEvent &event) {
       event.context().build_version != state_->context.build_version ||
       event.context().venue != state_->context.venue ||
       event.context().environment != state_->context.environment ||
+      event.context().market != state_->context.market ||
       event.context().endpoint != state_->context.endpoint ||
       event.context().trust_class != state_->context.trust_class ||
       event.runtime_id() != state_->context.runtime_id ||
@@ -346,6 +349,7 @@ DatasetSealResult CaptureDatasetWriter::seal() {
       .build_version = state_->context.build_version,
       .venue = state_->context.venue,
       .environment = state_->context.environment,
+      .market = state_->context.market,
       .endpoint = state_->context.endpoint,
       .trust_class = state_->context.trust_class,
       .framing_version = state_->context.framing_version,
@@ -424,6 +428,7 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
                             "build_version",
                             "venue",
                             "environment",
+                            "market",
                             "endpoint",
                             "trust_class",
                             "framing_version",
@@ -464,6 +469,7 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
   const auto first = parse_u64("first_capture_sequence");
   const auto last = parse_u64("last_capture_sequence");
   const auto environment = parse_u64("environment");
+  const auto market = parse_u64("market");
   const auto endpoint = parse_u64("endpoint");
   const auto trust_class = parse_u64("trust_class");
   const auto classification = parse_u64("data_classification");
@@ -493,14 +499,16 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
   const auto connection = parse_optional_connection();
   const auto subscription = parse_optional_subscription();
   if (!session || !partition || !runtime || !connection || !subscription ||
-      !count || !first || !last || !environment || !endpoint || !trust_class ||
-      !classification || !restriction || !replay_admissible || !records_bytes ||
-      !maximum_payload || !maximum_events || *maximum_payload == 0 ||
-      *maximum_payload > kMaximumRecordBytes || *maximum_events == 0 ||
-      *maximum_events > kMaximumRecords || *count == 0 ||
-      *count > kMaximumRecords ||
+      !count || !first || !last || !environment || !market || !endpoint ||
+      !trust_class || !classification || !restriction || !replay_admissible ||
+      !records_bytes || !maximum_payload || !maximum_events ||
+      *maximum_payload == 0 || *maximum_payload > kMaximumRecordBytes ||
+      *maximum_events == 0 || *maximum_events > kMaximumRecords ||
+      *count == 0 || *count > kMaximumRecords ||
       *environment >
           static_cast<std::uint64_t>(sdk::EnvironmentClass::Production) ||
+      *market >
+          static_cast<std::uint64_t>(sdk::MarketClass::InversePerpetual) ||
       *endpoint >
           static_cast<std::uint64_t>(sdk::EndpointClass::PublicMarketData) ||
       *trust_class > static_cast<std::uint64_t>(
@@ -528,6 +536,7 @@ DatasetReadResult read_capture_dataset(const std::filesystem::path &directory) {
       .build_version = values["build_version"],
       .venue = values["venue"],
       .environment = static_cast<sdk::EnvironmentClass>(*environment),
+      .market = static_cast<sdk::MarketClass>(*market),
       .endpoint = static_cast<sdk::EndpointClass>(*endpoint),
       .trust_class = static_cast<sdk::SourceTrustClass>(*trust_class),
       .framing_version = values["framing_version"],

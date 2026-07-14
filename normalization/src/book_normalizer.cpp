@@ -120,19 +120,18 @@ convert_delta_side(const std::vector<SourceBookLevel> &source,
 
 BookNormalizationResult
 normalize_book(const DecodedBookEnrichment &enrichment,
-               const core::reference_data::ReferenceSnapshot &reference,
+               const core::reference_data::ReferenceConfigurationLineage
+                   &reference_lineage,
                contracts::ClockDomainId source_wall_clock_domain_id,
-               const ReferenceSelectionPolicy &selection_policy,
                const BookNormalizerVersions &versions) {
   const auto &message = enrichment.message();
   const auto &lineage = enrichment.source_lineage();
-  if (!valid_version(versions.decoder_version) ||
-      !valid_version(versions.source_schema_version) ||
-      !valid_version(versions.normalizer_version) ||
-      !valid_version(selection_policy.lineage_schema_version) ||
-      !valid_version(selection_policy.semantic_key_policy_version) ||
-      !valid_version(selection_policy.effective_basis_policy_version) ||
-      !valid_version(selection_policy.selection_policy_version)) {
+  const auto &decode_evidence = enrichment.decode_evidence();
+  if (!valid_version(decode_evidence.decoder_version) ||
+      !valid_version(decode_evidence.source_schema_version) ||
+      !valid_version(decode_evidence.registry_version) ||
+      !valid_version(decode_evidence.canonicalization_version) ||
+      !valid_version(versions.normalizer_version)) {
     return {.failure = BookNormalizationFailure::SchemaViolation};
   }
 
@@ -144,20 +143,19 @@ normalize_book(const DecodedBookEnrichment &enrichment,
     return {.failure = BookNormalizationFailure::SchemaViolation};
   }
 
-  const auto &reference_listing = reference.listing();
-  if (reference_listing.venue != message.assertions.venue ||
-      reference_listing.environment != *environment ||
-      reference.instrument().product_class != *product_class ||
-      reference_listing.source_symbol != message.assertions.source_symbol) {
-    return {.failure = BookNormalizationFailure::WrongTopicOrSymbol};
+  const auto selected = reference_lineage.select(
+      message.assertions.venue, *environment, *product_class,
+      message.assertions.source_symbol, lineage.capture_partition_id,
+      lineage.capture_sequence);
+  if (selected.failure ==
+      core::reference_data::ReferenceSelectionFailure::Ambiguous) {
+    return {.failure = BookNormalizationFailure::ReferenceAmbiguous};
   }
-  const auto *listing =
-      reference.resolve(message.assertions.venue, *environment, *product_class,
-                        message.assertions.source_symbol,
-                        lineage.capture_partition_id, lineage.capture_sequence);
-  if (listing == nullptr) {
+  if (!selected.ok()) {
     return {.failure = BookNormalizationFailure::ReferenceUnavailable};
   }
+  const auto &reference = *selected.snapshot;
+  const auto *listing = selected.listing;
   const auto timestamp =
       source_time(message.assertions.matching_timestamp_milliseconds,
                   source_wall_clock_domain_id);
@@ -204,16 +202,16 @@ normalize_book(const DecodedBookEnrichment &enrichment,
               .listing_version = listing->version,
               .reference_selection =
                   {
-                      .reference_configuration_lineage_id =
-                          selection_policy.reference_configuration_lineage_id,
-                      .lineage_schema_version =
-                          selection_policy.lineage_schema_version,
-                      .semantic_key_policy_version =
-                          selection_policy.semantic_key_policy_version,
-                      .effective_basis_policy_version =
-                          selection_policy.effective_basis_policy_version,
-                      .selection_policy_version =
-                          selection_policy.selection_policy_version,
+                      .reference_configuration_lineage_version =
+                          reference_lineage.version(),
+                      .lineage_schema_version = std::string(
+                          reference_lineage.lineage_schema_version()),
+                      .semantic_key_policy_version = std::string(
+                          reference_lineage.semantic_key_policy_version()),
+                      .effective_basis_policy_version = std::string(
+                          reference_lineage.effective_basis_policy_version()),
+                      .selection_policy_version = std::string(
+                          reference_lineage.selection_policy_version()),
                       .semantic_key =
                           {
                               .venue = message.assertions.venue,
@@ -227,11 +225,12 @@ normalize_book(const DecodedBookEnrichment &enrichment,
                       .effective_capture_sequence = lineage.capture_sequence,
                   },
               .source_lineage = lineage,
+              .source_decode_evidence = decode_evidence,
               .source_assertions = message.assertions,
               .source_extensions = message.extensions,
               .source_event_time = *timestamp,
-              .decoder_version = versions.decoder_version,
-              .source_schema_version = versions.source_schema_version,
+              .decoder_version = decode_evidence.decoder_version,
+              .source_schema_version = decode_evidence.source_schema_version,
               .normalizer_version = versions.normalizer_version,
               .payload = std::move(payload),
           },

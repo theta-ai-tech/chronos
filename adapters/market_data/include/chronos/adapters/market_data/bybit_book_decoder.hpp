@@ -21,11 +21,6 @@ struct BybitBookDecodeLimits final {
   std::size_t maximum_extension_bytes{1U << 20U};
 };
 
-struct BybitBookDecodePolicy final {
-  normalization::market_data::SourceProductClass product_class{
-      normalization::market_data::SourceProductClass::Spot};
-};
-
 struct BybitBookDecodeResult final {
   std::optional<normalization::market_data::DecodedBookEnrichment> enrichment;
   normalization::market_data::BookNormalizationFailure failure{
@@ -40,7 +35,6 @@ struct BybitBookDecodeResult final {
 
 [[nodiscard]] BybitBookDecodeResult
 decode_bybit_v5_book(const DatasetReadResult &dataset, std::size_t record_index,
-                     const BybitBookDecodePolicy &policy,
                      const BybitBookDecodeLimits &limits = {});
 
 } // namespace chronos::adapters::market_data

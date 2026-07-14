@@ -23,6 +23,7 @@ struct CaptureDatasetManifest final {
   std::string build_version;
   std::string venue;
   sdk::EnvironmentClass environment{sdk::EnvironmentClass::Test};
+  sdk::MarketClass market{sdk::MarketClass::Spot};
   sdk::EndpointClass endpoint{sdk::EndpointClass::PublicMarketData};
   sdk::SourceTrustClass trust_class{
       sdk::SourceTrustClass::PublicUnauthenticated};

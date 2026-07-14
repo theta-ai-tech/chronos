@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace chronos::core::reference_data {
 
@@ -101,6 +102,61 @@ private:
   contracts::VersionRef snapshot_version_;
   CanonicalInstrumentDefinition instrument_;
   ListingDefinition listing_;
+};
+
+enum class ReferenceSelectionFailure : std::uint8_t {
+  None,
+  Missing,
+  Ambiguous,
+};
+
+struct ReferenceSelectionResult final {
+  const ReferenceSnapshot *snapshot{};
+  const ListingDefinition *listing{};
+  ReferenceSelectionFailure failure{ReferenceSelectionFailure::None};
+
+  [[nodiscard]] bool ok() const noexcept {
+    return snapshot != nullptr && listing != nullptr &&
+           failure == ReferenceSelectionFailure::None;
+  }
+};
+
+class ReferenceConfigurationLineage final {
+public:
+  [[nodiscard]] static std::optional<ReferenceConfigurationLineage>
+  create(contracts::VersionRef lineage_version,
+         std::string lineage_schema_version,
+         std::string semantic_key_policy_version,
+         std::string effective_basis_policy_version,
+         std::string selection_policy_version,
+         std::vector<ReferenceSnapshot> allowed_snapshots);
+
+  [[nodiscard]] const contracts::VersionRef &version() const noexcept;
+  [[nodiscard]] std::string_view lineage_schema_version() const noexcept;
+  [[nodiscard]] std::string_view semantic_key_policy_version() const noexcept;
+  [[nodiscard]] std::string_view
+  effective_basis_policy_version() const noexcept;
+  [[nodiscard]] std::string_view selection_policy_version() const noexcept;
+  [[nodiscard]] ReferenceSelectionResult
+  select(std::string_view venue, VenueEnvironment environment,
+         ProductClass product_class, std::string_view source_symbol,
+         contracts::CapturePartitionId partition_id,
+         std::uint64_t capture_sequence) const noexcept;
+
+private:
+  ReferenceConfigurationLineage(
+      contracts::VersionRef lineage_version, std::string lineage_schema_version,
+      std::string semantic_key_policy_version,
+      std::string effective_basis_policy_version,
+      std::string selection_policy_version,
+      std::vector<ReferenceSnapshot> allowed_snapshots);
+
+  contracts::VersionRef lineage_version_;
+  std::string lineage_schema_version_;
+  std::string semantic_key_policy_version_;
+  std::string effective_basis_policy_version_;
+  std::string selection_policy_version_;
+  std::vector<ReferenceSnapshot> allowed_snapshots_;
 };
 
 } // namespace chronos::core::reference_data

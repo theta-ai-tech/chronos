@@ -33,6 +33,7 @@ enum class BookNormalizationFailure : std::uint8_t {
   AmbiguousDuplicate,
   InvalidNumeric,
   ReferenceUnavailable,
+  ReferenceAmbiguous,
 };
 
 struct SourceBookLevel final {
@@ -65,10 +66,22 @@ struct SourceBookAssertions final {
 };
 
 struct SourceExtensionField final {
-  std::string path;
+  std::string json_pointer;
   std::string canonical_json;
 
   bool operator==(const SourceExtensionField &) const = default;
+};
+
+struct SourceDecodeEvidence final {
+  contracts::SourceDecodeEnrichmentId source_decode_enrichment_id;
+  std::uint32_t source_member_index{};
+  std::string decoder_version;
+  std::string source_schema_version;
+  std::string registry_version;
+  std::string canonicalization_version;
+  adapters::sdk::PayloadDigest semantic_checksum;
+
+  bool operator==(const SourceDecodeEvidence &) const = default;
 };
 
 struct DecodedBookMessage final {
@@ -112,17 +125,23 @@ public:
   [[nodiscard]] const SourceCaptureLineage &source_lineage() const noexcept {
     return source_lineage_;
   }
+  [[nodiscard]] const SourceDecodeEvidence &decode_evidence() const noexcept {
+    return decode_evidence_;
+  }
 
   bool operator==(const DecodedBookEnrichment &) const = default;
 
 private:
   DecodedBookEnrichment(DecodedBookMessage message,
-                        SourceCaptureLineage source_lineage)
+                        SourceCaptureLineage source_lineage,
+                        SourceDecodeEvidence decode_evidence)
       : message_(std::move(message)),
-        source_lineage_(std::move(source_lineage)) {}
+        source_lineage_(std::move(source_lineage)),
+        decode_evidence_(std::move(decode_evidence)) {}
 
   DecodedBookMessage message_;
   SourceCaptureLineage source_lineage_;
+  SourceDecodeEvidence decode_evidence_;
 
   friend class chronos::adapters::market_data::BybitBookDecoderAccess;
 };
@@ -138,7 +157,7 @@ struct ReferenceSemanticKey final {
 };
 
 struct ReferenceSelectionEvidence final {
-  contracts::DefinitionId reference_configuration_lineage_id;
+  contracts::VersionRef reference_configuration_lineage_version;
   std::string lineage_schema_version;
   std::string semantic_key_policy_version;
   std::string effective_basis_policy_version;
@@ -190,6 +209,7 @@ struct NormalizedBookFact final {
   contracts::VersionRef listing_version;
   ReferenceSelectionEvidence reference_selection;
   SourceCaptureLineage source_lineage;
+  SourceDecodeEvidence source_decode_evidence;
   SourceBookAssertions source_assertions;
   std::vector<SourceExtensionField> source_extensions;
   contracts::TimePoint source_event_time;

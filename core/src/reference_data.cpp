@@ -253,4 +253,102 @@ ReferenceSnapshot::resolve(std::string_view venue, VenueEnvironment environment,
   return &listing_;
 }
 
+ReferenceConfigurationLineage::ReferenceConfigurationLineage(
+    contracts::VersionRef lineage_version, std::string lineage_schema_version,
+    std::string semantic_key_policy_version,
+    std::string effective_basis_policy_version,
+    std::string selection_policy_version,
+    std::vector<ReferenceSnapshot> allowed_snapshots)
+    : lineage_version_(lineage_version),
+      lineage_schema_version_(std::move(lineage_schema_version)),
+      semantic_key_policy_version_(std::move(semantic_key_policy_version)),
+      effective_basis_policy_version_(
+          std::move(effective_basis_policy_version)),
+      selection_policy_version_(std::move(selection_policy_version)),
+      allowed_snapshots_(std::move(allowed_snapshots)) {}
+
+std::optional<ReferenceConfigurationLineage>
+ReferenceConfigurationLineage::create(
+    contracts::VersionRef lineage_version, std::string lineage_schema_version,
+    std::string semantic_key_policy_version,
+    std::string effective_basis_policy_version,
+    std::string selection_policy_version,
+    std::vector<ReferenceSnapshot> allowed_snapshots) {
+  if (!valid_token(lineage_schema_version) ||
+      !valid_token(semantic_key_policy_version) ||
+      !valid_token(effective_basis_policy_version) ||
+      !valid_token(selection_policy_version) || allowed_snapshots.empty()) {
+    return std::nullopt;
+  }
+  for (std::size_t index = 0; index < allowed_snapshots.size(); ++index) {
+    const auto &snapshot = allowed_snapshots[index];
+    if (lineage_version.definition_id() == snapshot.version().definition_id() ||
+        lineage_version.definition_id() ==
+            snapshot.instrument().version.definition_id() ||
+        lineage_version.definition_id() ==
+            snapshot.listing().version.definition_id()) {
+      return std::nullopt;
+    }
+    for (std::size_t prior = 0; prior < index; ++prior) {
+      if (allowed_snapshots[prior].version() == snapshot.version()) {
+        return std::nullopt;
+      }
+    }
+  }
+  return ReferenceConfigurationLineage(
+      lineage_version, std::move(lineage_schema_version),
+      std::move(semantic_key_policy_version),
+      std::move(effective_basis_policy_version),
+      std::move(selection_policy_version), std::move(allowed_snapshots));
+}
+
+const contracts::VersionRef &
+ReferenceConfigurationLineage::version() const noexcept {
+  return lineage_version_;
+}
+
+std::string_view
+ReferenceConfigurationLineage::lineage_schema_version() const noexcept {
+  return lineage_schema_version_;
+}
+
+std::string_view
+ReferenceConfigurationLineage::semantic_key_policy_version() const noexcept {
+  return semantic_key_policy_version_;
+}
+
+std::string_view
+ReferenceConfigurationLineage::effective_basis_policy_version() const noexcept {
+  return effective_basis_policy_version_;
+}
+
+std::string_view
+ReferenceConfigurationLineage::selection_policy_version() const noexcept {
+  return selection_policy_version_;
+}
+
+ReferenceSelectionResult ReferenceConfigurationLineage::select(
+    std::string_view venue, VenueEnvironment environment,
+    ProductClass product_class, std::string_view source_symbol,
+    contracts::CapturePartitionId partition_id,
+    std::uint64_t capture_sequence) const noexcept {
+  ReferenceSelectionResult result{.failure =
+                                      ReferenceSelectionFailure::Missing};
+  for (const auto &snapshot : allowed_snapshots_) {
+    const auto *listing =
+        snapshot.resolve(venue, environment, product_class, source_symbol,
+                         partition_id, capture_sequence);
+    if (listing == nullptr) {
+      continue;
+    }
+    if (result.snapshot != nullptr) {
+      return {.failure = ReferenceSelectionFailure::Ambiguous};
+    }
+    result = {.snapshot = &snapshot,
+              .listing = listing,
+              .failure = ReferenceSelectionFailure::None};
+  }
+  return result;
+}
+
 } // namespace chronos::core::reference_data
