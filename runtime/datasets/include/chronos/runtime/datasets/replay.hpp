@@ -1,0 +1,157 @@
+#pragma once
+
+#include "chronos/adapters/market_data/capture_dataset.hpp"
+#include "chronos/contracts/digest.hpp"
+#include "chronos/contracts/value_objects.hpp"
+
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace chronos::runtime::datasets {
+
+enum class ReplayClass : std::uint8_t {
+  FaithfulCaptureOrder,
+  NormalizedFact,
+};
+
+enum class ReplayFailure : std::uint8_t {
+  None,
+  InvalidManifest,
+  DatasetIneligible,
+  DatasetMismatch,
+  DispatchRejected,
+  SemanticMismatch,
+};
+
+struct ReplayVersionPins final {
+  std::string provider_version;
+  std::string merge_policy_version;
+  std::string schema_registry_version;
+  std::string canonicalization_version;
+  std::optional<std::string> normalizer_version;
+  std::optional<contracts::VersionRef> reference_lineage_version;
+  std::optional<contracts::Sha256Digest> expected_normalized_dataset_identity;
+
+  bool operator==(const ReplayVersionPins &) const = default;
+};
+
+class ReplayRunManifest final {
+public:
+  [[nodiscard]] static std::optional<ReplayRunManifest>
+  create(contracts::RunId run_id, ReplayClass replay_class,
+         contracts::Sha256Digest dataset_identity, ReplayVersionPins pins);
+
+  [[nodiscard]] const contracts::Sha256Digest &identity() const noexcept;
+  [[nodiscard]] contracts::RunId run_id() const noexcept;
+  [[nodiscard]] ReplayClass replay_class() const noexcept;
+  [[nodiscard]] const contracts::Sha256Digest &
+  dataset_identity() const noexcept;
+  [[nodiscard]] const ReplayVersionPins &pins() const noexcept;
+
+private:
+  ReplayRunManifest(contracts::Sha256Digest identity, contracts::RunId run_id,
+                    ReplayClass replay_class,
+                    contracts::Sha256Digest dataset_identity,
+                    ReplayVersionPins pins);
+
+  contracts::Sha256Digest identity_;
+  contracts::RunId run_id_;
+  ReplayClass replay_class_;
+  contracts::Sha256Digest dataset_identity_;
+  ReplayVersionPins pins_;
+};
+
+struct NormalizedFactRecord final {
+  std::uint64_t normalized_position{};
+  contracts::StreamId normalized_stream_id;
+  std::uint64_t normalized_stream_epoch{};
+  contracts::Sha256Digest source_dataset_identity;
+  contracts::SourceEventId source_event_id;
+  contracts::SourceDecodeEnrichmentId source_decode_enrichment_id;
+  contracts::IntegrityId acceptance_evidence_id;
+  std::string normalizer_version;
+  contracts::VersionRef reference_lineage_version;
+  std::string event_type;
+  std::vector<std::byte> semantic_payload;
+  contracts::Sha256Digest semantic_checksum;
+
+  bool operator==(const NormalizedFactRecord &) const = default;
+};
+
+struct NormalizedFactDatasetLimits final {
+  std::size_t maximum_records{1U << 20U};
+  std::size_t maximum_payload_bytes{1U << 20U};
+  std::size_t maximum_total_payload_bytes{64U << 20U};
+};
+
+class NormalizedFactDataset final {
+public:
+  [[nodiscard]] static std::optional<NormalizedFactDataset>
+  create(std::vector<NormalizedFactRecord> records,
+         const NormalizedFactDatasetLimits &limits = {});
+
+  [[nodiscard]] const contracts::Sha256Digest &identity() const noexcept;
+  [[nodiscard]] const std::vector<NormalizedFactRecord> &
+  records() const noexcept;
+
+private:
+  NormalizedFactDataset(contracts::Sha256Digest identity,
+                        std::vector<NormalizedFactRecord> records);
+
+  contracts::Sha256Digest identity_;
+  std::vector<NormalizedFactRecord> records_;
+};
+
+struct ReplayDispatchInput final {
+  ReplayClass replay_class{ReplayClass::FaithfulCaptureOrder};
+  std::uint64_t replay_ordinal{};
+  std::string_view event_type;
+  std::span<const std::byte> semantic_payload;
+  contracts::Sha256Digest semantic_checksum;
+  std::optional<contracts::SourceEventId> source_event_id;
+  std::optional<std::uint64_t> capture_sequence;
+  std::optional<std::uint64_t> normalized_position;
+  std::optional<contracts::StreamId> normalized_stream_id;
+  std::optional<std::uint64_t> normalized_stream_epoch;
+  std::optional<contracts::Sha256Digest> source_dataset_identity;
+  std::optional<contracts::SourceDecodeEnrichmentId>
+      source_decode_enrichment_id;
+  std::optional<contracts::IntegrityId> acceptance_evidence_id;
+  std::string_view normalizer_version;
+  std::optional<contracts::VersionRef> reference_lineage_version;
+};
+
+class ReplayDispatchSink {
+public:
+  virtual ~ReplayDispatchSink() = default;
+  [[nodiscard]] virtual bool accept(const ReplayDispatchInput &input) = 0;
+  [[nodiscard]] virtual std::optional<contracts::Sha256Digest>
+  completed_normalized_dataset_identity() const {
+    return std::nullopt;
+  }
+};
+
+struct ReplayResult final {
+  std::uint64_t dispatched_count{};
+  ReplayFailure failure{ReplayFailure::None};
+
+  [[nodiscard]] bool ok() const noexcept {
+    return failure == ReplayFailure::None;
+  }
+};
+
+[[nodiscard]] ReplayResult
+replay_capture_order(const ReplayRunManifest &manifest,
+                     const adapters::market_data::DatasetReadResult &dataset,
+                     ReplayDispatchSink &sink);
+
+[[nodiscard]] ReplayResult
+replay_normalized_facts(const ReplayRunManifest &manifest,
+                        const NormalizedFactDataset &dataset,
+                        ReplayDispatchSink &sink);
+
+} // namespace chronos::runtime::datasets
