@@ -8,6 +8,7 @@ add_executable(chronos_unit_tests
   unit/reference_data_test.cpp
   unit/book_normalizer_test.cpp
   unit/trade_normalizer_test.cpp
+  unit/replay_provider_test.cpp
   unit/boundary_test.cpp
   unit/event_envelope_test.cpp
   unit/fixed_point_test.cpp
@@ -24,6 +25,6 @@ target_compile_definitions(chronos_unit_tests
 
 target_link_libraries(chronos_unit_tests
   PRIVATE chronos_boundary chronos_market_data_normalization chronos_options
-          chronos_warnings)
+          chronos_replay_providers chronos_warnings)
 
 add_test(NAME chronos_unit_tests COMMAND chronos_unit_tests)
