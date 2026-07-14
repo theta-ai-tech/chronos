@@ -124,6 +124,19 @@ TEST_CASE("reference lineage binds allowed facts and selection policies") {
   CHECK(same_lineage.has_value());
   CHECK(same_lineage->version() == lineage->version());
   CHECK(same_lineage->semantic_checksum() == lineage->semantic_checksum());
+
+  auto altered_listing = primary.listing();
+  altered_listing.price_tick = DecimalIncrement::parse("0.02").value();
+  const auto altered_snapshot =
+      ReferenceSnapshot::create(primary.version(), primary.instrument(),
+                                std::move(altered_listing))
+          .value();
+  const auto altered_lineage = ReferenceConfigurationLineage::create(
+      3, "reference-lineage-v1", "bybit-semantic-key-v1", "capture-sequence-v1",
+      "exact-single-match-v1", {altered_snapshot});
+  CHECK(altered_lineage.has_value());
+  CHECK(altered_lineage->version() != lineage->version());
+  CHECK(altered_lineage->semantic_checksum() != lineage->semantic_checksum());
   const auto selected =
       lineage->select("bybit", VenueEnvironment::Test, ProductClass::Spot,
                       "BTCUSDT", id<CapturePartitionId>(kEffectiveDomain), 10);

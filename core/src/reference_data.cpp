@@ -79,7 +79,7 @@ bool valid_token(std::string_view value) {
 
 void append_u64(std::vector<std::byte> &output, std::uint64_t value) {
   for (std::size_t index = 0; index < sizeof(value); ++index)
-    output.push_back(static_cast<std::byte>(value >> (index * 8U)));
+    output.push_back(static_cast<std::byte>((value >> (index * 8U)) & 0xFFU));
 }
 
 void append_string(std::vector<std::byte> &output, std::string_view value) {
@@ -98,6 +98,51 @@ void append_version(std::vector<std::byte> &output,
   append_u64(output, version.version());
 }
 
+template <typename Id>
+void append_id(std::vector<std::byte> &output, const Id &value) {
+  for (const auto byte : value.bytes())
+    output.push_back(static_cast<std::byte>(byte));
+}
+
+void append_interval(std::vector<std::byte> &output,
+                     const EffectiveInterval &interval) {
+  const auto partition_id = interval.partition_id();
+  append_id(output, partition_id);
+  append_u64(output, interval.first());
+  const auto last = interval.last_exclusive();
+  append_u64(output, last.has_value() ? 1U : 0U);
+  if (last.has_value())
+    append_u64(output, *last);
+}
+
+void append_snapshot(std::vector<std::byte> &output,
+                     const ReferenceSnapshot &snapshot) {
+  append_version(output, snapshot.version());
+  const auto &instrument = snapshot.instrument();
+  append_id(output, instrument.instrument_id);
+  append_version(output, instrument.version);
+  append_string(output, instrument.base_asset);
+  append_string(output, instrument.quote_asset);
+  append_u64(output, static_cast<std::uint64_t>(instrument.product_class));
+  append_interval(output, instrument.effective_interval);
+
+  const auto &listing = snapshot.listing();
+  append_id(output, listing.listing_id);
+  append_id(output, listing.instrument_id);
+  append_version(output, listing.version);
+  append_string(output, listing.venue);
+  append_u64(output, static_cast<std::uint64_t>(listing.environment));
+  append_string(output, listing.source_symbol);
+  append_u64(output, static_cast<std::uint64_t>(listing.status));
+  append_u64(output,
+             static_cast<std::uint64_t>(listing.price_tick.decimal_units()));
+  append_u64(output, listing.price_tick.scale().exponent());
+  append_u64(output,
+             static_cast<std::uint64_t>(listing.quantity_step.decimal_units()));
+  append_u64(output, listing.quantity_step.scale().exponent());
+  append_interval(output, listing.effective_interval);
+}
+
 contracts::Sha256Digest
 lineage_checksum(std::uint64_t lineage_version_number,
                  std::string_view lineage_schema_version,
@@ -105,11 +150,14 @@ lineage_checksum(std::uint64_t lineage_version_number,
                  std::string_view effective_basis_policy_version,
                  std::string_view selection_policy_version,
                  const std::vector<ReferenceSnapshot> &allowed_snapshots) {
-  std::vector<contracts::VersionRef> snapshot_versions;
-  snapshot_versions.reserve(allowed_snapshots.size());
+  std::vector<const ReferenceSnapshot *> ordered_snapshots;
+  ordered_snapshots.reserve(allowed_snapshots.size());
   for (const auto &snapshot : allowed_snapshots)
-    snapshot_versions.push_back(snapshot.version());
-  std::sort(snapshot_versions.begin(), snapshot_versions.end());
+    ordered_snapshots.push_back(&snapshot);
+  std::sort(ordered_snapshots.begin(), ordered_snapshots.end(),
+            [](const auto *left, const auto *right) {
+              return left->version() < right->version();
+            });
 
   std::vector<std::byte> canonical;
   append_string(canonical, "chronos-reference-configuration-lineage-v1");
@@ -118,9 +166,9 @@ lineage_checksum(std::uint64_t lineage_version_number,
   append_string(canonical, semantic_key_policy_version);
   append_string(canonical, effective_basis_policy_version);
   append_string(canonical, selection_policy_version);
-  append_u64(canonical, static_cast<std::uint64_t>(snapshot_versions.size()));
-  for (const auto &version : snapshot_versions)
-    append_version(canonical, version);
+  append_u64(canonical, static_cast<std::uint64_t>(ordered_snapshots.size()));
+  for (const auto *snapshot : ordered_snapshots)
+    append_snapshot(canonical, *snapshot);
   return contracts::sha256(canonical);
 }
 
