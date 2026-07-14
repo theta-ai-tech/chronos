@@ -80,6 +80,7 @@ int main(int argc, char **argv) {
        .build_version = "probe",
        .venue = "bybit",
        .environment = subscription.environment,
+       .market = subscription.market,
        .endpoint = sdk::EndpointClass::PublicMarketData,
        .trust_class = sdk::SourceTrustClass::PublicUnauthenticated,
        .capture_session_id = id<sdk::CaptureSessionId>(1),

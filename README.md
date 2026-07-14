@@ -15,6 +15,7 @@ paper-trade recommendations, with a measured, optimized-C++ hot path.
 | `core/` | Deterministic domain authorities on the hot path — **optimized C++** (ADR-0001) |
 | `accounting/` | Immutable ledger, valuation, reconciliation |
 | `adapters/` | Adapter SDK + venue/source/paper/execution adapters |
+| `normalization/` | Deterministic source decoding and venue-neutral market-fact mapping |
 | `runtime/` | Run control, configuration, datasets, persistence, observability, audit |
 | `applications/` | Local API, console, CLI, replay/benchmark runners — **Python / web** |
 | `strategies/` | Strategy SDK and concrete strategies (live outside the runtime) |

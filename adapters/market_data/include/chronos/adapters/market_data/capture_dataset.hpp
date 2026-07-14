@@ -23,6 +23,7 @@ struct CaptureDatasetManifest final {
   std::string build_version;
   std::string venue;
   sdk::EnvironmentClass environment{sdk::EnvironmentClass::Test};
+  sdk::MarketClass market{sdk::MarketClass::Spot};
   sdk::EndpointClass endpoint{sdk::EndpointClass::PublicMarketData};
   sdk::SourceTrustClass trust_class{
       sdk::SourceTrustClass::PublicUnauthenticated};
@@ -82,14 +83,33 @@ struct DatasetSealResult final {
   DatasetFailure failure{DatasetFailure::None};
 };
 
-struct DatasetReadResult final {
-  std::optional<CaptureDatasetManifest> manifest;
-  std::vector<CaptureDatasetRecord> records;
-  DatasetFailure failure{DatasetFailure::None};
-
+class DatasetReadResult final {
+public:
   [[nodiscard]] bool ok() const noexcept {
-    return manifest.has_value() && failure == DatasetFailure::None;
+    return verified_ && manifest_.has_value() &&
+           failure_ == DatasetFailure::None;
   }
+  [[nodiscard]] const std::optional<CaptureDatasetManifest> &
+  manifest() const noexcept {
+    return manifest_;
+  }
+  [[nodiscard]] const std::vector<CaptureDatasetRecord> &
+  records() const noexcept {
+    return records_;
+  }
+  [[nodiscard]] DatasetFailure failure() const noexcept { return failure_; }
+
+private:
+  DatasetReadResult() = default;
+  explicit DatasetReadResult(DatasetFailure failure) : failure_(failure) {}
+
+  std::optional<CaptureDatasetManifest> manifest_;
+  std::vector<CaptureDatasetRecord> records_;
+  DatasetFailure failure_{DatasetFailure::None};
+  bool verified_{};
+
+  friend DatasetReadResult
+  read_capture_dataset(const std::filesystem::path &dataset_directory);
 };
 
 class DatasetPersistence {

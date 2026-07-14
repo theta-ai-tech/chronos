@@ -9,11 +9,11 @@ int main(int argc, char **argv) {
   const auto result = chronos::adapters::market_data::read_capture_dataset(
       std::filesystem::path(argv[1]));
   if (!result.ok()) {
-    std::cerr << "dataset read failed: " << static_cast<int>(result.failure)
+    std::cerr << "dataset read failed: " << static_cast<int>(result.failure())
               << '\n';
     return 1;
   }
-  std::cout << "dataset_id=" << result.manifest->dataset_id
-            << " records=" << result.records.size() << '\n';
+  std::cout << "dataset_id=" << result.manifest().value().dataset_id
+            << " records=" << result.records().size() << '\n';
   return 0;
 }

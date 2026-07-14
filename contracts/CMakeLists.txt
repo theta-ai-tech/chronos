@@ -1,4 +1,5 @@
 add_library(chronos_contracts STATIC
+  src/digest.cpp
   src/serialization.cpp)
 
 target_include_directories(chronos_contracts

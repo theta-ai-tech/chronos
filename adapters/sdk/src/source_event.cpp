@@ -13,7 +13,7 @@ bool valid_context(const SourceCaptureContext &context) noexcept {
          detail::valid_token(context.adapter_version) &&
          detail::valid_token(context.build_version) &&
          detail::valid_token(context.venue) &&
-         detail::known(context.environment) &&
+         detail::known(context.environment) && detail::known(context.market) &&
          detail::known(context.endpoint) &&
          context.trust_class == SourceTrustClass::PublicUnauthenticated &&
          detail::valid_token(context.framing_version) &&

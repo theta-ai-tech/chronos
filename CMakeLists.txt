@@ -51,6 +51,7 @@ enable_testing()
 add_subdirectory(contracts)
 add_subdirectory(adapters)
 add_subdirectory(core)
+add_subdirectory(normalization)
 add_subdirectory(tests)
 
 # CMAKE_BUILD_TYPE is empty for multi-config generators (the profile is chosen

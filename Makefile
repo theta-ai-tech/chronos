@@ -14,7 +14,7 @@ cpp-test: cpp-build
 	ctest --test-dir build --output-on-failure
 
 cpp-format:
-	uv run --locked --group dev clang-format --dry-run --Werror $$(find contracts core adapters tests -type f \( -name '*.cpp' -o -name '*.hpp' \))
+	uv run --locked --group dev clang-format --dry-run --Werror $$(find contracts core adapters normalization tests -type f \( -name '*.cpp' -o -name '*.hpp' \))
 
 cpp-check: cpp-format cpp-test
 

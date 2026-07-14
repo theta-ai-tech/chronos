@@ -22,12 +22,14 @@ std::vector<std::byte> bytes(std::string_view value) {
   return {begin, begin + value.size()};
 }
 
-sdk::SourceCaptureContext context() {
+sdk::SourceCaptureContext
+context(sdk::MarketClass market = sdk::MarketClass::LinearPerpetual) {
   return {.adapter_id = "chronos.bybit.public-market-data",
           .adapter_version = "m2.5",
           .build_version = "test",
           .venue = "bybit",
           .environment = sdk::EnvironmentClass::Test,
+          .market = market,
           .endpoint = sdk::EndpointClass::PublicMarketData,
           .trust_class = sdk::SourceTrustClass::PublicUnauthenticated,
           .capture_session_id = id<sdk::CaptureSessionId>(1),
@@ -112,11 +114,56 @@ TEST_CASE("capture dataset seals and rereads deterministically") {
   const auto read_twice = market_data::read_capture_dataset(path);
   CHECK(read_once.ok());
   CHECK(read_twice.ok());
-  CHECK(read_once.manifest->dataset_id == sealed.manifest->dataset_id);
-  CHECK(read_once.records == read_twice.records);
-  CHECK(read_once.records[0].raw_payload == one);
-  CHECK(read_once.records[1].capture_sequence == 2);
+  CHECK(read_once.manifest().value().dataset_id == sealed.manifest->dataset_id);
+  CHECK(read_once.manifest().value().market ==
+        sdk::MarketClass::LinearPerpetual);
+  CHECK(read_once.records() == read_twice.records());
+  CHECK(read_once.records()[0].raw_payload == one);
+  CHECK(read_once.records()[1].capture_sequence == 2);
   std::filesystem::remove_all(path);
+}
+
+TEST_CASE("capture dataset market classification is integrity protected") {
+  const auto linear_path = temporary_dataset("dataset-linear-market");
+  auto linear_recorder = sdk::SourceCaptureRecorder::create(context());
+  auto linear_writer =
+      market_data::CaptureDatasetWriter::create(linear_path, context());
+  const auto payload = bytes("market-bound evidence");
+  const auto linear_event = linear_recorder->capture(input(12, payload));
+  CHECK(linear_writer->append(*linear_event.event) ==
+        market_data::DatasetFailure::None);
+  const auto linear_manifest = linear_writer->seal().manifest.value();
+
+  const auto spot_path = temporary_dataset("dataset-spot-market");
+  auto spot_recorder =
+      sdk::SourceCaptureRecorder::create(context(sdk::MarketClass::Spot));
+  auto spot_writer = market_data::CaptureDatasetWriter::create(
+      spot_path, context(sdk::MarketClass::Spot));
+  const auto spot_event = spot_recorder->capture(input(12, payload));
+  CHECK(spot_writer->append(*spot_event.event) ==
+        market_data::DatasetFailure::None);
+  const auto spot_manifest = spot_writer->seal().manifest.value();
+
+  CHECK(linear_manifest.records_sha256 == spot_manifest.records_sha256);
+  CHECK(linear_manifest.dataset_id != spot_manifest.dataset_id);
+  CHECK(spot_manifest.market == sdk::MarketClass::Spot);
+
+  std::fstream manifest(linear_path / "manifest.txt",
+                        std::ios::in | std::ios::out | std::ios::binary);
+  std::string contents((std::istreambuf_iterator<char>(manifest)), {});
+  const auto position = contents.find("market=1");
+  CHECK(position != std::string::npos);
+  contents.replace(position, std::string_view("market=1").size(), "market=0");
+  manifest.clear();
+  manifest.seekp(0);
+  manifest.write(contents.data(),
+                 static_cast<std::streamsize>(contents.size()));
+  manifest.close();
+  CHECK(market_data::read_capture_dataset(linear_path).failure() ==
+        market_data::DatasetFailure::IntegrityMismatch);
+
+  std::filesystem::remove_all(linear_path);
+  std::filesystem::remove_all(spot_path);
 }
 
 TEST_CASE("capture dataset rejects sequence gaps and corruption") {
@@ -135,7 +182,7 @@ TEST_CASE("capture dataset rejects sequence gaps and corruption") {
   records.seekp(-1, std::ios::end);
   records.put('x');
   records.close();
-  CHECK(market_data::read_capture_dataset(path).failure ==
+  CHECK(market_data::read_capture_dataset(path).failure() ==
         market_data::DatasetFailure::IntegrityMismatch);
   std::filesystem::remove_all(path);
 }

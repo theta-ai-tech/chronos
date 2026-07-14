@@ -1,5 +1,6 @@
 #include "chronos/core/reference_data/reference_data.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <limits>
 #include <utility>
@@ -76,12 +77,113 @@ bool valid_token(std::string_view value) {
   return true;
 }
 
+void append_u64(std::vector<std::byte> &output, std::uint64_t value) {
+  for (std::size_t index = 0; index < sizeof(value); ++index)
+    output.push_back(static_cast<std::byte>((value >> (index * 8U)) & 0xFFU));
+}
+
+void append_string(std::vector<std::byte> &output, std::string_view value) {
+  append_u64(output, static_cast<std::uint64_t>(value.size()));
+  if (value.empty())
+    return;
+  const auto *begin = reinterpret_cast<const std::byte *>(value.data());
+  output.insert(output.end(), begin, begin + value.size());
+}
+
+void append_version(std::vector<std::byte> &output,
+                    const contracts::VersionRef &version) {
+  const auto definition_id = version.definition_id();
+  for (const auto byte : definition_id.bytes())
+    output.push_back(static_cast<std::byte>(byte));
+  append_u64(output, version.version());
+}
+
+template <typename Id>
+void append_id(std::vector<std::byte> &output, const Id &value) {
+  for (const auto byte : value.bytes())
+    output.push_back(static_cast<std::byte>(byte));
+}
+
+void append_interval(std::vector<std::byte> &output,
+                     const EffectiveInterval &interval) {
+  const auto partition_id = interval.partition_id();
+  append_id(output, partition_id);
+  append_u64(output, interval.first());
+  const auto last = interval.last_exclusive();
+  append_u64(output, last.has_value() ? 1U : 0U);
+  if (last.has_value())
+    append_u64(output, *last);
+}
+
+void append_snapshot(std::vector<std::byte> &output,
+                     const ReferenceSnapshot &snapshot) {
+  append_version(output, snapshot.version());
+  const auto &instrument = snapshot.instrument();
+  append_id(output, instrument.instrument_id);
+  append_version(output, instrument.version);
+  append_string(output, instrument.base_asset);
+  append_string(output, instrument.quote_asset);
+  append_u64(output, static_cast<std::uint64_t>(instrument.product_class));
+  append_interval(output, instrument.effective_interval);
+
+  const auto &listing = snapshot.listing();
+  append_id(output, listing.listing_id);
+  append_id(output, listing.instrument_id);
+  append_version(output, listing.version);
+  append_string(output, listing.venue);
+  append_u64(output, static_cast<std::uint64_t>(listing.environment));
+  append_string(output, listing.source_symbol);
+  append_u64(output, static_cast<std::uint64_t>(listing.status));
+  append_u64(output,
+             static_cast<std::uint64_t>(listing.price_tick.decimal_units()));
+  append_u64(output, listing.price_tick.scale().exponent());
+  append_u64(output,
+             static_cast<std::uint64_t>(listing.quantity_step.decimal_units()));
+  append_u64(output, listing.quantity_step.scale().exponent());
+  append_interval(output, listing.effective_interval);
+}
+
+contracts::Sha256Digest
+lineage_checksum(std::uint64_t lineage_version_number,
+                 std::string_view lineage_schema_version,
+                 std::string_view semantic_key_policy_version,
+                 std::string_view effective_basis_policy_version,
+                 std::string_view selection_policy_version,
+                 const std::vector<ReferenceSnapshot> &allowed_snapshots) {
+  std::vector<const ReferenceSnapshot *> ordered_snapshots;
+  ordered_snapshots.reserve(allowed_snapshots.size());
+  for (const auto &snapshot : allowed_snapshots)
+    ordered_snapshots.push_back(&snapshot);
+  std::sort(ordered_snapshots.begin(), ordered_snapshots.end(),
+            [](const auto *left, const auto *right) {
+              return left->version() < right->version();
+            });
+
+  std::vector<std::byte> canonical;
+  append_string(canonical, "chronos-reference-configuration-lineage-v1");
+  append_u64(canonical, lineage_version_number);
+  append_string(canonical, lineage_schema_version);
+  append_string(canonical, semantic_key_policy_version);
+  append_string(canonical, effective_basis_policy_version);
+  append_string(canonical, selection_policy_version);
+  append_u64(canonical, static_cast<std::uint64_t>(ordered_snapshots.size()));
+  for (const auto *snapshot : ordered_snapshots)
+    append_snapshot(canonical, *snapshot);
+  return contracts::sha256(canonical);
+}
+
 bool valid(ListingStatus status) {
   return status == ListingStatus::Active || status == ListingStatus::Inactive;
 }
 
 bool valid(ProductClass product_class) {
-  return product_class == ProductClass::Spot;
+  return product_class == ProductClass::Spot ||
+         product_class == ProductClass::LinearPerpetual;
+}
+
+bool valid(VenueEnvironment environment) {
+  return environment == VenueEnvironment::Test ||
+         environment == VenueEnvironment::Production;
 }
 
 bool contained_by(const EffectiveInterval &inner,
@@ -199,7 +301,8 @@ ReferenceSnapshot::create(contracts::VersionRef snapshot_version,
                           CanonicalInstrumentDefinition instrument,
                           ListingDefinition listing) {
   if (listing.instrument_id != instrument.instrument_id ||
-      !valid(instrument.product_class) || !valid(listing.status) ||
+      !valid(instrument.product_class) || !valid(listing.environment) ||
+      !valid(listing.status) ||
       snapshot_version.definition_id() == instrument.version.definition_id() ||
       snapshot_version.definition_id() == listing.version.definition_id() ||
       instrument.version.definition_id() == listing.version.definition_id() ||
@@ -229,11 +332,14 @@ const ListingDefinition &ReferenceSnapshot::listing() const noexcept {
 }
 
 const ListingDefinition *
-ReferenceSnapshot::resolve(std::string_view venue,
+ReferenceSnapshot::resolve(std::string_view venue, VenueEnvironment environment,
+                           ProductClass product_class,
                            std::string_view source_symbol,
                            contracts::CapturePartitionId partition_id,
                            std::uint64_t capture_sequence) const noexcept {
   if (listing_.status != ListingStatus::Active || listing_.venue != venue ||
+      listing_.environment != environment ||
+      instrument_.product_class != product_class ||
       listing_.source_symbol != source_symbol ||
       !listing_.effective_interval.contains(partition_id, capture_sequence) ||
       !instrument_.effective_interval.contains(partition_id,
@@ -241,6 +347,126 @@ ReferenceSnapshot::resolve(std::string_view venue,
     return nullptr;
   }
   return &listing_;
+}
+
+ReferenceConfigurationLineage::ReferenceConfigurationLineage(
+    contracts::VersionRef lineage_version,
+    contracts::Sha256Digest semantic_checksum,
+    std::string lineage_schema_version, std::string semantic_key_policy_version,
+    std::string effective_basis_policy_version,
+    std::string selection_policy_version,
+    std::vector<ReferenceSnapshot> allowed_snapshots)
+    : lineage_version_(lineage_version), semantic_checksum_(semantic_checksum),
+      lineage_schema_version_(std::move(lineage_schema_version)),
+      semantic_key_policy_version_(std::move(semantic_key_policy_version)),
+      effective_basis_policy_version_(
+          std::move(effective_basis_policy_version)),
+      selection_policy_version_(std::move(selection_policy_version)),
+      allowed_snapshots_(std::move(allowed_snapshots)) {}
+
+std::optional<ReferenceConfigurationLineage>
+ReferenceConfigurationLineage::create(
+    std::uint64_t lineage_version_number, std::string lineage_schema_version,
+    std::string semantic_key_policy_version,
+    std::string effective_basis_policy_version,
+    std::string selection_policy_version,
+    std::vector<ReferenceSnapshot> allowed_snapshots) {
+  if (lineage_version_number == 0 || !valid_token(lineage_schema_version) ||
+      !valid_token(semantic_key_policy_version) ||
+      !valid_token(effective_basis_policy_version) ||
+      !valid_token(selection_policy_version) || allowed_snapshots.empty()) {
+    return std::nullopt;
+  }
+  const auto checksum = lineage_checksum(
+      lineage_version_number, lineage_schema_version,
+      semantic_key_policy_version, effective_basis_policy_version,
+      selection_policy_version, allowed_snapshots);
+  contracts::DefinitionId::bytes_type identity_bytes{};
+  std::copy_n(checksum.bytes.begin(), identity_bytes.size(),
+              identity_bytes.begin());
+  const auto definition_id =
+      contracts::DefinitionId::from_bytes(identity_bytes);
+  if (!definition_id.has_value())
+    return std::nullopt;
+  const auto lineage_version =
+      contracts::VersionRef::from(*definition_id, lineage_version_number);
+  if (!lineage_version.has_value())
+    return std::nullopt;
+  for (std::size_t index = 0; index < allowed_snapshots.size(); ++index) {
+    const auto &snapshot = allowed_snapshots[index];
+    if (lineage_version->definition_id() ==
+            snapshot.version().definition_id() ||
+        lineage_version->definition_id() ==
+            snapshot.instrument().version.definition_id() ||
+        lineage_version->definition_id() ==
+            snapshot.listing().version.definition_id()) {
+      return std::nullopt;
+    }
+    for (std::size_t prior = 0; prior < index; ++prior) {
+      if (allowed_snapshots[prior].version() == snapshot.version()) {
+        return std::nullopt;
+      }
+    }
+  }
+  return ReferenceConfigurationLineage(
+      *lineage_version, checksum, std::move(lineage_schema_version),
+      std::move(semantic_key_policy_version),
+      std::move(effective_basis_policy_version),
+      std::move(selection_policy_version), std::move(allowed_snapshots));
+}
+
+const contracts::Sha256Digest &
+ReferenceConfigurationLineage::semantic_checksum() const noexcept {
+  return semantic_checksum_;
+}
+
+const contracts::VersionRef &
+ReferenceConfigurationLineage::version() const noexcept {
+  return lineage_version_;
+}
+
+std::string_view
+ReferenceConfigurationLineage::lineage_schema_version() const noexcept {
+  return lineage_schema_version_;
+}
+
+std::string_view
+ReferenceConfigurationLineage::semantic_key_policy_version() const noexcept {
+  return semantic_key_policy_version_;
+}
+
+std::string_view
+ReferenceConfigurationLineage::effective_basis_policy_version() const noexcept {
+  return effective_basis_policy_version_;
+}
+
+std::string_view
+ReferenceConfigurationLineage::selection_policy_version() const noexcept {
+  return selection_policy_version_;
+}
+
+ReferenceSelectionResult ReferenceConfigurationLineage::select(
+    std::string_view venue, VenueEnvironment environment,
+    ProductClass product_class, std::string_view source_symbol,
+    contracts::CapturePartitionId partition_id,
+    std::uint64_t capture_sequence) const noexcept {
+  ReferenceSelectionResult result{.failure =
+                                      ReferenceSelectionFailure::Missing};
+  for (const auto &snapshot : allowed_snapshots_) {
+    const auto *listing =
+        snapshot.resolve(venue, environment, product_class, source_symbol,
+                         partition_id, capture_sequence);
+    if (listing == nullptr) {
+      continue;
+    }
+    if (result.snapshot != nullptr) {
+      return {.failure = ReferenceSelectionFailure::Ambiguous};
+    }
+    result = {.snapshot = &snapshot,
+              .listing = listing,
+              .failure = ReferenceSelectionFailure::None};
+  }
+  return result;
 }
 
 } // namespace chronos::core::reference_data

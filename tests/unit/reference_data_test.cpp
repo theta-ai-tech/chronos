@@ -61,15 +61,28 @@ TEST_CASE("one canonical instrument maps to one distinct listing definition") {
   CHECK(reference.listing().listing_id.to_string() == kListingId);
   CHECK(reference.listing().version.version() == 7);
   const auto domain = id<CapturePartitionId>(kEffectiveDomain);
-  CHECK(reference.resolve("bybit", "BTCUSDT", domain, 10) != nullptr);
-  CHECK(reference.resolve("bybit", "BTCUSDT", domain, 19) != nullptr);
-  CHECK(reference.resolve("bybit", "BTCUSDT", domain, 9) == nullptr);
-  CHECK(reference.resolve("bybit", "BTCUSDT", domain, 20) == nullptr);
-  CHECK(reference.resolve("other", "BTCUSDT", domain, 10) == nullptr);
-  CHECK(reference.resolve("bybit", "BTCUSDT",
-                          id<CapturePartitionId>(kOtherDomain), 10) == nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                          "BTCUSDT", domain, 10) != nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                          "BTCUSDT", domain, 19) != nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                          "BTCUSDT", domain, 9) == nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                          "BTCUSDT", domain, 20) == nullptr);
+  CHECK(reference.resolve("other", VenueEnvironment::Test, ProductClass::Spot,
+                          "BTCUSDT", domain, 10) == nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                          "BTCUSDT", id<CapturePartitionId>(kOtherDomain),
+                          10) == nullptr);
   CHECK(snapshot(ListingStatus::Inactive)
-            .resolve("bybit", "BTCUSDT", domain, 10) == nullptr);
+            .resolve("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                     "BTCUSDT", domain, 10) == nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Production,
+                          ProductClass::Spot, "BTCUSDT", domain,
+                          10) == nullptr);
+  CHECK(reference.resolve("bybit", VenueEnvironment::Test,
+                          ProductClass::LinearPerpetual, "BTCUSDT", domain,
+                          10) == nullptr);
 }
 
 TEST_CASE("tick and step definitions drive exact fixed-point conversion") {
@@ -92,6 +105,54 @@ TEST_CASE("tick and step definitions drive exact fixed-point conversion") {
                                          listing.version.version());
   const auto unrelated_price = unrelated_definition.parse_price("42000.10");
   CHECK(!price->checked_compare(*unrelated_price).has_value());
+}
+
+TEST_CASE("reference lineage binds allowed facts and selection policies") {
+  auto primary = snapshot();
+  auto alternate = ReferenceSnapshot::create(
+                       version("018f1f6e-7d3a-7c4b-8a91-0123456789a4", 2),
+                       primary.instrument(), primary.listing())
+                       .value();
+  const auto lineage = ReferenceConfigurationLineage::create(
+      3, "reference-lineage-v1", "bybit-semantic-key-v1", "capture-sequence-v1",
+      "exact-single-match-v1", {primary});
+  CHECK(lineage.has_value());
+  CHECK(lineage->version().version() == 3);
+  const auto same_lineage = ReferenceConfigurationLineage::create(
+      3, "reference-lineage-v1", "bybit-semantic-key-v1", "capture-sequence-v1",
+      "exact-single-match-v1", {primary});
+  CHECK(same_lineage.has_value());
+  CHECK(same_lineage->version() == lineage->version());
+  CHECK(same_lineage->semantic_checksum() == lineage->semantic_checksum());
+
+  auto altered_listing = primary.listing();
+  altered_listing.price_tick = DecimalIncrement::parse("0.02").value();
+  const auto altered_snapshot =
+      ReferenceSnapshot::create(primary.version(), primary.instrument(),
+                                std::move(altered_listing))
+          .value();
+  const auto altered_lineage = ReferenceConfigurationLineage::create(
+      3, "reference-lineage-v1", "bybit-semantic-key-v1", "capture-sequence-v1",
+      "exact-single-match-v1", {altered_snapshot});
+  CHECK(altered_lineage.has_value());
+  CHECK(altered_lineage->version() != lineage->version());
+  CHECK(altered_lineage->semantic_checksum() != lineage->semantic_checksum());
+  const auto selected =
+      lineage->select("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                      "BTCUSDT", id<CapturePartitionId>(kEffectiveDomain), 10);
+  CHECK(selected.ok());
+  CHECK(selected.snapshot->version() == primary.version());
+
+  const auto ambiguous = ReferenceConfigurationLineage::create(
+      3, "reference-lineage-v1", "bybit-semantic-key-v1", "capture-sequence-v1",
+      "exact-single-match-v1", {primary, alternate});
+  CHECK(ambiguous.has_value());
+  CHECK(ambiguous->version() != lineage->version());
+  CHECK(ambiguous->semantic_checksum() != lineage->semantic_checksum());
+  CHECK(ambiguous
+            ->select("bybit", VenueEnvironment::Test, ProductClass::Spot,
+                     "BTCUSDT", id<CapturePartitionId>(kEffectiveDomain), 10)
+            .failure == ReferenceSelectionFailure::Ambiguous);
 }
 
 TEST_CASE("reference factories reject ambiguous or invalid definitions") {
