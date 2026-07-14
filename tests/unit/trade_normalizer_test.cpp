@@ -4,6 +4,8 @@
 #include "microtest.hpp"
 
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -32,62 +34,92 @@ std::vector<std::byte> bytes(std::string_view value) {
   return {begin, begin + value.size()};
 }
 
-adapter::CaptureDatasetManifest manifest() {
+struct DatasetOptions final {
+  sdk::EnvironmentClass environment{sdk::EnvironmentClass::Test};
+  sdk::MarketClass market{sdk::MarketClass::LinearPerpetual};
+  sdk::CaptureIntegrityStatus integrity_status{
+      sdk::CaptureIntegrityStatus::Complete};
+};
+
+sdk::SourceCaptureContext capture_context(const DatasetOptions &options = {}) {
   return {
-      .format_version = "chronos.capture-dataset.v1",
-      .dataset_id = "dataset",
-      .records_sha256 = "records",
-      .capture_session_id = id<sdk::CaptureSessionId>(1),
-      .capture_partition_id = id<sdk::CapturePartitionId>(2),
-      .runtime_id = id<contracts::RuntimeId>(3),
-      .connection_id = id<sdk::SourceConnectionId>(13),
-      .subscription_id = id<sdk::SourceSubscriptionId>(14),
       .adapter_id = "chronos.bybit.public-market-data",
       .adapter_version = "m2.5",
       .build_version = "test",
       .venue = "bybit",
-      .environment = sdk::EnvironmentClass::Test,
+      .environment = options.environment,
+      .market = options.market,
       .endpoint = sdk::EndpointClass::PublicMarketData,
       .trust_class = sdk::SourceTrustClass::PublicUnauthenticated,
+      .capture_session_id = id<sdk::CaptureSessionId>(1),
+      .runtime_id = id<contracts::RuntimeId>(3),
+      .connection_id = id<sdk::SourceConnectionId>(13),
+      .subscription_id = id<sdk::SourceSubscriptionId>(14),
+      .capture_partition_id = id<sdk::CapturePartitionId>(2),
       .framing_version = "websocket-rfc6455-v1",
       .static_configuration_version = "test-v1",
       .capability_manifest_version = "bybit-v5-v1",
       .schema_policy_version = "bybit-v5-public-v1",
       .data_classification = sdk::DataClassification::PublicMarketData,
       .access_restriction = sdk::AccessRestriction::ChronosInternal,
-      .dataset_class = "raw_source_capture",
-      .replay_admissible = false,
-      .records_bytes = 1,
       .maximum_retained_payload_bytes = 1U << 20U,
       .maximum_source_events = 10,
-      .record_count = 1,
-      .first_capture_sequence = 10,
-      .last_capture_sequence = 10,
   };
 }
 
-adapter::CaptureDatasetRecord record(std::string_view payload) {
-  auto raw_payload = bytes(payload);
-  return {
+adapter::DatasetReadResult
+verified_dataset(std::string_view payload, const DatasetOptions &options = {}) {
+  static std::uint64_t sequence{};
+  const auto path = std::filesystem::temp_directory_path() /
+                    ("chronos-trade-normalizer-" + std::to_string(++sequence));
+  std::filesystem::remove_all(path);
+  std::filesystem::remove_all(path.string() + ".partial");
+  const auto context = capture_context(options);
+  auto recorder = sdk::SourceCaptureRecorder::create(context).value();
+  auto writer = adapter::CaptureDatasetWriter::create(path, context).value();
+  const auto raw_payload = bytes(payload);
+  const auto captured = recorder.capture({
       .source_event_id = id<contracts::SourceEventId>(4),
-      .capture_sequence = 10,
       .chronos_receive_time =
           contracts::TimePoint::from(900, id<contracts::ClockDomainId>(5),
                                      contracts::ClockClass::monotonic, 1)
               .value(),
       .raw_payload = raw_payload,
-      .original_payload_size = raw_payload.size(),
-      .payload_digest =
-          sdk::sha256(raw_payload, sdk::DigestCoverage::CompletePayload),
+      .complete_payload_available =
+          options.integrity_status == sdk::CaptureIntegrityStatus::Complete,
       .framing_protocol = sdk::FramingProtocol::WebSocket,
       .frame_kind = sdk::SourceFrameKind::Text,
-      .framing_status = sdk::FramingStatus::Complete,
-      .integrity_status = sdk::CaptureIntegrityStatus::Complete,
-      .parse_status = sdk::ParseStatus::NotAttempted,
+      .framing_status =
+          options.integrity_status == sdk::CaptureIntegrityStatus::Complete
+              ? sdk::FramingStatus::Complete
+              : sdk::FramingStatus::Incomplete,
+      .integrity_status = options.integrity_status,
       .content_encoding = sdk::ContentEncoding::Utf8Text,
       .compression_disposition = sdk::CompressionDisposition::NotCompressed,
-      .fragmented = false,
-  };
+  });
+  if (!captured.ok() ||
+      writer.append(*captured.event) != adapter::DatasetFailure::None ||
+      !writer.seal().manifest.has_value()) {
+    std::abort();
+  }
+  auto result = adapter::read_capture_dataset(path);
+  std::filesystem::remove_all(path);
+  return result;
+}
+
+adapter::CaptureDatasetManifest manifest() {
+  return verified_dataset("{}").manifest().value();
+}
+
+adapter::CaptureDatasetRecord record(std::string_view payload) {
+  return verified_dataset(payload).records().front();
+}
+
+adapter::BybitTradeDecodeResult
+decode(std::string_view payload, const DatasetOptions &options = {},
+       const adapter::BybitTradeDecodeLimits &limits = {}) {
+  const auto dataset = verified_dataset(payload, options);
+  return adapter::decode_bybit_v5_trades(dataset, 0, limits);
 }
 
 reference::ReferenceSnapshot reference_snapshot(
@@ -107,6 +139,7 @@ reference::ReferenceSnapshot reference_snapshot(
               .instrument_id = id<contracts::CanonicalInstrumentId>(8),
               .version = version(11, 4),
               .venue = "bybit",
+              .environment = reference::VenueEnvironment::Test,
               .source_symbol = "BTCUSDT",
               .status = status,
               .price_tick = reference::DecimalIncrement::parse("0.10").value(),
@@ -116,20 +149,26 @@ reference::ReferenceSnapshot reference_snapshot(
       .value();
 }
 
+reference::ReferenceConfigurationLineage reference_lineage(
+    reference::ListingStatus status = reference::ListingStatus::Active) {
+  return reference::ReferenceConfigurationLineage::create(
+             1, "reference-lineage-v1", "bybit-semantic-key-v1",
+             "capture-sequence-v1", "exact-single-match-v1",
+             {reference_snapshot(status)})
+      .value();
+}
+
 const trade::TradeNormalizerVersions kVersions{
-    .decoder_version = "bybit-trade-decoder-v1",
-    .source_schema_version = "bybit-v5-public-trade-linear-v1",
     .normalizer_version = "chronos-trade-normalizer-v1",
 };
 
 trade::TradeNormalizationResult normalize(std::string_view payload) {
-  const auto decoded =
-      adapter::decode_bybit_v5_trades(manifest(), record(payload));
+  const auto decoded = decode(payload);
   if (!decoded.ok()) {
     return {.failure = decoded.failure};
   }
-  return trade::normalize_trades(*decoded.decoded, "bybit",
-                                 reference_snapshot(),
+  const auto lineage = reference_lineage();
+  return trade::normalize_trades(*decoded.enrichment, lineage,
                                  id<contracts::ClockDomainId>(12), kVersions);
 }
 
@@ -167,7 +206,7 @@ TEST_CASE("all Bybit trade members normalize in source order with lineage") {
   CHECK(first.source_lineage.subscription_id == manifest().subscription_id);
   CHECK(first.source_lineage.capture_partition_id ==
         manifest().capture_partition_id);
-  CHECK(first.source_lineage.capture_sequence == 10);
+  CHECK(first.source_lineage.capture_sequence == 1);
   CHECK(first.source_lineage.chronos_receive_time ==
         record(kTrades).chronos_receive_time);
   CHECK(first.source_lineage.payload_digest == record(kTrades).payload_digest);
@@ -177,6 +216,14 @@ TEST_CASE("all Bybit trade members normalize in source order with lineage") {
   CHECK(first.reference_snapshot_version == reference_snapshot().version());
   CHECK(first.instrument_version == reference_snapshot().instrument().version);
   CHECK(first.listing_version == reference_snapshot().listing().version);
+  CHECK(first.reference_selection.reference_configuration_lineage_version ==
+        reference_lineage().version());
+  CHECK(first.reference_selection.semantic_key.product_class ==
+        trade::SourceProductClass::LinearPerpetual);
+  CHECK(first.source_decode_evidence.source_member_index == 0);
+  CHECK(second.source_decode_evidence.source_member_index == 1);
+  CHECK(first.source_decode_evidence.source_decode_enrichment_id !=
+        second.source_decode_evidence.source_decode_enrichment_id);
   CHECK(first.aggressor_side == trade::AggressorSide::Sell);
   CHECK(second.aggressor_side == trade::AggressorSide::Buy);
   CHECK(first.price.units() == 165786);
@@ -190,8 +237,8 @@ TEST_CASE("all Bybit trade members normalize in source order with lineage") {
   CHECK(first.source_assertions.sequence == 1783284618ULL);
   CHECK(!second.source_assertions.rpi_trade.has_value());
   CHECK(!second.source_assertions.sequence.has_value());
-  CHECK(first.decoder_version == kVersions.decoder_version);
-  CHECK(first.source_schema_version == kVersions.source_schema_version);
+  CHECK(first.decoder_version == "bybit-trade-decoder-v1");
+  CHECK(first.source_schema_version == "bybit-v5-public-trade-v1");
   CHECK(first.normalizer_version == kVersions.normalizer_version);
 }
 
@@ -203,31 +250,46 @@ TEST_CASE("trade normalization is deterministic") {
   CHECK(first.facts == second.facts);
 }
 
+TEST_CASE("trade product class is capture-bound and drives resolution") {
+  const auto linear = decode(kTrades);
+  const auto spot = decode(kTrades, {.market = sdk::MarketClass::Spot});
+  CHECK(linear.ok());
+  CHECK(spot.ok());
+  CHECK(linear.enrichment->message().members[0].product_class ==
+        trade::SourceProductClass::LinearPerpetual);
+  CHECK(spot.enrichment->message().members[0].product_class ==
+        trade::SourceProductClass::Spot);
+  CHECK(linear.enrichment->decode_evidence()[0].source_decode_enrichment_id !=
+        spot.enrichment->decode_evidence()[0].source_decode_enrichment_id);
+  const auto lineage = reference_lineage();
+  CHECK(trade::normalize_trades(*spot.enrichment, lineage,
+                                id<contracts::ClockDomainId>(12), kVersions)
+            .failure == trade::TradeNormalizationFailure::ReferenceUnavailable);
+}
+
 TEST_CASE("trade decoder rejects malformed ineligible and bounded input") {
-  auto ineligible = record(kTrades);
-  ineligible.integrity_status = sdk::CaptureIntegrityStatus::Truncated;
-  CHECK(adapter::decode_bybit_v5_trades(manifest(), ineligible).failure ==
-        trade::TradeNormalizationFailure::IntegrityIneligible);
-  CHECK(adapter::decode_bybit_v5_trades(manifest(), record("{bad")).failure ==
+  CHECK(decode(kTrades,
+               {.integrity_status = sdk::CaptureIntegrityStatus::Truncated})
+            .failure == trade::TradeNormalizationFailure::IntegrityIneligible);
+  CHECK(decode("{bad").failure ==
         trade::TradeNormalizationFailure::MalformedPayload);
-  CHECK(adapter::decode_bybit_v5_trades(manifest(),
-                                        record(R"({"topic":"a","topic":"b"})"))
-            .failure == trade::TradeNormalizationFailure::AmbiguousDuplicate);
+  CHECK(decode(R"({"topic":"a","topic":"b"})").failure ==
+        trade::TradeNormalizationFailure::AmbiguousDuplicate);
+  const auto dataset = verified_dataset(kTrades);
+  CHECK(adapter::decode_bybit_v5_trades(dataset, 1).failure ==
+        trade::TradeNormalizationFailure::IntegrityIneligible);
 
   auto limits = adapter::BybitTradeDecodeLimits{};
   limits.maximum_payload_bytes = 8;
-  CHECK(adapter::decode_bybit_v5_trades(manifest(), record(kTrades), limits)
-            .failure ==
+  CHECK(decode(kTrades, {}, limits).failure ==
         trade::TradeNormalizationFailure::ResourceLimitExceeded);
   limits = {};
   limits.maximum_trades_per_message = 1;
-  CHECK(adapter::decode_bybit_v5_trades(manifest(), record(kTrades), limits)
-            .failure ==
+  CHECK(decode(kTrades, {}, limits).failure ==
         trade::TradeNormalizationFailure::ResourceLimitExceeded);
   limits = {};
   limits.maximum_json_depth = 1;
-  CHECK(adapter::decode_bybit_v5_trades(manifest(), record(kTrades), limits)
-            .failure ==
+  CHECK(decode(kTrades, {}, limits).failure ==
         trade::TradeNormalizationFailure::ResourceLimitExceeded);
 }
 
@@ -262,18 +324,24 @@ TEST_CASE(
     "unknown envelope and member fields are preserved deterministically") {
   const auto result = normalize(R"({"topic":"publicTrade.BTCUSDT",
     "type":"snapshot","ts":1,"id":"message-1","future":{"z":2,"a":1},
+    "data/0/new":4,
     "data":[{"T":1,"s":"BTCUSDT","S":"Buy","v":"0.001","p":"1.0",
     "L":"PlusTick","i":"x","BT":false,"new":[true,"value"]}]})");
   CHECK(result.ok());
   CHECK(result.facts.size() == 1);
-  CHECK(result.facts[0].source_message_extensions.size() == 2);
-  CHECK(result.facts[0].source_message_extensions[0].name == "id");
-  CHECK(result.facts[0].source_message_extensions[0].canonical_json ==
-        "\"message-1\"");
+  CHECK(result.facts[0].source_message_extensions.size() == 3);
+  CHECK(result.facts[0].source_message_extensions[0].json_pointer ==
+        "/data~10~1new");
+  CHECK(result.facts[0].source_message_extensions[0].canonical_json == "4");
+  CHECK(result.facts[0].source_message_extensions[1].json_pointer == "/future");
   CHECK(result.facts[0].source_message_extensions[1].canonical_json ==
-        "{\"z\":2,\"a\":1}");
+        "{\"a\":1,\"z\":2}");
+  CHECK(result.facts[0].source_message_extensions[2].json_pointer == "/id");
+  CHECK(result.facts[0].source_message_extensions[2].canonical_json ==
+        "\"message-1\"");
   CHECK(result.facts[0].source_assertions.extensions.size() == 1);
-  CHECK(result.facts[0].source_assertions.extensions[0].name == "new");
+  CHECK(result.facts[0].source_assertions.extensions[0].json_pointer ==
+        "/data/0/new");
   CHECK(result.facts[0].source_assertions.extensions[0].canonical_json ==
         "[true,\"value\"]");
 }
@@ -311,33 +379,48 @@ TEST_CASE("invalid side numeric and time values have typed failures") {
     "ts":0,"data":[]})")
             .failure == trade::TradeNormalizationFailure::InvalidTime);
 
-  const auto decoded =
-      adapter::decode_bybit_v5_trades(manifest(), record(kTrades));
-  CHECK(decoded.ok());
-  auto overflow = *decoded.decoded;
-  overflow.message.members[0].trade_timestamp_milliseconds =
-      std::numeric_limits<std::uint64_t>::max();
-  CHECK(trade::normalize_trades(overflow, "bybit", reference_snapshot(),
-                                id<contracts::ClockDomainId>(12), kVersions)
+  CHECK(normalize(R"({"topic":"publicTrade.BTCUSDT","type":"snapshot",
+    "ts":1,"data":[{"T":18446744073709551615,"s":"BTCUSDT","S":"Buy",
+    "v":"0.001","p":"1.0","L":"PlusTick","i":"x","BT":false}]})")
             .failure == trade::TradeNormalizationFailure::InvalidTime);
-  overflow = *decoded.decoded;
-  overflow.message.members[0].system_timestamp_milliseconds =
-      std::numeric_limits<std::uint64_t>::max();
-  CHECK(trade::normalize_trades(overflow, "bybit", reference_snapshot(),
-                                id<contracts::ClockDomainId>(12), kVersions)
+  CHECK(normalize(R"({"topic":"publicTrade.BTCUSDT","type":"snapshot",
+    "ts":18446744073709551615,"data":[{"T":1,"s":"BTCUSDT","S":"Buy",
+    "v":"0.001","p":"1.0","L":"PlusTick","i":"x","BT":false}]})")
             .failure == trade::TradeNormalizationFailure::InvalidTime);
 }
 
 TEST_CASE("trade normalization rejects unavailable or mismatched reference") {
-  const auto decoded =
-      adapter::decode_bybit_v5_trades(manifest(), record(kTrades));
+  const auto decoded = decode(kTrades);
   CHECK(decoded.ok());
-  CHECK(trade::normalize_trades(
-            *decoded.decoded, "bybit",
-            reference_snapshot(reference::ListingStatus::Inactive),
-            id<contracts::ClockDomainId>(12), kVersions)
-            .failure == trade::TradeNormalizationFailure::ReferenceUnavailable);
-  CHECK(trade::normalize_trades(*decoded.decoded, "other", reference_snapshot(),
+  const auto inactive_lineage =
+      reference_lineage(reference::ListingStatus::Inactive);
+  CHECK(trade::normalize_trades(*decoded.enrichment, inactive_lineage,
                                 id<contracts::ClockDomainId>(12), kVersions)
-            .failure == trade::TradeNormalizationFailure::WrongTopicOrSymbol);
+            .failure == trade::TradeNormalizationFailure::ReferenceUnavailable);
+
+  const auto production =
+      decode(kTrades, {.environment = sdk::EnvironmentClass::Production});
+  CHECK(production.ok());
+  const auto active_lineage = reference_lineage();
+  CHECK(trade::normalize_trades(*production.enrichment, active_lineage,
+                                id<contracts::ClockDomainId>(12), kVersions)
+            .failure == trade::TradeNormalizationFailure::ReferenceUnavailable);
+}
+
+TEST_CASE("trade normalization rejects ambiguous reference authority") {
+  const auto decoded = decode(kTrades);
+  CHECK(decoded.ok());
+  const auto primary = reference_snapshot();
+  const auto duplicate =
+      reference::ReferenceSnapshot::create(version(15, 2), primary.instrument(),
+                                           primary.listing())
+          .value();
+  const auto ambiguous =
+      reference::ReferenceConfigurationLineage::create(
+          1, "reference-lineage-v1", "bybit-semantic-key-v1",
+          "capture-sequence-v1", "exact-single-match-v1", {primary, duplicate})
+          .value();
+  CHECK(trade::normalize_trades(*decoded.enrichment, ambiguous,
+                                id<contracts::ClockDomainId>(12), kVersions)
+            .failure == trade::TradeNormalizationFailure::ReferenceAmbiguous);
 }

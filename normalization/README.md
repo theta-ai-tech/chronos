@@ -25,7 +25,7 @@ same `source_event_id` and a stable member index. Neither path mutates market
 state or allocates normalized stream, epoch, event, or run-input positions;
 those remain later stream/dispatch and M4 authorities.
 
-Book facts retain the source dataset identity, bound capture lineage, immutable
+Book and trade facts retain the source dataset identity, bound capture lineage, immutable
 decode-enrichment identity and semantic checksum, source environment/product
 class, JSON Pointer-addressed unknown-field extensions, selected reference
 semantic key, effective capture-sequence evidence, and a reference snapshot
@@ -33,5 +33,7 @@ selected through one versioned configuration-lineage authority. Capture format
 v2 includes market class in the manifest hash, so callers cannot relabel a
 verified record as another product class. The reference-lineage definition ID
 is derived from a canonical SHA-256 manifest of its version, policy labels, and
-allowed snapshot versions, so different selection behavior cannot reuse one
-persisted lineage identity.
+complete allowed instrument/listing content, so different selection behavior
+cannot reuse one persisted lineage identity. Multi-member trade frames carry a
+distinct decode-enrichment identity per source member while sharing the exact
+captured source-event lineage.

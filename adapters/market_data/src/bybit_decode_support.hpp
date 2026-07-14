@@ -2,6 +2,7 @@
 
 #include "chronos/adapters/market_data/capture_dataset.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -510,18 +511,27 @@ inline std::string canonical_json(const JsonValue &value) {
     }
     output.push_back(']');
     return output;
-  case JsonKind::Object:
+  case JsonKind::Object: {
+    std::vector<const JsonValue *> members;
+    members.reserve(value.object.size());
+    for (const auto &child : value.object)
+      members.push_back(&child);
+    std::sort(members.begin(), members.end(),
+              [](const auto *left, const auto *right) {
+                return left->key < right->key;
+              });
     output.push_back('{');
-    for (std::size_t index = 0; index < value.object.size(); ++index) {
+    for (std::size_t index = 0; index < members.size(); ++index) {
       if (index != 0) {
         output.push_back(',');
       }
-      append_json_string(value.object[index].key, output);
+      append_json_string(members[index]->key, output);
       output.push_back(':');
-      output += canonical_json(value.object[index]);
+      output += canonical_json(*members[index]);
     }
     output.push_back('}');
     return output;
+  }
   }
   return output;
 }
@@ -570,8 +580,10 @@ inline bool valid_utf8(std::string_view value) {
 inline bool capture_record_eligible(const CaptureDatasetManifest &manifest,
                                     const CaptureDatasetRecord &record,
                                     std::size_t maximum_payload_bytes) {
-  return manifest.venue == "bybit" && manifest.record_count != 0 &&
+  return manifest.format_version == "chronos-source-capture-v2" &&
+         manifest.venue == "bybit" && manifest.record_count != 0 &&
          manifest.adapter_id == "chronos.bybit.public-market-data" &&
+         manifest.schema_policy_version == "bybit-v5-public-v1" &&
          manifest.endpoint == sdk::EndpointClass::PublicMarketData &&
          manifest.data_classification ==
              sdk::DataClassification::PublicMarketData &&

@@ -4,14 +4,11 @@
 #include "chronos/normalization/market_data/trade.hpp"
 
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace chronos::normalization::market_data {
 
 struct TradeNormalizerVersions final {
-  std::string decoder_version;
-  std::string source_schema_version;
   std::string normalizer_version;
 };
 
@@ -25,9 +22,9 @@ struct TradeNormalizationResult final {
 };
 
 [[nodiscard]] TradeNormalizationResult
-normalize_trades(const BoundDecodedTradeMessage &decoded,
-                 std::string_view source_venue,
-                 const core::reference_data::ReferenceSnapshot &reference,
+normalize_trades(const DecodedTradeEnrichment &enrichment,
+                 const core::reference_data::ReferenceConfigurationLineage
+                     &reference_lineage,
                  contracts::ClockDomainId source_wall_clock_domain_id,
                  const TradeNormalizerVersions &versions);
 

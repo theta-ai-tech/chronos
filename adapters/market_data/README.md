@@ -31,15 +31,17 @@ emits one bound enrichment containing source assertions, lineage, and canonical
 unknown-field extensions. It does not resolve canonical listings, convert
 amounts, allocate stream positions, or mutate market state.
 
-M3.3 adds the corresponding bounded Bybit V5 `publicTrade` decoder. For the
-linear-perpetual schema, `T`, `s`, `S`, `v`, `p`, `L`, `i`, and `BT` are
-required. `RPI` and `seq` are optional known trade-member fields; when present
-they are type-checked and preserved as source assertions. Other bounded unknown
-envelope and member fields are retained as named canonical-JSON extensions for
-forward-compatible evidence, but do not gain venue-neutral semantics.
+M3.3 adds the corresponding bounded Bybit V5 `publicTrade` decoder. It accepts
+only a record selected from the non-forgeable verified dataset result and
+derives venue, environment, and product class from its integrity-protected
+manifest. `T`, `s`, `S`, `v`, `p`, `L`, `i`, and `BT` are required. `RPI` and
+`seq` are optional known trade-member fields; when present they are type-checked
+and preserved as source assertions. Other bounded unknown envelope and member
+fields retain collision-safe JSON Pointer identities and canonical JSON.
 Multi-trade messages preserve source-array order and attach a zero-based stable
-member index to every decoded member. The decoder binds that member table and
-its one capture lineage into a single immutable result passed to normalization.
+member index plus immutable semantic identity/checksum to every decoded member.
+The decoder binds that member table and its capture lineage into one immutable
+enrichment passed to normalization.
 
 - **Parent:** `adapters/`
 - **Owner:** Inherits `adapters/` ownership.

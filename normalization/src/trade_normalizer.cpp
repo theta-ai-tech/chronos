@@ -46,32 +46,54 @@ std::optional<AggressorSide> aggressor_side(std::string_view source_side) {
   return std::nullopt;
 }
 
+std::optional<core::reference_data::VenueEnvironment>
+reference_environment(adapters::sdk::EnvironmentClass environment) {
+  switch (environment) {
+  case adapters::sdk::EnvironmentClass::Test:
+    return core::reference_data::VenueEnvironment::Test;
+  case adapters::sdk::EnvironmentClass::Production:
+    return core::reference_data::VenueEnvironment::Production;
+  }
+  return std::nullopt;
+}
+
+std::optional<core::reference_data::ProductClass>
+reference_product_class(SourceProductClass product_class) {
+  switch (product_class) {
+  case SourceProductClass::Spot:
+    return core::reference_data::ProductClass::Spot;
+  case SourceProductClass::LinearPerpetual:
+    return core::reference_data::ProductClass::LinearPerpetual;
+  }
+  return std::nullopt;
+}
+
 } // namespace
 
 TradeNormalizationResult
-normalize_trades(const BoundDecodedTradeMessage &decoded,
-                 std::string_view source_venue,
-                 const core::reference_data::ReferenceSnapshot &reference,
+normalize_trades(const DecodedTradeEnrichment &enrichment,
+                 const core::reference_data::ReferenceConfigurationLineage
+                     &reference_lineage,
                  contracts::ClockDomainId source_wall_clock_domain_id,
                  const TradeNormalizerVersions &versions) {
-  const auto &message = decoded.message;
-  const auto &lineage = decoded.source_lineage;
-  if (!valid_version(versions.decoder_version) ||
-      !valid_version(versions.source_schema_version) ||
-      !valid_version(versions.normalizer_version) || message.members.empty()) {
+  const auto &message = enrichment.message();
+  const auto &lineage = enrichment.source_lineage();
+  const auto &decode_evidence = enrichment.decode_evidence();
+  if (!valid_version(versions.normalizer_version) || message.members.empty() ||
+      decode_evidence.size() != message.members.size()) {
     return {.failure = TradeNormalizationFailure::SchemaViolation};
-  }
-
-  const auto &reference_listing = reference.listing();
-  if (reference_listing.venue != source_venue) {
-    return {.failure = TradeNormalizationFailure::WrongTopicOrSymbol};
   }
 
   TradeNormalizationResult result;
   result.facts.reserve(message.members.size());
   for (std::size_t index = 0; index < message.members.size(); ++index) {
     const auto &member = message.members[index];
-    if (member.member_index != index) {
+    const auto &evidence = decode_evidence[index];
+    if (member.member_index != index || evidence.source_member_index != index ||
+        !valid_version(evidence.decoder_version) ||
+        !valid_version(evidence.source_schema_version) ||
+        !valid_version(evidence.registry_version) ||
+        !valid_version(evidence.canonicalization_version)) {
       return {.failure = TradeNormalizationFailure::AmbiguousDuplicate};
     }
     if (member.source_trade_id.empty()) {
@@ -82,15 +104,23 @@ normalize_trades(const BoundDecodedTradeMessage &decoded,
         return {.failure = TradeNormalizationFailure::AmbiguousDuplicate};
       }
     }
-    if (reference_listing.source_symbol != member.source_symbol) {
-      return {.failure = TradeNormalizationFailure::WrongTopicOrSymbol};
+    const auto environment = reference_environment(member.environment);
+    const auto product_class = reference_product_class(member.product_class);
+    if (!environment.has_value() || !product_class.has_value()) {
+      return {.failure = TradeNormalizationFailure::SchemaViolation};
     }
-    const auto *listing = reference.resolve(source_venue, member.source_symbol,
-                                            lineage.capture_partition_id,
-                                            lineage.capture_sequence);
-    if (listing == nullptr) {
+    const auto selected = reference_lineage.select(
+        member.venue, *environment, *product_class, member.source_symbol,
+        lineage.capture_partition_id, lineage.capture_sequence);
+    if (selected.failure ==
+        core::reference_data::ReferenceSelectionFailure::Ambiguous) {
+      return {.failure = TradeNormalizationFailure::ReferenceAmbiguous};
+    }
+    if (!selected.ok()) {
       return {.failure = TradeNormalizationFailure::ReferenceUnavailable};
     }
+    const auto &reference = *selected.snapshot;
+    const auto *listing = selected.listing;
 
     const auto side = aggressor_side(member.source_side);
     if (!side.has_value()) {
@@ -116,15 +146,38 @@ normalize_trades(const BoundDecodedTradeMessage &decoded,
         .reference_snapshot_version = reference.version(),
         .instrument_version = reference.instrument().version,
         .listing_version = listing->version,
+        .reference_selection =
+            {
+                .reference_configuration_lineage_version =
+                    reference_lineage.version(),
+                .lineage_schema_version =
+                    std::string(reference_lineage.lineage_schema_version()),
+                .semantic_key_policy_version = std::string(
+                    reference_lineage.semantic_key_policy_version()),
+                .effective_basis_policy_version = std::string(
+                    reference_lineage.effective_basis_policy_version()),
+                .selection_policy_version =
+                    std::string(reference_lineage.selection_policy_version()),
+                .semantic_key =
+                    {
+                        .venue = member.venue,
+                        .environment = member.environment,
+                        .product_class = member.product_class,
+                        .source_listing_key = member.source_symbol,
+                    },
+                .effective_capture_partition_id = lineage.capture_partition_id,
+                .effective_capture_sequence = lineage.capture_sequence,
+            },
         .source_lineage = lineage,
+        .source_decode_evidence = evidence,
         .source_message_extensions = message.envelope_extensions,
         .source_assertions = member,
         .source_event_time = *timestamp,
         .aggressor_side = *side,
         .price = *price,
         .quantity = *quantity,
-        .decoder_version = versions.decoder_version,
-        .source_schema_version = versions.source_schema_version,
+        .decoder_version = evidence.decoder_version,
+        .source_schema_version = evidence.source_schema_version,
         .normalizer_version = versions.normalizer_version,
     });
   }

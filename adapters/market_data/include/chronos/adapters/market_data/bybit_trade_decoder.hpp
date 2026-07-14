@@ -19,20 +19,20 @@ struct BybitTradeDecodeLimits final {
 };
 
 struct BybitTradeDecodeResult final {
-  std::optional<normalization::market_data::BoundDecodedTradeMessage> decoded;
+  std::optional<normalization::market_data::DecodedTradeEnrichment> enrichment;
   normalization::market_data::TradeNormalizationFailure failure{
       normalization::market_data::TradeNormalizationFailure::None};
 
   [[nodiscard]] bool ok() const noexcept {
-    return decoded.has_value() &&
+    return enrichment.has_value() &&
            failure ==
                normalization::market_data::TradeNormalizationFailure::None;
   }
 };
 
 [[nodiscard]] BybitTradeDecodeResult
-decode_bybit_v5_trades(const CaptureDatasetManifest &manifest,
-                       const CaptureDatasetRecord &record,
+decode_bybit_v5_trades(const DatasetReadResult &dataset,
+                       std::size_t record_index,
                        const BybitTradeDecodeLimits &limits = {});
 
 } // namespace chronos::adapters::market_data

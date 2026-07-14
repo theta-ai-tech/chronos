@@ -3,6 +3,7 @@
 #include "bybit_decode_support.hpp"
 
 #include <algorithm>
+#include <array>
 #include <initializer_list>
 #include <limits>
 #include <string>
@@ -11,6 +12,19 @@
 #include <vector>
 
 namespace chronos::adapters::market_data {
+
+class BybitTradeDecoderAccess final {
+public:
+  static normalization::market_data::DecodedTradeEnrichment
+  bind(normalization::market_data::DecodedTradeMessage message,
+       normalization::market_data::SourceCaptureLineage source_lineage,
+       std::vector<normalization::market_data::SourceDecodeEvidence>
+           decode_evidence) {
+    return {std::move(message), std::move(source_lineage),
+            std::move(decode_evidence)};
+  }
+};
+
 namespace {
 
 namespace trade = chronos::normalization::market_data;
@@ -18,6 +32,32 @@ using detail::JsonFailure;
 using detail::JsonKind;
 using detail::JsonValue;
 using trade::TradeNormalizationFailure;
+
+constexpr std::string_view kDecoderVersion = "bybit-trade-decoder-v1";
+constexpr std::string_view kSourceSchemaVersion = "bybit-v5-public-trade-v1";
+constexpr std::string_view kRegistryVersion = "bybit-v5-public-registry-v1";
+constexpr std::string_view kCanonicalizationVersion =
+    "chronos-source-enrichment-v1";
+
+void append_u64(std::vector<std::byte> &output, std::uint64_t value) {
+  for (std::size_t index = 0; index < sizeof(value); ++index) {
+    output.push_back(static_cast<std::byte>((value >> (index * 8U)) & 0xFFU));
+  }
+}
+
+void append_string(std::vector<std::byte> &output, std::string_view value) {
+  append_u64(output, static_cast<std::uint64_t>(value.size()));
+  if (value.empty())
+    return;
+  const auto *begin = reinterpret_cast<const std::byte *>(value.data());
+  output.insert(output.end(), begin, begin + value.size());
+}
+
+template <typename Id>
+void append_id(std::vector<std::byte> &output, const Id &value) {
+  for (const auto byte : value.bytes())
+    output.push_back(static_cast<std::byte>(byte));
+}
 
 TradeNormalizationFailure parser_failure(JsonFailure failure) {
   switch (failure) {
@@ -49,25 +89,48 @@ bool valid_tick_direction(std::string_view value) {
          value == "MinusTick" || value == "ZeroMinusTick";
 }
 
+std::string pointer_token(std::string_view value) {
+  std::string result;
+  result.reserve(value.size());
+  for (const auto character : value) {
+    if (character == '~')
+      result += "~0";
+    else if (character == '/')
+      result += "~1";
+    else
+      result.push_back(character);
+  }
+  return result;
+}
+
 void collect_extensions(const JsonValue &object,
                         std::initializer_list<std::string_view> known_members,
-                        std::vector<trade::SourceExtension> &extensions) {
+                        std::string_view pointer_prefix,
+                        std::vector<trade::SourceExtensionField> &extensions) {
   for (const auto &value : object.object) {
     const auto known =
         std::find(known_members.begin(), known_members.end(), value.key);
     if (known == known_members.end()) {
-      extensions.push_back(
-          {.name = value.key, .canonical_json = detail::canonical_json(value)});
+      extensions.push_back({
+          .json_pointer =
+              std::string(pointer_prefix) + "/" + pointer_token(value.key),
+          .canonical_json = detail::canonical_json(value),
+      });
     }
   }
+  std::sort(extensions.begin(), extensions.end(),
+            [](const auto &left, const auto &right) {
+              return left.json_pointer < right.json_pointer;
+            });
 }
 
-TradeNormalizationFailure decode_member(const JsonValue &value,
-                                        std::string_view topic,
-                                        std::string_view expected_symbol,
-                                        std::uint64_t system_timestamp,
-                                        std::uint32_t member_index,
-                                        trade::SourceTradeAssertions &output) {
+TradeNormalizationFailure
+decode_member(const JsonValue &value, std::string_view topic,
+              std::string_view expected_symbol, std::string_view venue,
+              sdk::EnvironmentClass environment,
+              trade::SourceProductClass product_class,
+              std::uint64_t system_timestamp, std::uint32_t member_index,
+              trade::SourceTradeAssertions &output) {
   if (value.kind != JsonKind::Object) {
     return TradeNormalizationFailure::SchemaViolation;
   }
@@ -118,6 +181,9 @@ TradeNormalizationFailure decode_member(const JsonValue &value,
   }
 
   output = {
+      .venue = std::string(venue),
+      .environment = environment,
+      .product_class = product_class,
       .topic = std::string(topic),
       .source_symbol = std::string(*symbol),
       .source_trade_id = std::string(*trade_id),
@@ -134,18 +200,131 @@ TradeNormalizationFailure decode_member(const JsonValue &value,
       .timestamp_unit = trade::SourceTimestampUnit::Milliseconds,
       .member_index = member_index,
   };
-  collect_extensions(value,
-                     {"T", "s", "S", "v", "p", "L", "i", "BT", "RPI", "seq"},
-                     output.extensions);
+  collect_extensions(
+      value, {"T", "s", "S", "v", "p", "L", "i", "BT", "RPI", "seq"},
+      "/data/" + std::to_string(member_index), output.extensions);
   return TradeNormalizationFailure::None;
+}
+
+std::optional<trade::SourceProductClass>
+source_product_class(sdk::MarketClass market) {
+  switch (market) {
+  case sdk::MarketClass::Spot:
+    return trade::SourceProductClass::Spot;
+  case sdk::MarketClass::LinearPerpetual:
+    return trade::SourceProductClass::LinearPerpetual;
+  case sdk::MarketClass::InversePerpetual:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+trade::SourceCaptureLineage
+source_lineage(const CaptureDatasetManifest &manifest,
+               const CaptureDatasetRecord &record, std::size_t record_index) {
+  return {
+      .dataset_format_version = manifest.format_version,
+      .dataset_id = manifest.dataset_id,
+      .records_sha256 = manifest.records_sha256,
+      .dataset_record_index = record_index,
+      .source_event_id = record.source_event_id,
+      .capture_session_id = manifest.capture_session_id,
+      .runtime_id = manifest.runtime_id,
+      .connection_id = manifest.connection_id,
+      .subscription_id = manifest.subscription_id,
+      .capture_partition_id = manifest.capture_partition_id,
+      .capture_sequence = record.capture_sequence,
+      .chronos_receive_time = record.chronos_receive_time,
+      .payload_digest = record.payload_digest,
+      .adapter_version = manifest.adapter_version,
+      .build_version = manifest.build_version,
+      .framing_version = manifest.framing_version,
+      .static_configuration_version = manifest.static_configuration_version,
+      .capability_manifest_version = manifest.capability_manifest_version,
+      .schema_policy_version = manifest.schema_policy_version,
+  };
+}
+
+std::optional<trade::SourceDecodeEvidence> decode_evidence(
+    const trade::SourceTradeAssertions &member,
+    const std::vector<trade::SourceExtensionField> &envelope_extensions,
+    const trade::SourceCaptureLineage &lineage) {
+  std::vector<std::byte> semantic;
+  append_string(semantic, kDecoderVersion);
+  append_string(semantic, kSourceSchemaVersion);
+  append_string(semantic, kRegistryVersion);
+  append_string(semantic, kCanonicalizationVersion);
+  append_string(semantic, lineage.dataset_id);
+  append_id(semantic, lineage.source_event_id);
+  append_u64(semantic, lineage.capture_sequence);
+  append_u64(semantic, member.member_index);
+  append_string(semantic, member.venue);
+  append_u64(semantic, static_cast<std::uint64_t>(member.environment));
+  append_u64(semantic, static_cast<std::uint64_t>(member.product_class));
+  append_string(semantic, member.topic);
+  append_string(semantic, member.source_symbol);
+  append_string(semantic, member.source_trade_id);
+  append_string(semantic, member.source_side);
+  append_string(semantic, member.price_decimal);
+  append_string(semantic, member.quantity_decimal);
+  append_string(semantic, member.tick_direction);
+  append_u64(semantic, member.block_trade ? 1U : 0U);
+  append_u64(semantic, member.rpi_trade.has_value() ? 1U : 0U);
+  if (member.rpi_trade.has_value())
+    append_u64(semantic, *member.rpi_trade ? 1U : 0U);
+  append_u64(semantic, member.sequence.has_value() ? 1U : 0U);
+  if (member.sequence.has_value())
+    append_u64(semantic, *member.sequence);
+  append_u64(semantic, member.system_timestamp_milliseconds);
+  append_u64(semantic, member.trade_timestamp_milliseconds);
+  const auto append_extensions = [&semantic](const auto &extensions) {
+    append_u64(semantic, static_cast<std::uint64_t>(extensions.size()));
+    for (const auto &extension : extensions) {
+      append_string(semantic, extension.json_pointer);
+      append_string(semantic, extension.canonical_json);
+    }
+  };
+  append_extensions(envelope_extensions);
+  append_extensions(member.extensions);
+
+  const auto checksum =
+      sdk::sha256(semantic, sdk::DigestCoverage::CompletePayload);
+  contracts::SourceDecodeEnrichmentId::bytes_type identity_bytes{};
+  std::copy_n(checksum.bytes.begin(), identity_bytes.size(),
+              identity_bytes.begin());
+  const auto identity =
+      contracts::SourceDecodeEnrichmentId::from_bytes(identity_bytes);
+  if (!identity.has_value())
+    return std::nullopt;
+  return trade::SourceDecodeEvidence{
+      .source_decode_enrichment_id = *identity,
+      .source_member_index = member.member_index,
+      .decoder_version = std::string(kDecoderVersion),
+      .source_schema_version = std::string(kSourceSchemaVersion),
+      .registry_version = std::string(kRegistryVersion),
+      .canonicalization_version = std::string(kCanonicalizationVersion),
+      .semantic_checksum = checksum,
+  };
 }
 
 } // namespace
 
 BybitTradeDecodeResult
-decode_bybit_v5_trades(const CaptureDatasetManifest &manifest,
-                       const CaptureDatasetRecord &record,
+decode_bybit_v5_trades(const DatasetReadResult &dataset,
+                       std::size_t record_index,
                        const BybitTradeDecodeLimits &limits) {
+  if (!dataset.ok() || record_index >= dataset.records().size()) {
+    return {.failure = TradeNormalizationFailure::IntegrityIneligible};
+  }
+  const auto &manifest = dataset.manifest().value();
+  const auto &record = dataset.records()[record_index];
+  if (manifest.format_version != "chronos-source-capture-v2") {
+    return {.failure = TradeNormalizationFailure::IntegrityIneligible};
+  }
+  const auto product_class = source_product_class(manifest.market);
+  if (!product_class.has_value()) {
+    return {.failure = TradeNormalizationFailure::UnsupportedMessage};
+  }
   if (record.raw_payload.size() > limits.maximum_payload_bytes) {
     return {.failure = TradeNormalizationFailure::ResourceLimitExceeded};
   }
@@ -204,13 +383,14 @@ decode_bybit_v5_trades(const CaptureDatasetManifest &manifest,
   }
 
   trade::DecodedTradeMessage message;
-  collect_extensions(*root, {"topic", "type", "ts", "data"},
+  collect_extensions(*root, {"topic", "type", "ts", "data"}, "",
                      message.envelope_extensions);
   message.members.reserve(data->array.size());
   for (std::size_t index = 0; index < data->array.size(); ++index) {
     trade::SourceTradeAssertions assertions;
     const auto failure = decode_member(
-        data->array[index], *topic, *expected_symbol, *system_timestamp,
+        data->array[index], *topic, *expected_symbol, manifest.venue,
+        manifest.environment, *product_class, *system_timestamp,
         static_cast<std::uint32_t>(index), assertions);
     if (failure != TradeNormalizationFailure::None) {
       return {.failure = failure};
@@ -225,23 +405,21 @@ decode_bybit_v5_trades(const CaptureDatasetManifest &manifest,
     message.members.push_back(std::move(assertions));
   }
 
+  auto lineage = source_lineage(manifest, record, record_index);
+  std::vector<trade::SourceDecodeEvidence> evidence;
+  evidence.reserve(message.members.size());
+  for (const auto &member : message.members) {
+    auto member_evidence =
+        decode_evidence(member, message.envelope_extensions, lineage);
+    if (!member_evidence.has_value()) {
+      return {.failure = TradeNormalizationFailure::SchemaViolation};
+    }
+    evidence.push_back(std::move(*member_evidence));
+  }
+
   return {
-      .decoded =
-          trade::BoundDecodedTradeMessage{
-              .message = std::move(message),
-              .source_lineage =
-                  trade::SourceCaptureLineage{
-                      .source_event_id = record.source_event_id,
-                      .capture_session_id = manifest.capture_session_id,
-                      .runtime_id = manifest.runtime_id,
-                      .connection_id = manifest.connection_id,
-                      .subscription_id = manifest.subscription_id,
-                      .capture_partition_id = manifest.capture_partition_id,
-                      .capture_sequence = record.capture_sequence,
-                      .chronos_receive_time = record.chronos_receive_time,
-                      .payload_digest = record.payload_digest,
-                  },
-          },
+      .enrichment = BybitTradeDecoderAccess::bind(
+          std::move(message), std::move(lineage), std::move(evidence)),
       .failure = TradeNormalizationFailure::None,
   };
 }
