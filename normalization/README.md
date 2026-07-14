@@ -28,4 +28,7 @@ class, JSON Pointer-addressed unknown-field extensions, selected reference
 semantic key, effective capture-sequence evidence, and a reference snapshot
 selected through one versioned configuration-lineage authority. Capture format
 v2 includes market class in the manifest hash, so callers cannot relabel a
-verified record as another product class.
+verified record as another product class. The reference-lineage definition ID
+is derived from a canonical SHA-256 manifest of its version, policy labels, and
+allowed snapshot versions, so different selection behavior cannot reuse one
+persisted lineage identity.

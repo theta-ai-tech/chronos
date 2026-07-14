@@ -1,5 +1,6 @@
 #pragma once
 
+#include "chronos/contracts/digest.hpp"
 #include "chronos/contracts/fixed_point.hpp"
 #include "chronos/contracts/value_objects.hpp"
 
@@ -124,7 +125,7 @@ struct ReferenceSelectionResult final {
 class ReferenceConfigurationLineage final {
 public:
   [[nodiscard]] static std::optional<ReferenceConfigurationLineage>
-  create(contracts::VersionRef lineage_version,
+  create(std::uint64_t lineage_version_number,
          std::string lineage_schema_version,
          std::string semantic_key_policy_version,
          std::string effective_basis_policy_version,
@@ -132,6 +133,8 @@ public:
          std::vector<ReferenceSnapshot> allowed_snapshots);
 
   [[nodiscard]] const contracts::VersionRef &version() const noexcept;
+  [[nodiscard]] const contracts::Sha256Digest &
+  semantic_checksum() const noexcept;
   [[nodiscard]] std::string_view lineage_schema_version() const noexcept;
   [[nodiscard]] std::string_view semantic_key_policy_version() const noexcept;
   [[nodiscard]] std::string_view
@@ -145,13 +148,16 @@ public:
 
 private:
   ReferenceConfigurationLineage(
-      contracts::VersionRef lineage_version, std::string lineage_schema_version,
+      contracts::VersionRef lineage_version,
+      contracts::Sha256Digest semantic_checksum,
+      std::string lineage_schema_version,
       std::string semantic_key_policy_version,
       std::string effective_basis_policy_version,
       std::string selection_policy_version,
       std::vector<ReferenceSnapshot> allowed_snapshots);
 
   contracts::VersionRef lineage_version_;
+  contracts::Sha256Digest semantic_checksum_;
   std::string lineage_schema_version_;
   std::string semantic_key_policy_version_;
   std::string effective_basis_policy_version_;

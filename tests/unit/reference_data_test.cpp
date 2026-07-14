@@ -113,13 +113,17 @@ TEST_CASE("reference lineage binds allowed facts and selection policies") {
                        version("018f1f6e-7d3a-7c4b-8a91-0123456789a4", 2),
                        primary.instrument(), primary.listing())
                        .value();
-  const auto lineage_version =
-      version("018f1f6e-7d3a-7c4b-8a91-0123456789a5", 3);
   const auto lineage = ReferenceConfigurationLineage::create(
-      lineage_version, "reference-lineage-v1", "bybit-semantic-key-v1",
-      "capture-sequence-v1", "exact-single-match-v1", {primary});
+      3, "reference-lineage-v1", "bybit-semantic-key-v1", "capture-sequence-v1",
+      "exact-single-match-v1", {primary});
   CHECK(lineage.has_value());
-  CHECK(lineage->version() == lineage_version);
+  CHECK(lineage->version().version() == 3);
+  const auto same_lineage = ReferenceConfigurationLineage::create(
+      3, "reference-lineage-v1", "bybit-semantic-key-v1", "capture-sequence-v1",
+      "exact-single-match-v1", {primary});
+  CHECK(same_lineage.has_value());
+  CHECK(same_lineage->version() == lineage->version());
+  CHECK(same_lineage->semantic_checksum() == lineage->semantic_checksum());
   const auto selected =
       lineage->select("bybit", VenueEnvironment::Test, ProductClass::Spot,
                       "BTCUSDT", id<CapturePartitionId>(kEffectiveDomain), 10);
@@ -127,9 +131,11 @@ TEST_CASE("reference lineage binds allowed facts and selection policies") {
   CHECK(selected.snapshot->version() == primary.version());
 
   const auto ambiguous = ReferenceConfigurationLineage::create(
-      lineage_version, "reference-lineage-v1", "bybit-semantic-key-v1",
-      "capture-sequence-v1", "exact-single-match-v1", {primary, alternate});
+      3, "reference-lineage-v1", "bybit-semantic-key-v1", "capture-sequence-v1",
+      "exact-single-match-v1", {primary, alternate});
   CHECK(ambiguous.has_value());
+  CHECK(ambiguous->version() != lineage->version());
+  CHECK(ambiguous->semantic_checksum() != lineage->semantic_checksum());
   CHECK(ambiguous
             ->select("bybit", VenueEnvironment::Test, ProductClass::Spot,
                      "BTCUSDT", id<CapturePartitionId>(kEffectiveDomain), 10)

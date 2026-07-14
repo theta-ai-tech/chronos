@@ -1,5 +1,6 @@
 #include "chronos/core/reference_data/reference_data.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <limits>
 #include <utility>
@@ -74,6 +75,53 @@ bool valid_token(std::string_view value) {
     }
   }
   return true;
+}
+
+void append_u64(std::vector<std::byte> &output, std::uint64_t value) {
+  for (std::size_t index = 0; index < sizeof(value); ++index)
+    output.push_back(static_cast<std::byte>(value >> (index * 8U)));
+}
+
+void append_string(std::vector<std::byte> &output, std::string_view value) {
+  append_u64(output, static_cast<std::uint64_t>(value.size()));
+  if (value.empty())
+    return;
+  const auto *begin = reinterpret_cast<const std::byte *>(value.data());
+  output.insert(output.end(), begin, begin + value.size());
+}
+
+void append_version(std::vector<std::byte> &output,
+                    const contracts::VersionRef &version) {
+  const auto definition_id = version.definition_id();
+  for (const auto byte : definition_id.bytes())
+    output.push_back(static_cast<std::byte>(byte));
+  append_u64(output, version.version());
+}
+
+contracts::Sha256Digest
+lineage_checksum(std::uint64_t lineage_version_number,
+                 std::string_view lineage_schema_version,
+                 std::string_view semantic_key_policy_version,
+                 std::string_view effective_basis_policy_version,
+                 std::string_view selection_policy_version,
+                 const std::vector<ReferenceSnapshot> &allowed_snapshots) {
+  std::vector<contracts::VersionRef> snapshot_versions;
+  snapshot_versions.reserve(allowed_snapshots.size());
+  for (const auto &snapshot : allowed_snapshots)
+    snapshot_versions.push_back(snapshot.version());
+  std::sort(snapshot_versions.begin(), snapshot_versions.end());
+
+  std::vector<std::byte> canonical;
+  append_string(canonical, "chronos-reference-configuration-lineage-v1");
+  append_u64(canonical, lineage_version_number);
+  append_string(canonical, lineage_schema_version);
+  append_string(canonical, semantic_key_policy_version);
+  append_string(canonical, effective_basis_policy_version);
+  append_string(canonical, selection_policy_version);
+  append_u64(canonical, static_cast<std::uint64_t>(snapshot_versions.size()));
+  for (const auto &version : snapshot_versions)
+    append_version(canonical, version);
+  return contracts::sha256(canonical);
 }
 
 bool valid(ListingStatus status) {
@@ -254,12 +302,13 @@ ReferenceSnapshot::resolve(std::string_view venue, VenueEnvironment environment,
 }
 
 ReferenceConfigurationLineage::ReferenceConfigurationLineage(
-    contracts::VersionRef lineage_version, std::string lineage_schema_version,
-    std::string semantic_key_policy_version,
+    contracts::VersionRef lineage_version,
+    contracts::Sha256Digest semantic_checksum,
+    std::string lineage_schema_version, std::string semantic_key_policy_version,
     std::string effective_basis_policy_version,
     std::string selection_policy_version,
     std::vector<ReferenceSnapshot> allowed_snapshots)
-    : lineage_version_(lineage_version),
+    : lineage_version_(lineage_version), semantic_checksum_(semantic_checksum),
       lineage_schema_version_(std::move(lineage_schema_version)),
       semantic_key_policy_version_(std::move(semantic_key_policy_version)),
       effective_basis_policy_version_(
@@ -269,23 +318,39 @@ ReferenceConfigurationLineage::ReferenceConfigurationLineage(
 
 std::optional<ReferenceConfigurationLineage>
 ReferenceConfigurationLineage::create(
-    contracts::VersionRef lineage_version, std::string lineage_schema_version,
+    std::uint64_t lineage_version_number, std::string lineage_schema_version,
     std::string semantic_key_policy_version,
     std::string effective_basis_policy_version,
     std::string selection_policy_version,
     std::vector<ReferenceSnapshot> allowed_snapshots) {
-  if (!valid_token(lineage_schema_version) ||
+  if (lineage_version_number == 0 || !valid_token(lineage_schema_version) ||
       !valid_token(semantic_key_policy_version) ||
       !valid_token(effective_basis_policy_version) ||
       !valid_token(selection_policy_version) || allowed_snapshots.empty()) {
     return std::nullopt;
   }
+  const auto checksum = lineage_checksum(
+      lineage_version_number, lineage_schema_version,
+      semantic_key_policy_version, effective_basis_policy_version,
+      selection_policy_version, allowed_snapshots);
+  contracts::DefinitionId::bytes_type identity_bytes{};
+  std::copy_n(checksum.bytes.begin(), identity_bytes.size(),
+              identity_bytes.begin());
+  const auto definition_id =
+      contracts::DefinitionId::from_bytes(identity_bytes);
+  if (!definition_id.has_value())
+    return std::nullopt;
+  const auto lineage_version =
+      contracts::VersionRef::from(*definition_id, lineage_version_number);
+  if (!lineage_version.has_value())
+    return std::nullopt;
   for (std::size_t index = 0; index < allowed_snapshots.size(); ++index) {
     const auto &snapshot = allowed_snapshots[index];
-    if (lineage_version.definition_id() == snapshot.version().definition_id() ||
-        lineage_version.definition_id() ==
+    if (lineage_version->definition_id() ==
+            snapshot.version().definition_id() ||
+        lineage_version->definition_id() ==
             snapshot.instrument().version.definition_id() ||
-        lineage_version.definition_id() ==
+        lineage_version->definition_id() ==
             snapshot.listing().version.definition_id()) {
       return std::nullopt;
     }
@@ -296,10 +361,15 @@ ReferenceConfigurationLineage::create(
     }
   }
   return ReferenceConfigurationLineage(
-      lineage_version, std::move(lineage_schema_version),
+      *lineage_version, checksum, std::move(lineage_schema_version),
       std::move(semantic_key_policy_version),
       std::move(effective_basis_policy_version),
       std::move(selection_policy_version), std::move(allowed_snapshots));
+}
+
+const contracts::Sha256Digest &
+ReferenceConfigurationLineage::semantic_checksum() const noexcept {
+  return semantic_checksum_;
 }
 
 const contracts::VersionRef &

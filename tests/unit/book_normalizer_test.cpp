@@ -157,11 +157,11 @@ reference::ReferenceSnapshot reference_snapshot(
 
 reference::ReferenceConfigurationLineage reference_lineage(
     reference::ListingStatus status = reference::ListingStatus::Active,
-    std::uint8_t lineage_seed = 15) {
+    std::uint64_t lineage_version_number = 1) {
   std::vector<reference::ReferenceSnapshot> snapshots;
   snapshots.push_back(reference_snapshot(status));
   return reference::ReferenceConfigurationLineage::create(
-             version(lineage_seed, 1), "reference-lineage-v1",
+             lineage_version_number, "reference-lineage-v1",
              "bybit-semantic-key-v1", "capture-sequence-v1",
              "exact-single-match-v1", std::move(snapshots))
       .value();
@@ -176,7 +176,8 @@ book::BookNormalizationResult normalize(std::string_view payload) {
   if (!decoded.ok()) {
     return {.failure = decoded.failure};
   }
-  return book::normalize_book(*decoded.enrichment, reference_lineage(),
+  const auto lineage = reference_lineage();
+  return book::normalize_book(*decoded.enrichment, lineage,
                               id<contracts::ClockDomainId>(12), kVersions);
 }
 
@@ -198,7 +199,12 @@ constexpr std::string_view kDelta = R"({
 } // namespace
 
 TEST_CASE("Bybit snapshots map to canonical fully-lineaged observations") {
-  const auto result = normalize(kSnapshot);
+  const auto decoded = decode(kSnapshot);
+  CHECK(decoded.ok());
+  const auto lineage = reference_lineage();
+  const auto result =
+      book::normalize_book(*decoded.enrichment, lineage,
+                           id<contracts::ClockDomainId>(12), kVersions);
   CHECK(result.ok());
   const auto &fact = *result.fact;
   CHECK(fact.event_type() == "market.book.snapshot_observed");
@@ -208,7 +214,7 @@ TEST_CASE("Bybit snapshots map to canonical fully-lineaged observations") {
   CHECK(fact.reference_snapshot_version == reference_snapshot().version());
   CHECK(fact.listing_version == reference_snapshot().listing().version);
   CHECK(fact.reference_selection.reference_configuration_lineage_version ==
-        reference_lineage().version());
+        lineage.version());
   CHECK(fact.reference_selection.semantic_key.venue == "bybit");
   CHECK(fact.reference_selection.semantic_key.environment ==
         sdk::EnvironmentClass::Test);
@@ -414,7 +420,7 @@ TEST_CASE("reference and timestamp eligibility are explicit failures") {
             .failure == book::BookNormalizationFailure::ReferenceUnavailable);
 
   const auto alternate_lineage =
-      reference_lineage(reference::ListingStatus::Active, 16);
+      reference_lineage(reference::ListingStatus::Active, 2);
   const auto primary_fact =
       book::normalize_book(*decoded.enrichment, reference_lineage(),
                            id<contracts::ClockDomainId>(12), kVersions);
@@ -432,7 +438,7 @@ TEST_CASE("reference and timestamp eligibility are explicit failures") {
                                 .value();
   auto ambiguous_lineage =
       reference::ReferenceConfigurationLineage::create(
-          version(18, 1), "reference-lineage-v1", "bybit-semantic-key-v1",
+          1, "reference-lineage-v1", "bybit-semantic-key-v1",
           "capture-sequence-v1", "exact-single-match-v1",
           {primary_snapshot, duplicate_snapshot})
           .value();
