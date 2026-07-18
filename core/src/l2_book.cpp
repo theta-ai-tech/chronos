@@ -169,6 +169,7 @@ struct L2Book::State final {
   std::vector<contracts::AmountUnits> validation_prices;
   L2SideCompleteness bid_completeness{L2SideCompleteness::Unknown};
   L2SideCompleteness ask_completeness{L2SideCompleteness::Unknown};
+  std::optional<L2InputEvidence> last_input_evidence;
   std::uint64_t transition_sequence{};
 };
 
@@ -187,6 +188,10 @@ std::optional<L2Book> L2Book::create(L2BookConfig config) {
 L2TransitionResult L2Book::apply_snapshot(const L2Snapshot &snapshot) {
   if (snapshot.listing_id != state_->config.listing_id)
     return {.failure = L2TransitionFailure::WrongListing};
+  if (snapshot.input_evidence &&
+      snapshot.input_evidence->kind != L2InputKind::Snapshot) {
+    return {.failure = L2TransitionFailure::InvalidInputEvidence};
+  }
   if (snapshot.bids.size() > state_->config.maximum_levels_per_side ||
       snapshot.asks.size() > state_->config.maximum_levels_per_side) {
     return {.failure = L2TransitionFailure::ResourceLimitExceeded};
@@ -217,6 +222,7 @@ L2TransitionResult L2Book::apply_snapshot(const L2Snapshot &snapshot) {
   state_->asks.swap(state_->scratch_asks);
   state_->bid_completeness = snapshot.bid_completeness;
   state_->ask_completeness = snapshot.ask_completeness;
+  state_->last_input_evidence = snapshot.input_evidence;
   ++state_->transition_sequence;
   return {.content_changed = changed,
           .transition_sequence = state_->transition_sequence};
@@ -225,6 +231,10 @@ L2TransitionResult L2Book::apply_snapshot(const L2Snapshot &snapshot) {
 L2TransitionResult L2Book::apply_delta(const L2Delta &delta) {
   if (delta.listing_id != state_->config.listing_id)
     return {.failure = L2TransitionFailure::WrongListing};
+  if (delta.input_evidence &&
+      delta.input_evidence->kind != L2InputKind::Delta) {
+    return {.failure = L2TransitionFailure::InvalidInputEvidence};
+  }
   if (state_->transition_sequence == std::numeric_limits<std::uint64_t>::max())
     return {.failure = L2TransitionFailure::ResourceLimitExceeded};
   const auto maximum_changes = state_->config.maximum_changes_per_delta;
@@ -261,6 +271,7 @@ L2TransitionResult L2Book::apply_delta(const L2Delta &delta) {
   state_->asks.swap(state_->scratch_asks);
   state_->bid_completeness = bid_completeness;
   state_->ask_completeness = ask_completeness;
+  state_->last_input_evidence = delta.input_evidence;
   ++state_->transition_sequence;
   return {.content_changed = changed,
           .transition_sequence = state_->transition_sequence};
@@ -328,6 +339,10 @@ L2TopOfBook L2Book::top_of_book() const noexcept {
 
 std::uint64_t L2Book::transition_sequence() const noexcept {
   return state_->transition_sequence;
+}
+
+std::optional<L2InputEvidence> L2Book::last_input_evidence() const noexcept {
+  return state_->last_input_evidence;
 }
 
 L2StorageProfile L2Book::storage_profile() const noexcept {

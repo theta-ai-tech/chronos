@@ -144,6 +144,13 @@ void append_trade_proof(std::vector<std::byte> &output,
   append_enum(output, proof.fidelity);
 }
 
+void append_l2_input_evidence(std::vector<std::byte> &output,
+                              const L2InputEvidence &evidence) {
+  append_id(output, evidence.event_id);
+  append_digest(output, evidence.semantic_checksum);
+  append_enum(output, evidence.kind);
+}
+
 template <typename Value, typename Append>
 void append_optional(std::vector<std::byte> &output,
                      const std::optional<Value> &value, Append append) {
@@ -186,6 +193,7 @@ std::vector<std::byte> canonical_view_bytes(
     std::uint64_t l2_transition_sequence, std::span<const L2Level> bids,
     std::span<const L2Level> asks, const L2TopOfBook &top,
     std::span<const RecentTrade> trades, const ListingQualityState &quality,
+    const std::optional<L2InputEvidence> &last_book_input,
     const std::optional<contracts::StateViewId> &prior_view_id) {
   std::vector<std::byte> output;
   output.reserve(1024 + (bids.size() + asks.size()) * 80 + trades.size() * 256);
@@ -229,6 +237,7 @@ std::vector<std::byte> canonical_view_bytes(
   for (const auto &trade : trades)
     append_trade(output, trade);
   append_quality(output, quality);
+  append_optional(output, last_book_input, append_l2_input_evidence);
   append_optional_id(output, prior_view_id);
   append_version(output, config.view_schema_version);
   append_version(output, config.capability_version);
@@ -238,9 +247,14 @@ std::vector<std::byte> canonical_view_bytes(
   return output;
 }
 
+const contracts::StreamCursor *
+find_cursor(const contracts::StateLineage &lineage,
+            contracts::StreamId stream_id);
+
 std::vector<std::byte> canonical_bundle_bytes(
     const ListingViewPublisherConfig &config, const ListingViewCutInput &input,
     contracts::StateViewId listing_view_id,
+    std::int64_t logical_time_nanoseconds,
     const std::optional<contracts::StateViewId> &prior_bundle_id) {
   std::vector<std::byte> output;
   output.reserve(320);
@@ -249,15 +263,29 @@ std::vector<std::byte> canonical_bundle_bytes(
     output.push_back(static_cast<std::byte>(character));
   append_id(output, config.run_id);
   append_integer(output, input.lineage.run_input_sequence());
+  append_id(output, input.selection_id);
+  append_id(output, input.selected_event_id);
+  append_integer<std::uint64_t>(output, 1);
   append_id(output, config.listing_id);
   append_id(output, listing_view_id);
+  append_cursor(output,
+                *find_cursor(input.lineage, config.run_control_stream_id));
+  append_cursor(output,
+                *find_cursor(input.lineage, config.run_timer_stream_id));
+  append_cursor(output,
+                *find_cursor(input.lineage, config.reference_stream_id));
+  append_integer(output, logical_time_nanoseconds);
   append_digest(output, input.selection_semantic_checksum);
   append_version(output, input.merge_policy_version);
   append_integer(output, input.configuration_epoch);
   append_optional_u64(output, input.effective_control_position);
   append_optional_id(output, prior_bundle_id);
   append_version(output, config.view_schema_version);
+  append_version(output, config.bundle_schema_version);
+  append_version(output, config.dispatcher_config.registry_snapshot_version);
+  append_version(output, config.arithmetic_version);
   append_version(output, config.canonicalization_version);
+  append_version(output, config.identity_policy_version);
   return output;
 }
 
@@ -355,6 +383,27 @@ bool cursor_follows_position(const contracts::StreamCursor &prior,
          position.stream_sequence() == *sequence + 1;
 }
 
+contracts::StreamCursor
+configured_cursor(contracts::StreamId stream_id, std::uint64_t stream_epoch,
+                  const std::optional<std::uint64_t> &initial_sequence) {
+  return initial_sequence
+             ? *contracts::StreamCursor::at_sequence(stream_id, stream_epoch,
+                                                     *initial_sequence)
+             : *contracts::StreamCursor::at_origin(stream_id, stream_epoch);
+}
+
+bool cursor_at_or_after(const contracts::StreamCursor &prior,
+                        const contracts::StreamCursor &next) {
+  if (prior.stream_id() != next.stream_id() ||
+      prior.stream_epoch() != next.stream_epoch()) {
+    return false;
+  }
+  if (prior.is_origin())
+    return true;
+  return next.last_consumed_sequence() &&
+         *next.last_consumed_sequence() >= *prior.last_consumed_sequence();
+}
+
 bool valid_lineage_transition(const ListingViewPublisherConfig &config,
                               const contracts::StateLineage &prior,
                               const ListingViewCutInput &input,
@@ -426,7 +475,15 @@ struct ListingViewPublisher::State final {
   };
 
   explicit State(ListingViewPublisherConfig initial_config)
-      : config(std::move(initial_config)) {
+      : config(std::move(initial_config)),
+        dispatcher_cursor(configured_cursor(
+            config.dispatcher_config.input_stream_id,
+            config.dispatcher_config.input_stream_epoch,
+            config.dispatcher_config.initial_stream_sequence)),
+        dispatcher_control_cursor(configured_cursor(
+            config.dispatcher_config.control_stream_id,
+            config.dispatcher_config.control_stream_epoch,
+            config.dispatcher_config.initial_control_sequence)) {
     publication_history.reserve(config.maximum_publication_transitions);
     accepted_history.reserve(config.maximum_retained_views);
   }
@@ -435,6 +492,8 @@ struct ListingViewPublisher::State final {
   std::shared_ptr<const ListingStateView> accepted;
   std::shared_ptr<const StateViewBundle> accepted_bundle;
   std::vector<AcceptedRecord> accepted_history;
+  contracts::StreamCursor dispatcher_cursor;
+  contracts::StreamCursor dispatcher_control_cursor;
   std::uint64_t configuration_epoch{config.initial_configuration_epoch};
   std::optional<std::uint64_t> effective_control_position{
       config.initial_effective_control_position};
@@ -468,7 +527,11 @@ ListingViewPublisher::create(ListingViewPublisherConfig config) {
       config.dispatcher_config.merge_policy_version !=
           config.merge_policy_version ||
       config.dispatcher_config.initial_configuration_epoch !=
-          config.initial_configuration_epoch) {
+          config.initial_configuration_epoch ||
+      config.dispatcher_config.input_stream_epoch == 0 ||
+      config.dispatcher_config.control_stream_epoch == 0 ||
+      config.dispatcher_config.input_stream_id ==
+          config.dispatcher_config.control_stream_id) {
     return std::nullopt;
   }
   auto streams = config.required_streams;
@@ -522,10 +585,21 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
                               ViewPublicationState::FeatureConsumerAccepted) {
     return {.failure = ListingViewFailure::PriorViewPending};
   }
+  if (state_->config.maximum_publication_transitions -
+          state_->publication_history.size() <
+      3) {
+    return {.failure = ListingViewFailure::PublicationHistoryExhausted};
+  }
   if (!complete_lineage(state_->config, input.lineage)) {
     return {.failure = ListingViewFailure::IncompleteLineage};
   }
+  if (input.dispatch_selection.pre_selection_cursors.size() != 1 ||
+      input.dispatch_selection.post_selection_cursors.size() != 1) {
+    return {.failure = ListingViewFailure::InvalidSelectionEvidence};
+  }
   const auto &applied_controls = input.dispatch_selection.applied_controls;
+  const auto &dispatcher_pre =
+      input.dispatch_selection.pre_selection_cursors.front();
   const bool evidence_valid =
       dispatch::validate_run_input_selection(state_->config.dispatcher_config,
                                              input.dispatch_selection,
@@ -544,6 +618,9 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
           input.dispatch_selection.active_configuration_epoch &&
       input.lineage.run_input_sequence() ==
           input.dispatch_selection.run_input_sequence &&
+      dispatcher_pre == state_->dispatcher_cursor &&
+      cursor_at_or_after(state_->dispatcher_control_cursor,
+                         input.dispatch_selection.control_cursor) &&
       input.merge_policy_version == state_->config.merge_policy_version &&
       (applied_controls.empty()
            ? input.configuration_epoch == state_->configuration_epoch &&
@@ -561,10 +638,24 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
 
   const auto quality_before = auxiliary.quality();
   const auto transition_before = book.transition_sequence();
+  const auto book_input_before = book.last_input_evidence();
   if (input.lineage.run_input_sequence() != quality_before.run_input_sequence)
     return {.failure = ListingViewFailure::RunInputMismatch};
   if (!selected_event_was_applied(input.selected_event_type,
                                   input.selected_event_id, quality_before)) {
+    return {.failure = ListingViewFailure::InvalidSelectionEvidence};
+  }
+  const auto expected_book_kind =
+      input.selected_event_type == "market.book.observation.snapshot"
+          ? std::optional(L2InputKind::Snapshot)
+      : input.selected_event_type == "market.book.observation.delta"
+          ? std::optional(L2InputKind::Delta)
+          : std::nullopt;
+  if (expected_book_kind &&
+      (!book_input_before ||
+       book_input_before->event_id != input.selected_event_id ||
+       book_input_before->semantic_checksum != input.input_semantic_checksum ||
+       book_input_before->kind != *expected_book_kind)) {
     return {.failure = ListingViewFailure::InvalidSelectionEvidence};
   }
   const auto &prior_lineage = state_->accepted ? state_->accepted->lineage
@@ -602,6 +693,7 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
                                   auxiliary.recent_trades().end());
   const auto quality_after = auxiliary.quality();
   if (quality_before != quality_after ||
+      book_input_before != book.last_input_evidence() ||
       transition_before != book.transition_sequence()) {
     return {.failure = ListingViewFailure::SourceCutChanged};
   }
@@ -612,16 +704,17 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       state_->accepted_bundle
           ? std::optional(state_->accepted_bundle->bundle_id)
           : std::nullopt;
-  const auto canonical =
-      canonical_view_bytes(state_->config, input, transition_before, bids, asks,
-                           top, trades, quality_before, prior);
+  const auto canonical = canonical_view_bytes(
+      state_->config, input, transition_before, bids, asks, top, trades,
+      quality_before, book_input_before, prior);
   const auto checksum = contracts::sha256(canonical);
   const auto identity = view_id(checksum);
   if (!identity)
     return {.failure = ListingViewFailure::IdentityDerivationFailed};
 
-  const auto bundle_canonical =
-      canonical_bundle_bytes(state_->config, input, *identity, prior_bundle);
+  const auto bundle_canonical = canonical_bundle_bytes(
+      state_->config, input, *identity, quality_before.logical_time_nanoseconds,
+      prior_bundle);
   const auto bundle_checksum = contracts::sha256(bundle_canonical);
   const auto bundle_identity = view_id(bundle_checksum);
   if (!bundle_identity)
@@ -651,6 +744,7 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .top = top,
       .recent_trades = std::move(trades),
       .quality = quality_before,
+      .last_book_input = book_input_before,
       .prior_view_id = prior,
       .view_schema_version = state_->config.view_schema_version,
       .capability_version = state_->config.capability_version,
@@ -663,26 +757,43 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .bundle_id = *bundle_identity,
       .run_id = state_->config.run_id,
       .run_input_sequence = input.lineage.run_input_sequence(),
+      .causing_selection_id = input.selection_id,
+      .causing_event_id = input.selected_event_id,
+      .listing_views = {{state_->config.listing_id, accepted->view_id}},
       .listing_id = state_->config.listing_id,
       .listing_view_id = accepted->view_id,
+      .run_control_cursor =
+          *find_cursor(input.lineage, state_->config.run_control_stream_id),
+      .run_timer_cursor =
+          *find_cursor(input.lineage, state_->config.run_timer_stream_id),
+      .reference_cursor =
+          *find_cursor(input.lineage, state_->config.reference_stream_id),
+      .logical_time_nanoseconds = quality_before.logical_time_nanoseconds,
       .selection_semantic_checksum = input.selection_semantic_checksum,
       .merge_policy_version = input.merge_policy_version,
       .configuration_epoch = input.configuration_epoch,
       .effective_control_position = input.effective_control_position,
       .prior_bundle_id = prior_bundle,
       .view_schema_version = state_->config.view_schema_version,
+      .bundle_schema_version = state_->config.bundle_schema_version,
+      .registry_snapshot_version =
+          state_->config.dispatcher_config.registry_snapshot_version,
+      .arithmetic_version = state_->config.arithmetic_version,
       .canonicalization_version = state_->config.canonicalization_version,
+      .identity_policy_version = state_->config.identity_policy_version,
       .semantic_checksum = bundle_checksum,
   });
   state_->accepted = accepted;
   state_->accepted_bundle = bundle;
   state_->accepted_history.push_back({input, accepted, bundle});
+  state_->dispatcher_cursor =
+      input.dispatch_selection.post_selection_cursors.front();
+  state_->dispatcher_control_cursor = input.dispatch_selection.control_cursor;
   state_->configuration_epoch = input.configuration_epoch;
   state_->effective_control_position = input.effective_control_position;
   state_->publication_state = ViewPublicationState::NotPublished;
   state_->active_attempt_id.reset();
   state_->active_attempt_number = 0;
-  state_->publication_history.clear();
   return {.view = std::move(accepted), .bundle = std::move(bundle)};
 }
 

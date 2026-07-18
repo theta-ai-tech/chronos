@@ -49,6 +49,13 @@ market::L2Book make_book() {
           .value();
   const auto applied = book.apply_snapshot({
       .listing_id = id<contracts::ListingId>(1),
+      .input_evidence =
+          market::L2InputEvidence{
+              .event_id = id<contracts::EventId>(23),
+              .semantic_checksum =
+                  contracts::sha256(std::vector<std::byte>{std::byte{1}}),
+              .kind = market::L2InputKind::Snapshot,
+          },
       .bids = {{.price = contracts::Price::from_units(100, version(2)).value(),
                 .quantity =
                     contracts::Quantity::from_units(2, version(3)).value()}},
@@ -174,6 +181,8 @@ publisher_config(std::size_t maximum_transitions = 8,
       .transition_policy_version = version(34),
       .arithmetic_version = version(35),
       .canonicalization_version = version(36),
+      .bundle_schema_version = version(40),
+      .identity_policy_version = version(41),
       .maximum_publication_transitions = maximum_transitions,
       .maximum_retained_views = maximum_views,
   };
@@ -262,6 +271,15 @@ void apply_book_delta(market::L2Book &book, market::ListingAuxState &auxiliary,
   if (!book
            .apply_delta({
                .listing_id = id<contracts::ListingId>(1),
+               .input_evidence =
+                   market::L2InputEvidence{
+                       .event_id = id<contracts::EventId>(
+                           static_cast<std::uint8_t>(40 + run_sequence)),
+                       .semantic_checksum =
+                           contracts::sha256(std::vector<std::byte>{
+                               static_cast<std::byte>(run_sequence & 0xffU)}),
+                       .kind = market::L2InputKind::Delta,
+                   },
                .bid_changes = {{
                    .price =
                        contracts::Price::from_units(100, version(2)).value(),
@@ -326,6 +344,18 @@ TEST_CASE("accepted view is one immutable complete lineage cut") {
   CHECK(result.view == publisher.accepted_view());
   CHECK(result.bundle == publisher.accepted_bundle());
   CHECK(result.bundle->listing_view_id == result.view->view_id);
+  CHECK(result.bundle->causing_selection_id ==
+        result.view->causing_selection_id);
+  CHECK(result.bundle->causing_event_id == result.view->causing_event_id);
+  CHECK(result.bundle->listing_views.size() == 1);
+  CHECK(result.bundle->run_control_cursor == origin(12));
+  CHECK(result.bundle->run_timer_cursor == origin(13));
+  CHECK(result.bundle->reference_cursor == origin(10));
+  CHECK(result.bundle->logical_time_nanoseconds == 100);
+  CHECK(result.bundle->bundle_schema_version == version(40));
+  CHECK(result.bundle->registry_snapshot_version == version(39));
+  CHECK(result.bundle->arithmetic_version == version(35));
+  CHECK(result.bundle->identity_policy_version == version(41));
   CHECK(!publisher.published_view());
   CHECK(!publisher.published_bundle());
   CHECK(result.view->lineage.cursors().size() == required_streams().size());
@@ -444,7 +474,7 @@ TEST_CASE("incomplete mismatched and stale cuts fail before acceptance") {
 
   auto wrong_sequence = cut_input(2);
   CHECK(publisher.accept_cut(wrong_sequence, book, auxiliary).failure ==
-        market::ListingViewFailure::RunInputMismatch);
+        market::ListingViewFailure::InvalidSelectionEvidence);
   const std::array partial_required = {id<contracts::StreamId>(4)};
   const std::array partial_cursors = {origin(4)};
   auto incomplete = cut_input();
@@ -491,7 +521,7 @@ TEST_CASE("book content cannot advance beyond its lineage proof") {
             })
             .ok());
   CHECK(publisher.accept_cut(cut_input(), book, auxiliary).failure ==
-        market::ListingViewFailure::BookStateMismatch);
+        market::ListingViewFailure::InvalidSelectionEvidence);
 }
 
 TEST_CASE("feature consumer sees only exact published view") {
@@ -674,6 +704,27 @@ TEST_CASE("next cut waits for prior acknowledgement and links ancestry") {
 
   acknowledge(publisher, first->view_id, first_result.bundle->bundle_id);
 
+  auto jumped = second_input;
+  jumped.dispatch_candidate.event_position =
+      contracts::EventPosition::from(id<contracts::StreamId>(14), 1, 100)
+          .value();
+  jumped.dispatch_selection.selected_event_position =
+      jumped.dispatch_candidate.event_position;
+  jumped.dispatch_selection.pre_selection_cursors = {cursor(14, 99)};
+  jumped.dispatch_selection.post_selection_cursors = {cursor(14, 100)};
+  jumped.dispatch_selection.selection_semantic_checksum =
+      dispatch::derive_run_input_selection_checksum(
+          publisher_config().dispatcher_config, jumped.dispatch_selection,
+          jumped.dispatch_candidate);
+  jumped.dispatch_selection.selection_id =
+      dispatch::derive_run_input_selection_id(
+          jumped.dispatch_selection.selection_semantic_checksum);
+  jumped.selection_id = jumped.dispatch_selection.selection_id;
+  jumped.selection_semantic_checksum =
+      jumped.dispatch_selection.selection_semantic_checksum;
+  CHECK(publisher.accept_cut(jumped, book, auxiliary).failure ==
+        market::ListingViewFailure::InvalidSelectionEvidence);
+
   const auto second_result =
       publisher.accept_cut(second_input, book, auxiliary);
   CHECK(second_result.ok());
@@ -683,10 +734,12 @@ TEST_CASE("next cut waits for prior acknowledgement and links ancestry") {
   CHECK(second->prior_view_id == first->view_id);
   CHECK(second_result.bundle->prior_bundle_id ==
         first_result.bundle->bundle_id);
+  CHECK(publisher.publication_history().size() == 3);
   CHECK(second->view_id != first->view_id);
   CHECK(second->bids.front().quantity.units() == 4);
   CHECK(first->bids.front().quantity.units() == 2);
   acknowledge(publisher, second->view_id, second_result.bundle->bundle_id);
+  CHECK(publisher.publication_history().size() == 6);
   const auto historical = publisher.accept_cut(cut_input(), book, auxiliary);
   CHECK(historical.view == first_result.view);
   CHECK(historical.bundle == first_result.bundle);

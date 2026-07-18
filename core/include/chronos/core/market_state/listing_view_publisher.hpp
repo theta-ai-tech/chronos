@@ -13,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace chronos::core::market_state {
@@ -69,6 +70,8 @@ struct ListingViewPublisherConfig final {
   contracts::VersionRef transition_policy_version;
   contracts::VersionRef arithmetic_version;
   contracts::VersionRef canonicalization_version;
+  contracts::VersionRef bundle_schema_version;
+  contracts::VersionRef identity_policy_version;
   std::size_t maximum_publication_transitions{};
   std::size_t maximum_retained_views{};
 };
@@ -110,6 +113,7 @@ struct ListingStateView final {
   L2TopOfBook top;
   std::vector<RecentTrade> recent_trades;
   ListingQualityState quality;
+  std::optional<L2InputEvidence> last_book_input;
   std::optional<contracts::StateViewId> prior_view_id;
   contracts::VersionRef view_schema_version;
   contracts::VersionRef capability_version;
@@ -125,15 +129,27 @@ struct StateViewBundle final {
   contracts::StateViewId bundle_id;
   contracts::RunId run_id;
   std::uint64_t run_input_sequence{};
+  contracts::RunInputSelectionId causing_selection_id;
+  contracts::EventId causing_event_id;
+  std::vector<std::pair<contracts::ListingId, contracts::StateViewId>>
+      listing_views;
   contracts::ListingId listing_id;
   contracts::StateViewId listing_view_id;
+  contracts::StreamCursor run_control_cursor;
+  contracts::StreamCursor run_timer_cursor;
+  contracts::StreamCursor reference_cursor;
+  std::int64_t logical_time_nanoseconds{};
   contracts::Sha256Digest selection_semantic_checksum;
   contracts::VersionRef merge_policy_version;
   std::uint64_t configuration_epoch{};
   std::optional<std::uint64_t> effective_control_position;
   std::optional<contracts::StateViewId> prior_bundle_id;
   contracts::VersionRef view_schema_version;
+  contracts::VersionRef bundle_schema_version;
+  contracts::VersionRef registry_snapshot_version;
+  contracts::VersionRef arithmetic_version;
   contracts::VersionRef canonicalization_version;
+  contracts::VersionRef identity_policy_version;
   contracts::Sha256Digest semantic_checksum;
 
   bool operator==(const StateViewBundle &) const = default;
