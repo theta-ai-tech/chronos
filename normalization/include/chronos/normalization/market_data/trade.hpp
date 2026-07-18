@@ -120,7 +120,7 @@ struct NormalizedTradeFact final {
   std::string normalizer_version;
 
   [[nodiscard]] constexpr std::string_view event_type() const noexcept {
-    return "market.trade.observed";
+    return "market.trade.observation.executed";
   }
 
   bool operator==(const NormalizedTradeFact &) const = default;

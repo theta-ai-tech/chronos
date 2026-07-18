@@ -1,5 +1,7 @@
 #include "chronos/adapters/market_data/bybit_book_decoder.hpp"
 #include "chronos/adapters/market_data/bybit_trade_decoder.hpp"
+#include "chronos/core/dispatch/run_input_dispatcher.hpp"
+#include "chronos/core/market_state/listing_view_publisher.hpp"
 #include "chronos/normalization/market_data/book_normalizer.hpp"
 #include "chronos/normalization/market_data/trade_normalizer.hpp"
 #include "chronos/runtime/datasets/replay.hpp"
@@ -7,6 +9,7 @@
 #include "microtest.hpp"
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -19,6 +22,8 @@ namespace {
 namespace adapter = chronos::adapters::market_data;
 namespace sdk = chronos::adapters::sdk;
 namespace contracts = chronos::contracts;
+namespace dispatch = chronos::core::dispatch;
+namespace state = chronos::core::market_state;
 namespace reference = chronos::core::reference_data;
 namespace market = chronos::normalization::market_data;
 namespace replay = chronos::runtime::datasets;
@@ -521,9 +526,9 @@ concatenate(const std::vector<replay::NormalizedFactRecord> &records) {
   return output;
 }
 
-std::string golden_digest() {
+std::string golden_digest(std::string_view fixture_name) {
   const auto path = std::filesystem::path(CHRONOS_SOURCE_DIR) / "tests" /
-                    "replay" / "fixtures" / "m3-normalized-stream.sha256";
+                    "replay" / "fixtures" / fixture_name;
   std::ifstream input(path, std::ios::binary);
   if (!input)
     throw std::runtime_error("normalized stream golden is missing");
@@ -623,9 +628,565 @@ private:
   std::size_t accepted_{};
 };
 
+template <typename Id> Id digest_id(const contracts::Sha256Digest &checksum) {
+  typename Id::bytes_type value{};
+  std::copy_n(checksum.bytes.begin(), value.size(), value.begin());
+  return Id::from_bytes(value).value();
+}
+
+contracts::StreamCursor origin(std::uint8_t stream_seed) {
+  return contracts::StreamCursor::at_origin(
+             id<contracts::StreamId>(stream_seed), 1)
+      .value();
+}
+
+contracts::StreamCursor cursor(std::uint8_t stream_seed,
+                               std::uint64_t sequence) {
+  return contracts::StreamCursor::at_sequence(
+             id<contracts::StreamId>(stream_seed), 1, sequence)
+      .value();
+}
+
+class GoldenDispatchPersistence final
+    : public dispatch::RunInputSelectionPersistence {
+public:
+  dispatch::RunInputRecoveryLoad
+  load_recovery_state(const dispatch::RunInputDispatcherConfig &) override {
+    return {.success = true};
+  }
+
+  bool commit_control_reservation(
+      const dispatch::ControlBoundaryReservation &) override {
+    return true;
+  }
+
+  bool commit_control_visibility(
+      const dispatch::ControlBoundaryReservation &) override {
+    return true;
+  }
+
+  bool commit_selection(const dispatch::RunInputSelectionRecord &,
+                        const dispatch::RunInputCandidate &) override {
+    return true;
+  }
+
+  bool commit_publication_transition(
+      const dispatch::PublicationTransition &) override {
+    return true;
+  }
+};
+
+class GoldenEligibilityRegistry final
+    : public dispatch::RunInputEligibilityRegistry {
+public:
+  explicit GoldenEligibilityRegistry(contracts::VersionRef version)
+      : version_(version) {}
+
+  bool is_run_input_eligible(
+      std::string_view event_type,
+      contracts::VersionRef registry_snapshot_version) const override {
+    return registry_snapshot_version == version_ &&
+           (event_type == "market.book.observation.snapshot" ||
+            event_type == "market.book.observation.delta" ||
+            event_type == "market.trade.continuity.synchronized" ||
+            event_type == "market.trade.observation.executed");
+  }
+
+private:
+  contracts::VersionRef version_;
+};
+
+class GoldenDispatchConsumer final : public dispatch::RunInputConsumer {
+public:
+  contracts::ConsumerBoundaryId boundary_id() const noexcept override {
+    return id<contracts::ConsumerBoundaryId>(51);
+  }
+
+  dispatch::ConsumerDisposition
+  accept(const dispatch::RunInputSelectionRecord &,
+         const dispatch::RunInputCandidate &,
+         contracts::PublicationAttemptId) override {
+    return dispatch::ConsumerDisposition::Accepted;
+  }
+};
+
+struct ViewReplayResult final {
+  std::vector<state::ListingStateView> views;
+  std::vector<state::StateViewBundle> bundles;
+
+  bool operator==(const ViewReplayResult &) const = default;
+};
+
+class MarketStateReplaySink final : public replay::ReplayDispatchSink {
+public:
+  MarketStateReplaySink(const std::vector<Fact> &facts,
+                        const market::NormalizedBookFact &initial,
+                        contracts::RunId run_id)
+      : facts_(facts), registry_(version(61, 1)),
+        dispatcher_config_(dispatcher_config(run_id)),
+        dispatcher_(*dispatch::RunInputDispatcher::create(
+            dispatcher_config_, persistence_, registry_)),
+        book_(*state::L2Book::create({
+            .listing_id = initial.listing_id,
+            .price_definition = price_definition(initial),
+            .quantity_definition = quantity_definition(initial),
+            .maximum_levels_per_side = 64,
+            .maximum_changes_per_delta = 64,
+        })),
+        auxiliary_(*state::ListingAuxState::create({
+            .listing_id = initial.listing_id,
+            .price_definition = price_definition(initial),
+            .quantity_definition = quantity_definition(initial),
+            .trade_stream_id = id<contracts::StreamId>(41),
+            .trade_stream_epoch = 1,
+            .trade_continuity_stream_id = id<contracts::StreamId>(42),
+            .trade_continuity_stream_epoch = 1,
+            .book_stream_id = id<contracts::StreamId>(43),
+            .book_stream_epoch = 1,
+            .initial_logical_time_nanoseconds = 1000,
+            .book_freshness_deadline_nanoseconds = 100,
+            .trade_freshness_deadline_nanoseconds = 100,
+            .freshness_policy_version = version(62, 1),
+            .trade_window_policy_version = version(63, 1),
+            .accepted_source_clock_domain =
+                initial.source_event_time.clock_domain_id(),
+            .accepted_source_clock_class =
+                initial.source_event_time.clock_class(),
+            .required_source_time_quality = state::SourceTimeQuality::Exact,
+            .correction_policy = state::TradeCorrectionPolicy::Reject,
+            .trade_window_policy = state::TradeWindowPolicy::AcceptedCount,
+            .recent_trade_capacity = 8,
+        })),
+        publisher_(*state::ListingViewPublisher::create(
+            publisher_config(run_id, initial, dispatcher_config_))),
+        canonical_instrument_id_(initial.canonical_instrument_id),
+        reference_snapshot_version_(initial.reference_snapshot_version),
+        listing_definition_version_(initial.listing_version),
+        reference_configuration_lineage_version_(
+            initial.reference_selection
+                .reference_configuration_lineage_version) {}
+
+  bool accept(const replay::ReplayDispatchInput &input) override {
+    if (input.replay_class != replay::ReplayClass::NormalizedFact ||
+        input.replay_ordinal == 0 || input.replay_ordinal > facts_.size()) {
+      return false;
+    }
+    const auto index = static_cast<std::size_t>(input.replay_ordinal - 1);
+    if (std::holds_alternative<market::NormalizedTradeFact>(facts_[index]) &&
+        !trade_continuity_ready_ && !dispatch_trade_continuity()) {
+      return false;
+    }
+    dispatch::RunInputCandidate candidate{
+        .event_id = digest_id<contracts::EventId>(input.semantic_checksum),
+        .event_type = std::string(input.event_type),
+        .event_position = contracts::EventPosition::from(
+                              dispatcher_config_.input_stream_id,
+                              dispatcher_config_.input_stream_epoch,
+                              dispatcher_.current_run_input_sequence() + 1)
+                              .value(),
+        .semantic_payload = std::vector<std::byte>(
+            input.semantic_payload.begin(), input.semantic_payload.end()),
+        .semantic_checksum = input.semantic_checksum,
+    };
+    return dispatch_fact(candidate, facts_[index]);
+  }
+
+  [[nodiscard]] const ViewReplayResult &result() const noexcept {
+    return result_;
+  }
+
+private:
+  static const market::BookSnapshotObservation &
+  initial_snapshot(const market::NormalizedBookFact &initial) {
+    return std::get<market::BookSnapshotObservation>(initial.payload);
+  }
+
+  static contracts::VersionRef
+  price_definition(const market::NormalizedBookFact &initial) {
+    return initial_snapshot(initial).bids.front().price.definition_ref();
+  }
+
+  static contracts::VersionRef
+  quantity_definition(const market::NormalizedBookFact &initial) {
+    return initial_snapshot(initial).bids.front().quantity.definition_ref();
+  }
+
+  static dispatch::RunInputDispatcherConfig
+  dispatcher_config(contracts::RunId run_id) {
+    return {
+        .run_id = run_id,
+        .input_stream_id = id<contracts::StreamId>(31),
+        .input_stream_epoch = 1,
+        .control_stream_id = id<contracts::StreamId>(32),
+        .control_stream_epoch = 1,
+        .consumer_boundary_id = id<contracts::ConsumerBoundaryId>(51),
+        .merge_policy_version = version(60, 1),
+        .registry_snapshot_version = version(61, 1),
+        .initial_configuration_epoch = 1,
+        .maximum_payload_bytes = 1U << 20U,
+    };
+  }
+
+  static std::vector<contracts::StreamId> required_streams() {
+    return {id<contracts::StreamId>(41), id<contracts::StreamId>(42),
+            id<contracts::StreamId>(43), id<contracts::StreamId>(44),
+            id<contracts::StreamId>(45), id<contracts::StreamId>(46),
+            id<contracts::StreamId>(47)};
+  }
+
+  static contracts::StateLineage initial_lineage(contracts::RunId run_id) {
+    const auto required = required_streams();
+    const std::array cursors = {origin(41), origin(42), origin(43), origin(44),
+                                origin(45), origin(46), origin(47)};
+    return contracts::StateLineage::from(run_id, 0, required, cursors).value();
+  }
+
+  static state::ListingViewPublisherConfig publisher_config(
+      contracts::RunId run_id, const market::NormalizedBookFact &initial,
+      const dispatch::RunInputDispatcherConfig &dispatcher_config) {
+    return {
+        .run_id = run_id,
+        .listing_id = initial.listing_id,
+        .canonical_instrument_id = initial.canonical_instrument_id,
+        .reference_snapshot_version = initial.reference_snapshot_version,
+        .listing_definition_version = initial.listing_version,
+        .reference_configuration_lineage_version =
+            initial.reference_selection.reference_configuration_lineage_version,
+        .required_streams = required_streams(),
+        .initial_lineage = initial_lineage(run_id),
+        .book_stream_id = id<contracts::StreamId>(43),
+        .trade_stream_id = id<contracts::StreamId>(41),
+        .trade_continuity_stream_id = id<contracts::StreamId>(42),
+        .reference_stream_id = id<contracts::StreamId>(44),
+        .market_control_stream_id = id<contracts::StreamId>(45),
+        .run_control_stream_id = id<contracts::StreamId>(46),
+        .run_timer_stream_id = id<contracts::StreamId>(47),
+        .feature_boundary_id = id<contracts::ConsumerBoundaryId>(50),
+        .dispatcher_config = dispatcher_config,
+        .merge_policy_version = version(60, 1),
+        .initial_configuration_epoch = 1,
+        .view_schema_version = version(64, 1),
+        .capability_version = version(65, 1),
+        .transition_policy_version = version(66, 1),
+        .arithmetic_version = version(67, 1),
+        .canonicalization_version = version(68, 1),
+        .bundle_schema_version = version(69, 1),
+        .identity_policy_version = version(70, 1),
+        .maximum_publication_transitions = 15,
+        .maximum_retained_views = 5,
+    };
+  }
+
+  bool dispatch_trade_continuity() {
+    auto payload = bytes("m4.6-trade-continuity-v1");
+    dispatch::RunInputCandidate candidate{
+        .event_id = id<contracts::EventId>(71),
+        .event_type = "market.trade.continuity.synchronized",
+        .event_position = contracts::EventPosition::from(
+                              dispatcher_config_.input_stream_id, 1,
+                              dispatcher_.current_run_input_sequence() + 1)
+                              .value(),
+        .semantic_payload = payload,
+        .semantic_checksum = contracts::sha256(payload),
+    };
+    const auto dispatched = dispatcher_.dispatch(candidate, consumer_);
+    if (!dispatched.ok())
+      return false;
+    const auto role_position =
+        contracts::EventPosition::from(id<contracts::StreamId>(42), 1, 0)
+            .value();
+    const state::TradeContinuityProof proof{
+        .boundary_event_id = candidate.event_id,
+        .boundary_cursor = cursor(42, 0),
+        .prior_trade_cursor = origin(41),
+        .recovered_trade_cursor = origin(41),
+        .fidelity = state::TradeFidelity::Lossless,
+    };
+    if (!auxiliary_
+             .apply_quality_input({
+                 .event_id = candidate.event_id,
+                 .input_semantic_checksum = candidate.semantic_checksum,
+                 .listing_id = book_.listing_id(),
+                 .kind = state::ListingQualityInputKind::TradeSynchronized,
+                 .run_input_sequence = dispatched.selection->run_input_sequence,
+                 .logical_time_nanoseconds =
+                     logical_time(dispatched.selection->run_input_sequence),
+                 .trade_proof = proof,
+             })
+             .ok()) {
+      return false;
+    }
+    trade_continuity_ready_ =
+        publish(candidate, *dispatched.selection, role_position, 42, 0);
+    return trade_continuity_ready_;
+  }
+
+  bool dispatch_fact(const dispatch::RunInputCandidate &candidate,
+                     const Fact &fact) {
+    const auto dispatched = dispatcher_.dispatch(candidate, consumer_);
+    if (!dispatched.ok())
+      return false;
+    const auto run_sequence = dispatched.selection->run_input_sequence;
+    if (const auto *book = std::get_if<market::NormalizedBookFact>(&fact)) {
+      const auto role_sequence = next_book_sequence_++;
+      if (!apply_book(*book, candidate, run_sequence, role_sequence))
+        return false;
+      const auto role_position =
+          contracts::EventPosition::from(id<contracts::StreamId>(43), 1,
+                                         role_sequence)
+              .value();
+      return publish(candidate, *dispatched.selection, role_position, 43,
+                     role_sequence);
+    }
+    const auto &trade = std::get<market::NormalizedTradeFact>(fact);
+    const auto role_sequence = next_trade_sequence_++;
+    if (!apply_trade(trade, candidate, run_sequence, role_sequence))
+      return false;
+    const auto role_position =
+        contracts::EventPosition::from(id<contracts::StreamId>(41), 1,
+                                       role_sequence)
+            .value();
+    return publish(candidate, *dispatched.selection, role_position, 41,
+                   role_sequence);
+  }
+
+  bool apply_book(const market::NormalizedBookFact &fact,
+                  const dispatch::RunInputCandidate &candidate,
+                  std::uint64_t run_sequence, std::uint64_t role_sequence) {
+    const state::L2InputEvidence evidence{
+        .event_id = candidate.event_id,
+        .semantic_checksum = candidate.semantic_checksum,
+        .kind = role_sequence == 0 ? state::L2InputKind::Snapshot
+                                   : state::L2InputKind::Delta,
+    };
+    if (const auto *snapshot =
+            std::get_if<market::BookSnapshotObservation>(&fact.payload)) {
+      std::vector<state::L2Level> bids;
+      std::vector<state::L2Level> asks;
+      for (const auto &level : snapshot->bids)
+        bids.push_back({level.price, level.quantity});
+      for (const auto &level : snapshot->asks)
+        asks.push_back({level.price, level.quantity});
+      if (!book_
+               .apply_snapshot({
+                   .listing_id = fact.listing_id,
+                   .input_evidence = evidence,
+                   .bids = std::move(bids),
+                   .asks = std::move(asks),
+                   .bid_completeness = state::L2SideCompleteness::Complete,
+                   .ask_completeness = state::L2SideCompleteness::Complete,
+               })
+               .ok()) {
+        return false;
+      }
+      return auxiliary_
+          .apply_quality_input(
+              {
+                  .event_id = candidate.event_id,
+                  .input_semantic_checksum = candidate.semantic_checksum,
+                  .listing_id = fact.listing_id,
+                  .kind = state::ListingQualityInputKind::BookSynchronized,
+                  .run_input_sequence = run_sequence,
+                  .logical_time_nanoseconds = logical_time(run_sequence),
+                  .book_proof =
+                      state::BookSynchronizationProof{
+                          .snapshot_event_id = candidate.event_id,
+                          .snapshot_cursor = cursor(43, role_sequence),
+                          .applied_through_cursor = cursor(43, role_sequence),
+                          .l2_transition_sequence = book_.transition_sequence(),
+                          .bridge_complete = true,
+                          .reference_compatible = true,
+                      },
+              },
+              &book_)
+          .ok();
+    }
+    const auto &delta = std::get<market::BookDeltaObservation>(fact.payload);
+    const auto changes = [](const auto &source) {
+      std::vector<state::L2Change> result;
+      for (const auto &change : source) {
+        result.push_back({
+            .price = change.price,
+            .quantity = change.quantity,
+            .operation = change.operation == market::BookLevelOperation::Delete
+                             ? state::L2Operation::Delete
+                             : state::L2Operation::SetAbsolute,
+        });
+      }
+      return result;
+    };
+    if (!book_
+             .apply_delta({
+                 .listing_id = fact.listing_id,
+                 .input_evidence = evidence,
+                 .bid_changes = changes(delta.bid_changes),
+                 .ask_changes = changes(delta.ask_changes),
+             })
+             .ok()) {
+      return false;
+    }
+    auto proof = *auxiliary_.quality().last_book_proof;
+    proof.applied_through_cursor = cursor(43, role_sequence);
+    proof.l2_transition_sequence = book_.transition_sequence();
+    return auxiliary_
+        .apply_quality_input(
+            {
+                .event_id = candidate.event_id,
+                .input_semantic_checksum = candidate.semantic_checksum,
+                .listing_id = fact.listing_id,
+                .kind = state::ListingQualityInputKind::BookEvidenceObserved,
+                .run_input_sequence = run_sequence,
+                .logical_time_nanoseconds = logical_time(run_sequence),
+                .book_proof = proof,
+            },
+            &book_)
+        .ok();
+  }
+
+  bool apply_trade(const market::NormalizedTradeFact &fact,
+                   const dispatch::RunInputCandidate &candidate,
+                   std::uint64_t run_sequence, std::uint64_t role_sequence) {
+    return auxiliary_
+        .apply_trade({
+            .event_id = candidate.event_id,
+            .input_semantic_checksum = candidate.semantic_checksum,
+            .source_event_id = fact.source_lineage.source_event_id,
+            .listing_id = fact.listing_id,
+            .cursor = cursor(41, role_sequence),
+            .source_event_time = fact.source_event_time,
+            .source_time_quality = state::SourceTimeQuality::Exact,
+            .fidelity = state::TradeFidelity::Lossless,
+            .price = fact.price,
+            .quantity = fact.quantity,
+            .aggressor_side = fact.aggressor_side == market::AggressorSide::Buy
+                                  ? state::TradeAggressorSide::Buy
+                                  : state::TradeAggressorSide::Sell,
+            .run_input_sequence = run_sequence,
+            .logical_time_nanoseconds = logical_time(run_sequence),
+        })
+        .ok();
+  }
+
+  bool publish(const dispatch::RunInputCandidate &candidate,
+               const dispatch::RunInputSelectionRecord &selection,
+               contracts::EventPosition role_position,
+               std::uint8_t role_stream_seed, std::uint64_t role_sequence) {
+    for (auto &entry : lineage_cursors_) {
+      if (entry.stream_id() == id<contracts::StreamId>(role_stream_seed))
+        entry = cursor(role_stream_seed, role_sequence);
+    }
+    const auto lineage =
+        contracts::StateLineage::from(dispatcher_config_.run_id,
+                                      selection.run_input_sequence,
+                                      required_streams(), lineage_cursors_)
+            .value();
+    const auto accepted = publisher_.accept_cut(
+        {
+            .selection_id = selection.selection_id,
+            .dispatch_selection = selection,
+            .dispatch_candidate = candidate,
+            .selected_event_id = candidate.event_id,
+            .selected_event_type = candidate.event_type,
+            .selected_event_position = role_position,
+            .input_semantic_checksum = candidate.semantic_checksum,
+            .selection_semantic_checksum =
+                selection.selection_semantic_checksum,
+            .merge_policy_version = selection.merge_policy_version,
+            .configuration_epoch = selection.active_configuration_epoch,
+            .canonical_instrument_id = canonical_instrument_id_,
+            .reference_snapshot_version = reference_snapshot_version_,
+            .listing_definition_version = listing_definition_version_,
+            .reference_configuration_lineage_version =
+                reference_configuration_lineage_version_,
+            .lineage = lineage,
+        },
+        book_, auxiliary_);
+    if (!accepted.ok() || !accepted.view || !accepted.bundle)
+      return false;
+    const auto attempt = id<contracts::PublicationAttemptId>(
+        static_cast<std::uint8_t>(80 + selection.run_input_sequence));
+    const auto transition = [&](state::ViewPublicationState from,
+                                state::ViewPublicationState to) {
+      return publisher_.transition_publication({
+                 .view_id = accepted.view->view_id,
+                 .bundle_id = accepted.bundle->bundle_id,
+                 .attempt_id = attempt,
+                 .boundary_id = id<contracts::ConsumerBoundaryId>(50),
+                 .attempt_number = 1,
+                 .from = from,
+                 .to = to,
+             }) == state::ListingViewFailure::None;
+    };
+    if (!transition(state::ViewPublicationState::NotPublished,
+                    state::ViewPublicationState::PublicationInProgress) ||
+        !transition(state::ViewPublicationState::PublicationInProgress,
+                    state::ViewPublicationState::PublishedToFeatureBoundary) ||
+        !transition(state::ViewPublicationState::PublishedToFeatureBoundary,
+                    state::ViewPublicationState::FeatureConsumerAccepted)) {
+      return false;
+    }
+    result_.views.push_back(*accepted.view);
+    result_.bundles.push_back(*accepted.bundle);
+    return true;
+  }
+
+  static std::int64_t logical_time(std::uint64_t run_sequence) {
+    return static_cast<std::int64_t>(1000 + run_sequence);
+  }
+
+  const std::vector<Fact> &facts_;
+  GoldenDispatchPersistence persistence_;
+  GoldenEligibilityRegistry registry_;
+  GoldenDispatchConsumer consumer_;
+  dispatch::RunInputDispatcherConfig dispatcher_config_;
+  dispatch::RunInputDispatcher dispatcher_;
+  state::L2Book book_;
+  state::ListingAuxState auxiliary_;
+  state::ListingViewPublisher publisher_;
+  std::array<contracts::StreamCursor, 7> lineage_cursors_{
+      origin(41), origin(42), origin(43), origin(44),
+      origin(45), origin(46), origin(47)};
+  contracts::CanonicalInstrumentId canonical_instrument_id_;
+  contracts::VersionRef reference_snapshot_version_;
+  contracts::VersionRef listing_definition_version_;
+  contracts::VersionRef reference_configuration_lineage_version_;
+  std::uint64_t next_book_sequence_{};
+  std::uint64_t next_trade_sequence_{};
+  bool trade_continuity_ready_{};
+  ViewReplayResult result_;
+};
+
+ViewReplayResult
+replay_market_state(const NormalizedRun &run,
+                    const replay::NormalizedFactDataset &data,
+                    const replay::ReplayRunManifest &manifest) {
+  const auto &initial = std::get<market::NormalizedBookFact>(run.facts.front());
+  MarketStateReplaySink sink(run.facts, initial, manifest.run_id());
+  const auto replayed = replay::replay_normalized_facts(manifest, data, sink);
+  if (!replayed.ok())
+    throw std::runtime_error("market-state replay failed");
+  return sink.result();
+}
+
+contracts::Sha256Digest view_replay_digest(const ViewReplayResult &result) {
+  std::vector<std::byte> bytes;
+  bytes.reserve(result.views.size() * 96);
+  for (std::size_t index = 0; index < result.views.size(); ++index) {
+    for (const auto byte : result.views[index].view_id.bytes())
+      bytes.push_back(static_cast<std::byte>(byte));
+    for (const auto byte : result.views[index].semantic_checksum.bytes)
+      bytes.push_back(static_cast<std::byte>(byte));
+    for (const auto byte : result.bundles[index].bundle_id.bytes())
+      bytes.push_back(static_cast<std::byte>(byte));
+    for (const auto byte : result.bundles[index].semantic_checksum.bytes)
+      bytes.push_back(static_cast<std::byte>(byte));
+  }
+  return contracts::sha256(bytes);
+}
+
 } // namespace
 
-TEST_CASE("captured session rerun is byte-for-semantics identical") {
+TEST_CASE("captured session rerun preserves normalized bytes and views") {
   const auto dataset = captured_session();
   CHECK(dataset.ok());
   const auto first = normalize_session(dataset);
@@ -638,7 +1199,8 @@ TEST_CASE("captured session rerun is byte-for-semantics identical") {
 
   const auto normalized =
       replay::NormalizedFactDataset::create(first.records).value();
-  CHECK(normalized.identity().hex() == golden_digest());
+  CHECK(normalized.identity().hex() ==
+        golden_digest("m3-normalized-stream.sha256"));
   const replay::ReplayVersionPins faithful_pins{
       .provider_version = "capture-order-provider-v1",
       .merge_policy_version = "single-stream-capture-order-v1",
@@ -687,4 +1249,43 @@ TEST_CASE("captured session rerun is byte-for-semantics identical") {
   CHECK(replayed.ok());
   CHECK(replayed.dispatched_count == 4);
   CHECK(sink.output == semantic_stream);
+
+  const auto first_views = replay_market_state(first, normalized, manifest);
+  const auto second_views = replay_market_state(second, normalized, manifest);
+  CHECK(first_views == second_views);
+  CHECK(first_views.views.size() == 5);
+  CHECK(first_views.bundles.size() == 5);
+  for (std::size_t index = 0; index < first_views.views.size(); ++index) {
+    CHECK(first_views.bundles[index].listing_view_id ==
+          first_views.views[index].view_id);
+    CHECK(first_views.bundles[index].run_input_sequence == index + 1);
+    if (index > 0) {
+      CHECK(first_views.views[index].prior_view_id ==
+            first_views.views[index - 1].view_id);
+      CHECK(first_views.bundles[index].prior_bundle_id ==
+            first_views.bundles[index - 1].bundle_id);
+    }
+  }
+  const auto &final_view = first_views.views.back();
+  CHECK(final_view.bids.size() == 1);
+  CHECK(final_view.bids[0].price.units() == 420002);
+  CHECK(final_view.bids[0].quantity.units() == 750);
+  CHECK(final_view.asks.size() == 2);
+  CHECK(final_view.asks[0].price.units() == 420003);
+  CHECK(final_view.asks[0].quantity.units() == 300);
+  CHECK(final_view.top.shape == state::L2BookShape::Normal);
+  CHECK(final_view.top.spread.has_value());
+  if (final_view.top.spread)
+    CHECK(final_view.top.spread->units() == 1);
+  CHECK(final_view.recent_trades.size() == 2);
+  CHECK(final_view.recent_trades[0].price.units() == 165786);
+  CHECK(final_view.recent_trades[0].quantity.units() == 2);
+  CHECK(final_view.recent_trades[1].price.units() == 165785);
+  CHECK(final_view.recent_trades[1].quantity.units() == 1);
+  CHECK(final_view.quality.book_synchronization ==
+        state::BookSynchronization::Synchronized);
+  CHECK(final_view.quality.trade_continuity ==
+        state::TradeContinuity::Continuous);
+  CHECK(view_replay_digest(first_views).hex() ==
+        golden_digest("m4-market-state-views.sha256"));
 }

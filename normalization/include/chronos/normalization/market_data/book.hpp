@@ -153,8 +153,8 @@ struct NormalizedBookFact final {
 
   [[nodiscard]] std::string_view event_type() const noexcept {
     return std::holds_alternative<BookSnapshotObservation>(payload)
-               ? "market.book.snapshot_observed"
-               : "market.book.delta_observed";
+               ? "market.book.observation.snapshot"
+               : "market.book.observation.delta";
   }
 
   bool operator==(const NormalizedBookFact &) const = default;

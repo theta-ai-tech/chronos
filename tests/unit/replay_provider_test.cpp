@@ -295,10 +295,11 @@ TEST_CASE("faithful provider dispatches verified capture order exactly") {
 
 TEST_CASE(
     "normalized provider preserves accepted fact order without decoding") {
-  const auto dataset = replay::NormalizedFactDataset::create(
-                           {fact(1, "market.book.snapshot_observed", "book"),
-                            fact(2, "market.trade.observed", "trade")})
-                           .value();
+  const auto dataset =
+      replay::NormalizedFactDataset::create(
+          {fact(1, "market.book.observation.snapshot", "book"),
+           fact(2, "market.trade.observation.executed", "trade")})
+          .value();
   const auto manifest =
       replay::ReplayRunManifest::create(id<contracts::RunId>(3),
                                         replay::ReplayClass::NormalizedFact,
@@ -308,8 +309,8 @@ TEST_CASE(
   const auto result = replay::replay_normalized_facts(manifest, dataset, sink);
   CHECK(result.ok());
   CHECK(result.dispatched_count == 2);
-  CHECK(sink.observed[0].event_type == "market.book.snapshot_observed");
-  CHECK(sink.observed[1].event_type == "market.trade.observed");
+  CHECK(sink.observed[0].event_type == "market.book.observation.snapshot");
+  CHECK(sink.observed[1].event_type == "market.trade.observation.executed");
   CHECK(sink.observed[0].normalized_position == 1);
   CHECK(sink.observed[1].normalized_position == 2);
   CHECK(sink.observed[0].source_event_id == id<contracts::SourceEventId>(21));
@@ -339,27 +340,27 @@ TEST_CASE(
 
 TEST_CASE("normalized datasets reject gaps and semantic corruption") {
   CHECK(!replay::NormalizedFactDataset::create(
-             {fact(2, "market.trade.observed", "trade")})
+             {fact(2, "market.trade.observation.executed", "trade")})
              .has_value());
-  auto corrupted = fact(1, "market.trade.observed", "trade");
+  auto corrupted = fact(1, "market.trade.observation.executed", "trade");
   corrupted.semantic_payload[0] = std::byte{'x'};
   CHECK(!replay::NormalizedFactDataset::create({std::move(corrupted)})
              .has_value());
 
-  auto missing_epoch = fact(1, "market.trade.observed", "trade");
+  auto missing_epoch = fact(1, "market.trade.observation.executed", "trade");
   missing_epoch.normalized_stream_epoch = 0;
   CHECK(!replay::NormalizedFactDataset::create({std::move(missing_epoch)})
              .has_value());
 
   CHECK(!replay::NormalizedFactDataset::create(
-             {fact(1, "market.trade.observed", "too-large")},
+             {fact(1, "market.trade.observation.executed", "too-large")},
              {.maximum_records = 1,
               .maximum_payload_bytes = 4,
               .maximum_total_payload_bytes = 4})
              .has_value());
   CHECK(!replay::NormalizedFactDataset::create(
-             {fact(1, "market.trade.observed", "1234"),
-              fact(2, "market.trade.observed", "5678")},
+             {fact(1, "market.trade.observation.executed", "1234"),
+              fact(2, "market.trade.observation.executed", "5678")},
              {.maximum_records = 2,
               .maximum_payload_bytes = 4,
               .maximum_total_payload_bytes = 7})
