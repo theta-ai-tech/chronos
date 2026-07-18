@@ -210,10 +210,11 @@ TEST_CASE("trade gap is first-class and recovery starts a new window") {
   CHECK(state.apply_quality_input(synchronized).ok());
   CHECK(state.apply_trade(trade(1, 0, 2, 101)).ok());
 
-  CHECK(state
-            .apply_quality_input(quality_input(
-                market::ListingQualityInputKind::TradeGapDetected, 3, 102))
-            .ok());
+  auto gap =
+      quality_input(market::ListingQualityInputKind::TradeGapDetected, 3, 102);
+  gap.trade_proof =
+      trade_proof(1, cursor(1, 0), cursor(1, 0), market::TradeFidelity::Lossy);
+  CHECK(state.apply_quality_input(gap).ok());
   CHECK(state.recent_trades().empty());
   CHECK(state.quality().trade_continuity == market::TradeContinuity::Gapped);
   CHECK(state.quality().trade_window_status ==
@@ -221,14 +222,15 @@ TEST_CASE("trade gap is first-class and recovery starts a new window") {
   CHECK(state.apply_trade(trade(2, 1, 4, 103)).failure ==
         market::ListingAuxFailure::InvalidTransition);
 
-  CHECK(state
-            .apply_quality_input(quality_input(
-                market::ListingQualityInputKind::TradeRecoveryStarted, 4, 103))
-            .ok());
+  auto recovery = quality_input(
+      market::ListingQualityInputKind::TradeRecoveryStarted, 4, 103);
+  recovery.trade_proof =
+      trade_proof(2, cursor(1, 0), cursor(1, 0), market::TradeFidelity::Lossy);
+  CHECK(state.apply_quality_input(recovery).ok());
   auto recovered =
       quality_input(market::ListingQualityInputKind::TradeSynchronized, 5, 104);
   recovered.trade_proof =
-      trade_proof(1, cursor(1, 0), origin(2), market::TradeFidelity::Lossy);
+      trade_proof(3, cursor(1, 0), origin(2), market::TradeFidelity::Lossy);
   CHECK(state.apply_quality_input(recovered).ok());
   CHECK(state.quality().trade_freshness == market::FreshnessStatus::Unknown);
   auto first_recovered = trade(3, 0, 6, 105);
@@ -243,7 +245,7 @@ TEST_CASE("trade gap is first-class and recovery starts a new window") {
   CHECK(recovered_quality.trade_window_status ==
         market::TradeWindowStatus::Complete);
   CHECK(recovered_quality.last_trade_boundary == recovered.trade_proof);
-  CHECK(recovered_quality.trade_continuity_cursor == continuity_cursor(1));
+  CHECK(recovered_quality.trade_continuity_cursor == continuity_cursor(3));
   CHECK(recovered_quality.trade_window_policy ==
         market::TradeWindowPolicy::AcceptedCount);
 }
@@ -254,32 +256,51 @@ TEST_CASE("trade recovery requires the next ordered boundary proof") {
       quality_input(market::ListingQualityInputKind::TradeSynchronized, 1, 100);
   synchronized.trade_proof = trade_proof(0, origin(1), origin(1));
   CHECK(state.apply_quality_input(synchronized).ok());
-  CHECK(state
-            .apply_quality_input(quality_input(
-                market::ListingQualityInputKind::TradeGapDetected, 2, 101))
-            .ok());
-  CHECK(state
-            .apply_quality_input(quality_input(
-                market::ListingQualityInputKind::TradeRecoveryStarted, 3, 102))
-            .ok());
+  auto missing_gap =
+      quality_input(market::ListingQualityInputKind::TradeGapDetected, 2, 101);
+  CHECK(state.apply_quality_input(missing_gap).failure ==
+        market::ListingAuxFailure::InvalidCursor);
+  auto gap =
+      quality_input(market::ListingQualityInputKind::TradeGapDetected, 2, 101);
+  gap.trade_proof =
+      trade_proof(1, origin(1), origin(1), market::TradeFidelity::Lossy);
+  CHECK(state.apply_quality_input(gap).ok());
+  CHECK(state.quality().last_trade_boundary == gap.trade_proof);
+  CHECK(state.quality().trade_continuity_cursor == continuity_cursor(1));
+  auto missing_recovery = quality_input(
+      market::ListingQualityInputKind::TradeRecoveryStarted, 3, 102);
+  CHECK(state.apply_quality_input(missing_recovery).failure ==
+        market::ListingAuxFailure::InvalidCursor);
+  auto recovery = quality_input(
+      market::ListingQualityInputKind::TradeRecoveryStarted, 3, 102);
+  recovery.trade_proof =
+      trade_proof(2, origin(1), origin(1), market::TradeFidelity::Lossy);
+  CHECK(state.apply_quality_input(recovery).ok());
+  CHECK(state.quality().last_trade_boundary == recovery.trade_proof);
+  CHECK(state.quality().trade_continuity_cursor == continuity_cursor(2));
 
   auto missing =
       quality_input(market::ListingQualityInputKind::TradeSynchronized, 4, 103);
   CHECK(state.apply_quality_input(missing).failure ==
         market::ListingAuxFailure::InvalidCursor);
   auto same_epoch_jump = missing;
-  same_epoch_jump.trade_proof = trade_proof(1, origin(1), cursor(1, 5));
+  same_epoch_jump.trade_proof = trade_proof(3, origin(1), cursor(1, 5));
   CHECK(state.apply_quality_input(same_epoch_jump).failure ==
         market::ListingAuxFailure::InvalidCursor);
   auto skipped_boundary = missing;
   skipped_boundary.trade_proof =
-      trade_proof(2, origin(1), origin(2), market::TradeFidelity::Lossy);
+      trade_proof(4, origin(1), origin(2), market::TradeFidelity::Lossy);
   CHECK(state.apply_quality_input(skipped_boundary).failure ==
         market::ListingAuxFailure::InvalidCursor);
   auto new_epoch_jump = missing;
   new_epoch_jump.trade_proof =
-      trade_proof(1, origin(1), cursor(2, 5), market::TradeFidelity::Lossy);
+      trade_proof(3, origin(1), cursor(2, 5), market::TradeFidelity::Lossy);
   CHECK(state.apply_quality_input(new_epoch_jump).failure ==
+        market::ListingAuxFailure::InvalidCursor);
+  auto cast_fidelity = missing;
+  cast_fidelity.trade_proof = trade_proof(
+      3, origin(1), origin(2), static_cast<market::TradeFidelity>(99));
+  CHECK(state.apply_quality_input(cast_fidelity).failure ==
         market::ListingAuxFailure::InvalidCursor);
   CHECK(state.quality().trade_continuity ==
         market::TradeContinuity::Recovering);
@@ -305,6 +326,31 @@ TEST_CASE("book synchronization requires matching complete L2 proof") {
   CHECK(state.quality().last_book_proof == input.book_proof);
   CHECK(state.quality().book_synchronization ==
         market::BookSynchronization::Synchronized);
+}
+
+TEST_CASE("book synchronization proof cannot rewind or skip current cursor") {
+  auto configured = config();
+  configured.initial_book_sequence = 10;
+  auto state = market::ListingAuxState::create(configured).value();
+  auto book = synchronized_book();
+  auto input = book_sync_input(1, 100, book.transition_sequence());
+  CHECK(state.apply_quality_input(input, &book).failure ==
+        market::ListingAuxFailure::InvalidTransition);
+
+  input.book_proof->snapshot_cursor =
+      contracts::StreamCursor::at_sequence(id<contracts::StreamId>(8), 1, 12)
+          .value();
+  input.book_proof->applied_through_cursor = input.book_proof->snapshot_cursor;
+  CHECK(state.apply_quality_input(input, &book).failure ==
+        market::ListingAuxFailure::InvalidTransition);
+
+  input.book_proof->snapshot_cursor =
+      contracts::StreamCursor::at_sequence(id<contracts::StreamId>(8), 1, 11)
+          .value();
+  input.book_proof->applied_through_cursor = input.book_proof->snapshot_cursor;
+  CHECK(state.apply_quality_input(input, &book).ok());
+  CHECK(state.quality().book_cursor ==
+        input.book_proof->applied_through_cursor);
 }
 
 TEST_CASE("ordered logical timers make freshness stale without hiding gaps") {
@@ -421,6 +467,14 @@ TEST_CASE("trade source quality fidelity and corrections fail closed") {
   unknown_fidelity.fidelity = market::TradeFidelity::Unknown;
   CHECK(state.apply_trade(unknown_fidelity).failure ==
         market::ListingAuxFailure::InvalidTrade);
+  auto cast_quality = trade(1, 0, 2, 101);
+  cast_quality.source_time_quality = static_cast<market::SourceTimeQuality>(99);
+  CHECK(state.apply_trade(cast_quality).failure ==
+        market::ListingAuxFailure::InvalidTrade);
+  auto cast_fidelity = trade(1, 0, 2, 101);
+  cast_fidelity.fidelity = static_cast<market::TradeFidelity>(99);
+  CHECK(state.apply_trade(cast_fidelity).failure ==
+        market::ListingAuxFailure::InvalidTrade);
   auto unsupported_correction = trade(1, 0, 2, 101);
   unsupported_correction.corrects_event_id = id<contracts::EventId>(9);
   CHECK(state.apply_trade(unsupported_correction).failure ==
@@ -447,5 +501,9 @@ TEST_CASE("invalid auxiliary configuration is rejected") {
   CHECK(!market::ListingAuxState::create(invalid));
   invalid = config();
   invalid.trade_freshness_deadline_nanoseconds = 0;
+  CHECK(!market::ListingAuxState::create(invalid));
+  invalid = config();
+  invalid.required_source_time_quality =
+      static_cast<market::SourceTimeQuality>(99);
   CHECK(!market::ListingAuxState::create(invalid));
 }

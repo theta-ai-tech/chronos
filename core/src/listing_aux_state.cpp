@@ -47,6 +47,15 @@ bool valid_next_cursor(const contracts::StreamCursor &current,
                        *candidate.last_consumed_sequence());
 }
 
+bool valid_source_time_quality(SourceTimeQuality value) {
+  return value == SourceTimeQuality::Exact ||
+         value == SourceTimeQuality::Approximate;
+}
+
+bool valid_trade_fidelity(TradeFidelity value) {
+  return value == TradeFidelity::Lossless || value == TradeFidelity::Lossy;
+}
+
 contracts::StreamCursor
 configured_cursor(contracts::StreamId stream_id, std::uint64_t epoch,
                   std::optional<std::uint64_t> sequence) {
@@ -87,22 +96,35 @@ bool valid_book_proof(const ListingAuxConfig &config,
     return false;
   }
   if (current_status == BookSynchronization::Starting)
-    return proof.applied_through_cursor.stream_epoch() ==
-           current_cursor.stream_epoch();
+    return valid_next_cursor(current_cursor, proof.snapshot_cursor);
   return current_status == BookSynchronization::Recovering &&
-         proof.applied_through_cursor.stream_epoch() !=
-             current_cursor.stream_epoch();
+         proof.snapshot_cursor.stream_epoch() !=
+             current_cursor.stream_epoch() &&
+         *proof.snapshot_cursor.last_consumed_sequence() == 0;
 }
 
-bool valid_trade_proof(const ListingAuxConfig &config,
-                       const contracts::StreamCursor &current_trade_cursor,
-                       const contracts::StreamCursor &continuity_cursor,
-                       const TradeContinuityProof &proof) {
+bool valid_ordered_trade_proof(
+    const ListingAuxConfig &config,
+    const contracts::StreamCursor &current_trade_cursor,
+    const contracts::StreamCursor &continuity_cursor,
+    const TradeContinuityProof &proof) {
   if (!valid_next_cursor(continuity_cursor, proof.boundary_cursor) ||
       proof.boundary_cursor.stream_id() != config.trade_continuity_stream_id ||
       proof.prior_trade_cursor != current_trade_cursor ||
       proof.recovered_trade_cursor.stream_id() != config.trade_stream_id ||
-      proof.fidelity == TradeFidelity::Unknown) {
+      !valid_trade_fidelity(proof.fidelity)) {
+    return false;
+  }
+  return true;
+}
+
+bool valid_trade_synchronization_proof(
+    const ListingAuxConfig &config,
+    const contracts::StreamCursor &current_trade_cursor,
+    const contracts::StreamCursor &continuity_cursor,
+    const TradeContinuityProof &proof) {
+  if (!valid_ordered_trade_proof(config, current_trade_cursor,
+                                 continuity_cursor, proof)) {
     return false;
   }
   if (proof.recovered_trade_cursor.stream_epoch() ==
@@ -111,6 +133,17 @@ bool valid_trade_proof(const ListingAuxConfig &config,
            proof.fidelity == TradeFidelity::Lossless;
   }
   return proof.recovered_trade_cursor.is_origin();
+}
+
+bool valid_trade_state_transition_proof(
+    const ListingAuxConfig &config,
+    const contracts::StreamCursor &current_trade_cursor,
+    const contracts::StreamCursor &continuity_cursor,
+    const TradeContinuityProof &proof) {
+  return valid_ordered_trade_proof(config, current_trade_cursor,
+                                   continuity_cursor, proof) &&
+         proof.recovered_trade_cursor == proof.prior_trade_cursor &&
+         proof.fidelity == TradeFidelity::Lossy;
 }
 
 bool correction_is_supported(const ListingAuxConfig &config,
@@ -175,7 +208,7 @@ ListingAuxState::create(ListingAuxConfig config) {
       config.book_freshness_deadline_nanoseconds <= 0 ||
       config.trade_freshness_deadline_nanoseconds <= 0 ||
       !contracts::is_valid(config.accepted_source_clock_class) ||
-      config.required_source_time_quality == SourceTimeQuality::Unknown ||
+      !valid_source_time_quality(config.required_source_time_quality) ||
       (config.correction_policy != TradeCorrectionPolicy::Reject &&
        config.correction_policy != TradeCorrectionPolicy::RetainProspective) ||
       config.trade_window_policy != TradeWindowPolicy::AcceptedCount) {
@@ -213,7 +246,8 @@ ListingAuxResult ListingAuxState::apply_trade(const RecentTrade &trade) {
           state_->config.accepted_source_clock_class ||
       trade.source_time_quality !=
           state_->config.required_source_time_quality ||
-      trade.fidelity == TradeFidelity::Unknown ||
+      !valid_source_time_quality(trade.source_time_quality) ||
+      !valid_trade_fidelity(trade.fidelity) ||
       !correction_is_supported(state_->config, state_->trades, trade)) {
     return {.failure = ListingAuxFailure::InvalidTrade};
   }
@@ -298,9 +332,9 @@ ListingAuxState::apply_quality_input(const ListingQualityInput &input,
         trade != TradeContinuity::Recovering)
       return {.failure = ListingAuxFailure::InvalidTransition};
     if (!input.trade_proof ||
-        !valid_trade_proof(state_->config, state_->trade_cursor,
-                           state_->trade_continuity_cursor,
-                           *input.trade_proof)) {
+        !valid_trade_synchronization_proof(state_->config, state_->trade_cursor,
+                                           state_->trade_continuity_cursor,
+                                           *input.trade_proof)) {
       return {.failure = ListingAuxFailure::InvalidCursor};
     }
     trade = TradeContinuity::Continuous;
@@ -313,13 +347,29 @@ ListingAuxState::apply_quality_input(const ListingQualityInput &input,
   case ListingQualityInputKind::TradeGapDetected:
     if (trade != TradeContinuity::Continuous)
       return {.failure = ListingAuxFailure::InvalidTransition};
+    if (!input.trade_proof ||
+        !valid_trade_state_transition_proof(
+            state_->config, state_->trade_cursor,
+            state_->trade_continuity_cursor, *input.trade_proof)) {
+      return {.failure = ListingAuxFailure::InvalidCursor};
+    }
     trade = TradeContinuity::Gapped;
+    trade_continuity_cursor = input.trade_proof->boundary_cursor;
+    trade_boundary = input.trade_proof;
     clear_trades = true;
     break;
   case ListingQualityInputKind::TradeRecoveryStarted:
     if (trade != TradeContinuity::Gapped)
       return {.failure = ListingAuxFailure::InvalidTransition};
+    if (!input.trade_proof ||
+        !valid_trade_state_transition_proof(
+            state_->config, state_->trade_cursor,
+            state_->trade_continuity_cursor, *input.trade_proof)) {
+      return {.failure = ListingAuxFailure::InvalidCursor};
+    }
     trade = TradeContinuity::Recovering;
+    trade_continuity_cursor = input.trade_proof->boundary_cursor;
+    trade_boundary = input.trade_proof;
     trade_evidence.reset();
     clear_trades = true;
     break;
