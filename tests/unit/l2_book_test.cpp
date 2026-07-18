@@ -3,6 +3,7 @@
 #include "microtest.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -269,18 +270,101 @@ TEST_CASE("top of book keeps locked and crossed states explicit") {
 TEST_CASE("top of book distinguishes one-sided and empty books") {
   auto book = market::L2Book::create(config()).value();
   CHECK(book.top_of_book() ==
-        market::L2TopOfBook{.shape = market::L2BookShape::Empty});
+        (market::L2TopOfBook{
+            .bid_completeness = market::L2SideCompleteness::Unknown,
+            .ask_completeness = market::L2SideCompleteness::Unknown,
+            .shape = market::L2BookShape::Unknown}));
 
   CHECK(book.apply_snapshot({.listing_id = id<contracts::ListingId>(1),
                              .asks = {level(101, 3)}})
             .ok());
   CHECK(book.top_of_book() ==
-        (market::L2TopOfBook{.best_ask = level(101, 3),
-                             .shape = market::L2BookShape::OneSided}));
+        (market::L2TopOfBook{
+            .best_ask = level(101, 3),
+            .bid_completeness = market::L2SideCompleteness::Complete,
+            .ask_completeness = market::L2SideCompleteness::Complete,
+            .shape = market::L2BookShape::OneSided}));
+
+  CHECK(book.apply_snapshot({.listing_id = id<contracts::ListingId>(1),
+                             .bids = {level(100, 2)}})
+            .ok());
+  CHECK(book.top_of_book().best_bid == level(100, 2));
+  CHECK(book.top_of_book().shape == market::L2BookShape::OneSided);
 
   CHECK(book.apply_delta({.listing_id = id<contracts::ListingId>(1),
-                          .ask_changes = {remove(101)}})
+                          .bid_changes = {remove(100)}})
             .ok());
   CHECK(book.top_of_book() ==
-        market::L2TopOfBook{.shape = market::L2BookShape::Empty});
+        (market::L2TopOfBook{
+            .bid_completeness = market::L2SideCompleteness::Complete,
+            .ask_completeness = market::L2SideCompleteness::Complete,
+            .shape = market::L2BookShape::Empty}));
+}
+
+TEST_CASE("bounded side exhaustion remains unknown until proven snapshot") {
+  auto book = market::L2Book::create(config()).value();
+  CHECK(book.apply_snapshot(
+                {.listing_id = id<contracts::ListingId>(1),
+                 .bids = {level(100, 5)},
+                 .asks = {level(101, 3)},
+                 .bid_completeness =
+                     market::L2SideCompleteness::BoundedWithProvenTop})
+            .ok());
+  CHECK(book.top_of_book().shape == market::L2BookShape::Normal);
+
+  CHECK(book.apply_delta({.listing_id = id<contracts::ListingId>(1),
+                          .bid_changes = {remove(100)}})
+            .ok());
+  auto exhausted = book.top_of_book();
+  CHECK(exhausted.shape == market::L2BookShape::Unknown);
+  CHECK(!exhausted.best_bid);
+  CHECK(exhausted.best_ask == level(101, 3));
+  CHECK(exhausted.bid_completeness ==
+        market::L2SideCompleteness::BoundaryExhausted);
+
+  CHECK(book.apply_delta({.listing_id = id<contracts::ListingId>(1),
+                          .bid_changes = {set(99, 2)}})
+            .ok());
+  CHECK(book.top_of_book().shape == market::L2BookShape::Unknown);
+  CHECK(!book.top_of_book().best_bid);
+
+  CHECK(book.apply_snapshot({.listing_id = id<contracts::ListingId>(1),
+                             .bids = {level(99, 2)},
+                             .asks = {level(101, 3)}})
+            .ok());
+  CHECK(book.top_of_book().shape == market::L2BookShape::Normal);
+  CHECK(book.top_of_book().best_bid == level(99, 2));
+}
+
+TEST_CASE("top follows best removal and exact integer edge spreads") {
+  auto book = market::L2Book::create(config()).value();
+  const auto maximum = std::numeric_limits<contracts::AmountUnits>::max();
+  CHECK(book.apply_snapshot({.listing_id = id<contracts::ListingId>(1),
+                             .bids = {level(1, 2), level(maximum, 4)},
+                             .asks = {level(maximum, 3)}})
+            .ok());
+  CHECK(book.top_of_book().shape == market::L2BookShape::Locked);
+
+  CHECK(book.apply_delta({.listing_id = id<contracts::ListingId>(1),
+                          .bid_changes = {remove(maximum)}})
+            .ok());
+  CHECK(book.top_of_book().best_bid == level(1, 2));
+  CHECK(book.top_of_book().spread == price(maximum - 1));
+
+  CHECK(book.apply_snapshot({.listing_id = id<contracts::ListingId>(1),
+                             .bids = {level(maximum, 4)},
+                             .asks = {level(1, 3)}})
+            .ok());
+  CHECK(book.top_of_book().spread == price(1 - maximum));
+  CHECK(book.top_of_book().shape == market::L2BookShape::Crossed);
+}
+
+TEST_CASE("bounded snapshot requires a retained level") {
+  auto book = market::L2Book::create(config()).value();
+  const auto result = book.apply_snapshot(
+      {.listing_id = id<contracts::ListingId>(1),
+       .bid_completeness = market::L2SideCompleteness::BoundedWithProvenTop});
+  CHECK(result.failure == market::L2TransitionFailure::InvalidCompleteness);
+  CHECK(book.transition_sequence() == 0);
+  CHECK(book.top_of_book().shape == market::L2BookShape::Unknown);
 }

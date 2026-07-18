@@ -23,6 +23,13 @@ enum class L2BookShape : std::uint8_t {
   Unknown,
 };
 
+enum class L2SideCompleteness : std::uint8_t {
+  Complete,
+  BoundedWithProvenTop,
+  BoundaryExhausted,
+  Unknown,
+};
+
 enum class L2TransitionFailure : std::uint8_t {
   None,
   WrongListing,
@@ -30,6 +37,7 @@ enum class L2TransitionFailure : std::uint8_t {
   InvalidPrice,
   InvalidQuantity,
   InvalidOperation,
+  InvalidCompleteness,
   DuplicateLevel,
   DuplicateChange,
   ResourceLimitExceeded,
@@ -62,6 +70,8 @@ struct L2Snapshot final {
   contracts::ListingId listing_id;
   std::vector<L2Level> bids;
   std::vector<L2Level> asks;
+  L2SideCompleteness bid_completeness{L2SideCompleteness::Complete};
+  L2SideCompleteness ask_completeness{L2SideCompleteness::Complete};
 };
 
 struct L2Delta final {
@@ -84,6 +94,8 @@ struct L2TopOfBook final {
   std::optional<L2Level> best_bid;
   std::optional<L2Level> best_ask;
   std::optional<contracts::Price> spread;
+  L2SideCompleteness bid_completeness{L2SideCompleteness::Unknown};
+  L2SideCompleteness ask_completeness{L2SideCompleteness::Unknown};
   L2BookShape shape{L2BookShape::Unknown};
 
   bool operator==(const L2TopOfBook &) const = default;

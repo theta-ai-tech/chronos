@@ -21,6 +21,28 @@ bool valid_quantity(const L2BookConfig &config,
          quantity.units() >= 0;
 }
 
+bool valid_snapshot_completeness(L2SideCompleteness completeness,
+                                 bool side_empty) {
+  if (completeness == L2SideCompleteness::Complete ||
+      completeness == L2SideCompleteness::Unknown) {
+    return true;
+  }
+  return completeness == L2SideCompleteness::BoundedWithProvenTop &&
+         !side_empty;
+}
+
+L2SideCompleteness advance_completeness(L2SideCompleteness completeness,
+                                        bool side_empty) {
+  if (completeness == L2SideCompleteness::BoundedWithProvenTop && side_empty)
+    return L2SideCompleteness::BoundaryExhausted;
+  return completeness;
+}
+
+bool top_is_known(L2SideCompleteness completeness) {
+  return completeness == L2SideCompleteness::Complete ||
+         completeness == L2SideCompleteness::BoundedWithProvenTop;
+}
+
 L2TransitionFailure validate_levels(const L2BookConfig &config,
                                     std::vector<L2Level> &levels) {
   if (levels.size() > config.maximum_levels_per_side)
@@ -145,6 +167,8 @@ struct L2Book::State final {
   std::vector<L2Level> scratch_bids;
   std::vector<L2Level> scratch_asks;
   std::vector<contracts::AmountUnits> validation_prices;
+  L2SideCompleteness bid_completeness{L2SideCompleteness::Unknown};
+  L2SideCompleteness ask_completeness{L2SideCompleteness::Unknown};
   std::uint64_t transition_sequence{};
 };
 
@@ -179,10 +203,20 @@ L2TransitionResult L2Book::apply_snapshot(const L2Snapshot &snapshot) {
       validate_levels(state_->config, state_->scratch_asks);
   if (ask_failure != L2TransitionFailure::None)
     return {.failure = ask_failure};
+  if (!valid_snapshot_completeness(snapshot.bid_completeness,
+                                   state_->scratch_bids.empty()) ||
+      !valid_snapshot_completeness(snapshot.ask_completeness,
+                                   state_->scratch_asks.empty())) {
+    return {.failure = L2TransitionFailure::InvalidCompleteness};
+  }
   const bool changed = state_->scratch_bids != state_->bids ||
-                       state_->scratch_asks != state_->asks;
+                       state_->scratch_asks != state_->asks ||
+                       snapshot.bid_completeness != state_->bid_completeness ||
+                       snapshot.ask_completeness != state_->ask_completeness;
   state_->bids.swap(state_->scratch_bids);
   state_->asks.swap(state_->scratch_asks);
+  state_->bid_completeness = snapshot.bid_completeness;
+  state_->ask_completeness = snapshot.ask_completeness;
   ++state_->transition_sequence;
   return {.content_changed = changed,
           .transition_sequence = state_->transition_sequence};
@@ -215,10 +249,18 @@ L2TransitionResult L2Book::apply_delta(const L2Delta &delta) {
                              state_->config.maximum_levels_per_side)) {
     return {.failure = L2TransitionFailure::ResourceLimitExceeded};
   }
+  const auto bid_completeness = advance_completeness(
+      state_->bid_completeness, state_->scratch_bids.empty());
+  const auto ask_completeness = advance_completeness(
+      state_->ask_completeness, state_->scratch_asks.empty());
   const bool changed = state_->scratch_bids != state_->bids ||
-                       state_->scratch_asks != state_->asks;
+                       state_->scratch_asks != state_->asks ||
+                       bid_completeness != state_->bid_completeness ||
+                       ask_completeness != state_->ask_completeness;
   state_->bids.swap(state_->scratch_bids);
   state_->asks.swap(state_->scratch_asks);
+  state_->bid_completeness = bid_completeness;
+  state_->ask_completeness = ask_completeness;
   ++state_->transition_sequence;
   return {.content_changed = changed,
           .transition_sequence = state_->transition_sequence};
@@ -232,21 +274,45 @@ std::span<const L2Level> L2Book::bids() const noexcept { return state_->bids; }
 std::span<const L2Level> L2Book::asks() const noexcept { return state_->asks; }
 
 L2TopOfBook L2Book::top_of_book() const noexcept {
-  if (state_->bids.empty() && state_->asks.empty())
-    return {.shape = L2BookShape::Empty};
-  if (state_->bids.empty()) {
-    return {.best_ask = state_->asks.front(), .shape = L2BookShape::OneSided};
+  const bool bid_known = top_is_known(state_->bid_completeness);
+  const bool ask_known = top_is_known(state_->ask_completeness);
+  const auto best_bid = bid_known && !state_->bids.empty()
+                            ? std::optional<L2Level>(state_->bids.back())
+                            : std::nullopt;
+  const auto best_ask = ask_known && !state_->asks.empty()
+                            ? std::optional<L2Level>(state_->asks.front())
+                            : std::nullopt;
+  if (!bid_known || !ask_known) {
+    return {.best_bid = best_bid,
+            .best_ask = best_ask,
+            .bid_completeness = state_->bid_completeness,
+            .ask_completeness = state_->ask_completeness,
+            .shape = L2BookShape::Unknown};
   }
-  if (state_->asks.empty()) {
-    return {.best_bid = state_->bids.back(), .shape = L2BookShape::OneSided};
+  if (!best_bid && !best_ask) {
+    return {.bid_completeness = state_->bid_completeness,
+            .ask_completeness = state_->ask_completeness,
+            .shape = L2BookShape::Empty};
+  }
+  if (!best_bid) {
+    return {.best_ask = best_ask,
+            .bid_completeness = state_->bid_completeness,
+            .ask_completeness = state_->ask_completeness,
+            .shape = L2BookShape::OneSided};
+  }
+  if (!best_ask) {
+    return {.best_bid = best_bid,
+            .bid_completeness = state_->bid_completeness,
+            .ask_completeness = state_->ask_completeness,
+            .shape = L2BookShape::OneSided};
   }
 
-  const auto &best_bid = state_->bids.back();
-  const auto &best_ask = state_->asks.front();
-  const auto spread = best_ask.price.checked_subtract(best_bid.price);
+  const auto spread = best_ask->price.checked_subtract(best_bid->price);
   if (!spread) {
     return {.best_bid = best_bid,
             .best_ask = best_ask,
+            .bid_completeness = state_->bid_completeness,
+            .ask_completeness = state_->ask_completeness,
             .shape = L2BookShape::Unknown};
   }
   const auto shape = spread->units() > 0    ? L2BookShape::Normal
@@ -255,6 +321,8 @@ L2TopOfBook L2Book::top_of_book() const noexcept {
   return {.best_bid = best_bid,
           .best_ask = best_ask,
           .spread = spread,
+          .bid_completeness = state_->bid_completeness,
+          .ask_completeness = state_->ask_completeness,
           .shape = shape};
 }
 
