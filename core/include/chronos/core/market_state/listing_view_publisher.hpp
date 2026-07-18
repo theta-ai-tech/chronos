@@ -92,6 +92,10 @@ struct ListingViewCutInput final {
   contracts::VersionRef merge_policy_version;
   std::uint64_t configuration_epoch{};
   std::optional<std::uint64_t> effective_control_position;
+  contracts::CanonicalInstrumentId canonical_instrument_id;
+  contracts::VersionRef reference_snapshot_version;
+  contracts::VersionRef listing_definition_version;
+  contracts::VersionRef reference_configuration_lineage_version;
   contracts::StateLineage lineage;
 
   bool operator==(const ListingViewCutInput &) const = default;

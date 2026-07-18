@@ -252,6 +252,10 @@ market::ListingViewCutInput cut_input(std::uint64_t run_sequence = 1) {
       .selection_semantic_checksum = selection.selection_semantic_checksum,
       .merge_policy_version = version(37),
       .configuration_epoch = 1,
+      .canonical_instrument_id = id<contracts::CanonicalInstrumentId>(42),
+      .reference_snapshot_version = version(43),
+      .listing_definition_version = version(44),
+      .reference_configuration_lineage_version = version(45),
       .lineage = lineage(run_sequence, cursor(8, event_sequence)),
   };
 }
@@ -534,6 +538,125 @@ TEST_CASE("applied controls advance the exact run-control lineage") {
   CHECK(accepted.bundle->configuration_epoch == 2);
   CHECK(accepted.bundle->effective_control_position == 1);
   CHECK(accepted.bundle->run_control_cursor == cursor(12, 1));
+}
+
+TEST_CASE("book gap quality facts advance immutable cuts") {
+  auto book = make_book();
+  auto auxiliary = make_auxiliary(book);
+  auto publisher =
+      market::ListingViewPublisher::create(publisher_config()).value();
+  const auto first = publisher.accept_cut(cut_input(), book, auxiliary);
+  CHECK(first.ok());
+  if (!first.view || !first.bundle)
+    return;
+  acknowledge(publisher, first.view->view_id, first.bundle->bundle_id);
+
+  const auto gap_event_id = id<contracts::EventId>(47);
+  const auto gap_checksum =
+      contracts::sha256(std::vector<std::byte>{std::byte{2}});
+  CHECK(auxiliary
+            .apply_quality_input({
+                .event_id = gap_event_id,
+                .input_semantic_checksum = gap_checksum,
+                .listing_id = id<contracts::ListingId>(1),
+                .kind = market::ListingQualityInputKind::BookGapDetected,
+                .run_input_sequence = 2,
+                .logical_time_nanoseconds = 101,
+                .event_cursor = cursor(8, 1),
+            })
+            .ok());
+  auto gap = cut_input(2);
+  gap.dispatch_candidate.event_id = gap_event_id;
+  gap.dispatch_candidate.event_type = "market.book.quality.gap_detected";
+  gap.dispatch_selection.selected_event_id = gap_event_id;
+  gap.dispatch_selection.selected_event_type =
+      gap.dispatch_candidate.event_type;
+  gap.dispatch_selection.selection_semantic_checksum =
+      dispatch::derive_run_input_selection_checksum(
+          publisher_config().dispatcher_config, gap.dispatch_selection,
+          gap.dispatch_candidate);
+  gap.dispatch_selection.selection_id = dispatch::derive_run_input_selection_id(
+      gap.dispatch_selection.selection_semantic_checksum);
+  gap.selection_id = gap.dispatch_selection.selection_id;
+  gap.selected_event_id = gap_event_id;
+  gap.selected_event_type = gap.dispatch_candidate.event_type;
+  gap.selection_semantic_checksum =
+      gap.dispatch_selection.selection_semantic_checksum;
+  const auto accepted = publisher.accept_cut(gap, book, auxiliary);
+  CHECK(accepted.ok());
+  if (accepted.view)
+    CHECK(accepted.view->quality.book_synchronization ==
+          market::BookSynchronization::Gapped);
+}
+
+TEST_CASE("ordered reference facts advance reference versions with the cut") {
+  auto book = make_book();
+  auto auxiliary = make_auxiliary(book);
+  auto publisher =
+      market::ListingViewPublisher::create(publisher_config()).value();
+  const auto first = publisher.accept_cut(cut_input(), book, auxiliary);
+  CHECK(first.ok());
+  if (!first.view || !first.bundle)
+    return;
+  acknowledge(publisher, first.view->view_id, first.bundle->bundle_id);
+
+  const auto reference_event_id = id<contracts::EventId>(48);
+  const auto reference_checksum =
+      contracts::sha256(std::vector<std::byte>{std::byte{2}});
+  CHECK(auxiliary
+            .apply_quality_input({
+                .event_id = reference_event_id,
+                .input_semantic_checksum = reference_checksum,
+                .listing_id = id<contracts::ListingId>(1),
+                .kind = market::ListingQualityInputKind::BookInvalidated,
+                .run_input_sequence = 2,
+                .logical_time_nanoseconds = 101,
+            })
+            .ok());
+  auto reference = cut_input(2);
+  reference.dispatch_candidate.event_id = reference_event_id;
+  reference.dispatch_candidate.event_type =
+      "reference.listing.definition_changed";
+  reference.dispatch_selection.selected_event_id = reference_event_id;
+  reference.dispatch_selection.selected_event_type =
+      reference.dispatch_candidate.event_type;
+  reference.dispatch_selection.selection_semantic_checksum =
+      dispatch::derive_run_input_selection_checksum(
+          publisher_config().dispatcher_config, reference.dispatch_selection,
+          reference.dispatch_candidate);
+  reference.dispatch_selection.selection_id =
+      dispatch::derive_run_input_selection_id(
+          reference.dispatch_selection.selection_semantic_checksum);
+  reference.selection_id = reference.dispatch_selection.selection_id;
+  reference.selected_event_id = reference_event_id;
+  reference.selected_event_type = reference.dispatch_candidate.event_type;
+  reference.selected_event_position =
+      contracts::EventPosition::from(id<contracts::StreamId>(10), 1, 0).value();
+  reference.selection_semantic_checksum =
+      reference.dispatch_selection.selection_semantic_checksum;
+  reference.reference_snapshot_version = version(46);
+  reference.listing_definition_version = version(47);
+  reference.reference_configuration_lineage_version = version(48);
+  auto cursors = std::vector<contracts::StreamCursor>(
+      reference.lineage.cursors().begin(), reference.lineage.cursors().end());
+  for (auto &entry : cursors) {
+    if (entry.stream_id() == id<contracts::StreamId>(8))
+      entry = cursor(8, 0);
+    if (entry.stream_id() == id<contracts::StreamId>(10))
+      entry = cursor(10, 0);
+  }
+  reference.lineage = contracts::StateLineage::from(id<contracts::RunId>(30), 2,
+                                                    required_streams(), cursors)
+                          .value();
+  const auto accepted = publisher.accept_cut(reference, book, auxiliary);
+  CHECK(accepted.ok());
+  if (!accepted.bundle)
+    return;
+  CHECK(accepted.bundle->reference_cursor == cursor(10, 0));
+  CHECK(accepted.bundle->reference_snapshot_version == version(46));
+  CHECK(accepted.bundle->listing_definition_version == version(47));
+  CHECK(accepted.bundle->reference_configuration_lineage_version ==
+        version(48));
 }
 
 TEST_CASE("incomplete mismatched and stale cuts fail before acceptance") {

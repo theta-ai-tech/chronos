@@ -204,10 +204,10 @@ std::vector<std::byte> canonical_view_bytes(
     output.push_back(static_cast<std::byte>(character));
   append_id(output, config.run_id);
   append_id(output, config.listing_id);
-  append_id(output, config.canonical_instrument_id);
-  append_version(output, config.reference_snapshot_version);
-  append_version(output, config.listing_definition_version);
-  append_version(output, config.reference_configuration_lineage_version);
+  append_id(output, input.canonical_instrument_id);
+  append_version(output, input.reference_snapshot_version);
+  append_version(output, input.listing_definition_version);
+  append_version(output, input.reference_configuration_lineage_version);
   append_id(output, input.selection_id);
   append_id(output, input.selected_event_id);
   append_string(output, input.selected_event_type);
@@ -273,7 +273,7 @@ std::vector<std::byte> canonical_bundle_bytes(
   append_id(output, input.selected_event_id);
   append_integer<std::uint64_t>(output, 1);
   append_id(output, config.listing_id);
-  append_id(output, config.canonical_instrument_id);
+  append_id(output, input.canonical_instrument_id);
   append_id(output, listing_view_id);
   append_cursor(output,
                 *find_cursor(input.lineage, config.run_control_stream_id));
@@ -290,9 +290,9 @@ std::vector<std::byte> canonical_bundle_bytes(
   append_version(output, config.view_schema_version);
   append_version(output, config.bundle_schema_version);
   append_version(output, config.dispatcher_config.registry_snapshot_version);
-  append_version(output, config.reference_snapshot_version);
-  append_version(output, config.listing_definition_version);
-  append_version(output, config.reference_configuration_lineage_version);
+  append_version(output, input.reference_snapshot_version);
+  append_version(output, input.listing_definition_version);
+  append_version(output, input.reference_configuration_lineage_version);
   append_version(output, config.arithmetic_version);
   append_version(output, config.canonicalization_version);
   append_version(output, config.identity_policy_version);
@@ -333,6 +333,12 @@ bool selected_event_was_applied(
     return kind == ListingQualityInputKind::BookSynchronized;
   if (event_type == "market.book.observation.delta")
     return kind == ListingQualityInputKind::BookEvidenceObserved;
+  if (event_type.starts_with("market.book.") &&
+      event_type.ends_with(".gap_detected"))
+    return kind == ListingQualityInputKind::BookGapDetected;
+  if (event_type.starts_with("market.book.") &&
+      event_type.ends_with(".recovery_started"))
+    return kind == ListingQualityInputKind::BookRecoveryStarted;
   if (event_type == "market.trade.continuity.synchronized")
     return kind == ListingQualityInputKind::TradeSynchronized;
   if (event_type == "market.trade.continuity.gap_detected")
@@ -551,6 +557,14 @@ struct ListingViewPublisher::State final {
   contracts::StreamCursor dispatcher_cursor;
   contracts::StreamCursor dispatcher_control_cursor;
   std::uint64_t configuration_epoch{config.initial_configuration_epoch};
+  contracts::CanonicalInstrumentId canonical_instrument_id{
+      config.canonical_instrument_id};
+  contracts::VersionRef reference_snapshot_version{
+      config.reference_snapshot_version};
+  contracts::VersionRef listing_definition_version{
+      config.listing_definition_version};
+  contracts::VersionRef reference_configuration_lineage_version{
+      config.reference_configuration_lineage_version};
   std::optional<std::uint64_t> effective_control_position{
       config.initial_effective_control_position};
   ViewPublicationState publication_state{ViewPublicationState::NotPublished};
@@ -654,6 +668,16 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
     return {.failure = ListingViewFailure::InvalidSelectionEvidence};
   }
   const auto &applied_controls = input.dispatch_selection.applied_controls;
+  const auto selected_stream =
+      event_stream(state_->config, input.selected_event_type);
+  const bool is_reference_input =
+      selected_stream && *selected_stream == state_->config.reference_stream_id;
+  const bool reference_changed =
+      input.canonical_instrument_id != state_->canonical_instrument_id ||
+      input.reference_snapshot_version != state_->reference_snapshot_version ||
+      input.listing_definition_version != state_->listing_definition_version ||
+      input.reference_configuration_lineage_version !=
+          state_->reference_configuration_lineage_version;
   const auto &dispatcher_pre =
       input.dispatch_selection.pre_selection_cursors.front();
   const bool evidence_valid =
@@ -677,6 +701,7 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       dispatcher_pre == state_->dispatcher_cursor &&
       cursor_at_or_after(state_->dispatcher_control_cursor,
                          input.dispatch_selection.control_cursor) &&
+      (is_reference_input ? reference_changed : !reference_changed) &&
       input.merge_policy_version == state_->config.merge_policy_version &&
       (applied_controls.empty()
            ? input.configuration_epoch == state_->configuration_epoch &&
@@ -738,8 +763,10 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
        (book_proof || !quality_before.book_cursor.is_origin())) ||
       (transition_before != 0 &&
        (!book_proof ||
-        book_proof->applied_through_cursor != quality_before.book_cursor ||
-        book_proof->l2_transition_sequence != transition_before))) {
+        book_proof->l2_transition_sequence != transition_before ||
+        (quality_before.book_synchronization ==
+             BookSynchronization::Synchronized &&
+         book_proof->applied_through_cursor != quality_before.book_cursor)))) {
     return {.failure = ListingViewFailure::BookStateMismatch};
   }
 
@@ -785,11 +812,11 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .view_id = *identity,
       .run_id = state_->config.run_id,
       .listing_id = state_->config.listing_id,
-      .canonical_instrument_id = state_->config.canonical_instrument_id,
-      .reference_snapshot_version = state_->config.reference_snapshot_version,
-      .listing_definition_version = state_->config.listing_definition_version,
+      .canonical_instrument_id = input.canonical_instrument_id,
+      .reference_snapshot_version = input.reference_snapshot_version,
+      .listing_definition_version = input.listing_definition_version,
       .reference_configuration_lineage_version =
-          state_->config.reference_configuration_lineage_version,
+          input.reference_configuration_lineage_version,
       .causing_selection_id = input.selection_id,
       .causing_event_id = input.selected_event_id,
       .causing_event_type = input.selected_event_type,
@@ -823,7 +850,7 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .causing_event_id = input.selected_event_id,
       .listing_views = {{state_->config.listing_id, accepted->view_id}},
       .listing_id = state_->config.listing_id,
-      .canonical_instrument_id = state_->config.canonical_instrument_id,
+      .canonical_instrument_id = input.canonical_instrument_id,
       .listing_view_id = accepted->view_id,
       .run_control_cursor =
           *find_cursor(input.lineage, state_->config.run_control_stream_id),
@@ -841,10 +868,10 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .bundle_schema_version = state_->config.bundle_schema_version,
       .registry_snapshot_version =
           state_->config.dispatcher_config.registry_snapshot_version,
-      .reference_snapshot_version = state_->config.reference_snapshot_version,
-      .listing_definition_version = state_->config.listing_definition_version,
+      .reference_snapshot_version = input.reference_snapshot_version,
+      .listing_definition_version = input.listing_definition_version,
       .reference_configuration_lineage_version =
-          state_->config.reference_configuration_lineage_version,
+          input.reference_configuration_lineage_version,
       .arithmetic_version = state_->config.arithmetic_version,
       .canonicalization_version = state_->config.canonicalization_version,
       .identity_policy_version = state_->config.identity_policy_version,
@@ -857,6 +884,11 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       input.dispatch_selection.post_selection_cursors.front();
   state_->dispatcher_control_cursor = input.dispatch_selection.control_cursor;
   state_->configuration_epoch = input.configuration_epoch;
+  state_->canonical_instrument_id = input.canonical_instrument_id;
+  state_->reference_snapshot_version = input.reference_snapshot_version;
+  state_->listing_definition_version = input.listing_definition_version;
+  state_->reference_configuration_lineage_version =
+      input.reference_configuration_lineage_version;
   state_->effective_control_position = input.effective_control_position;
   state_->publication_state = ViewPublicationState::NotPublished;
   state_->active_attempt_id.reset();

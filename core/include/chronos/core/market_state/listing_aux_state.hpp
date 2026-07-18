@@ -150,6 +150,7 @@ struct ListingQualityInput final {
   ListingQualityInputKind kind{ListingQualityInputKind::LogicalTimerAdvanced};
   std::uint64_t run_input_sequence{};
   std::int64_t logical_time_nanoseconds{};
+  std::optional<contracts::StreamCursor> event_cursor;
   std::optional<BookSynchronizationProof> book_proof;
   std::optional<TradeContinuityProof> trade_proof;
 };

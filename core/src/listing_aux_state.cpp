@@ -334,16 +334,25 @@ ListingAuxState::apply_quality_input(const ListingQualityInput &input,
     book_evidence = input.logical_time_nanoseconds;
     break;
   case ListingQualityInputKind::BookGapDetected:
-    if (book != BookSynchronization::Synchronized)
+    if (book != BookSynchronization::Synchronized ||
+        (input.event_cursor &&
+         !valid_next_cursor(book_cursor, *input.event_cursor)))
       return {.failure = ListingAuxFailure::InvalidTransition};
     book = BookSynchronization::Gapped;
+    if (input.event_cursor)
+      book_cursor = *input.event_cursor;
     break;
   case ListingQualityInputKind::BookRecoveryStarted:
     if (book != BookSynchronization::Starting &&
         book != BookSynchronization::Gapped &&
         book != BookSynchronization::Invalid)
       return {.failure = ListingAuxFailure::InvalidTransition};
+    if (input.event_cursor &&
+        !valid_next_cursor(book_cursor, *input.event_cursor))
+      return {.failure = ListingAuxFailure::InvalidTransition};
     book = BookSynchronization::Recovering;
+    if (input.event_cursor)
+      book_cursor = *input.event_cursor;
     break;
   case ListingQualityInputKind::BookEvidenceObserved:
     if (book != BookSynchronization::Synchronized || !input.book_proof ||
