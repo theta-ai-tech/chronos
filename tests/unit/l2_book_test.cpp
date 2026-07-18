@@ -186,3 +186,49 @@ TEST_CASE("definition listing and capacity violations fail closed") {
   CHECK(units(book.bids()) == original);
   CHECK(book.transition_sequence() == 1);
 }
+
+TEST_CASE("delta operation limit applies across both sides") {
+  auto book = market::L2Book::create(config(4, 2)).value();
+  CHECK(book.apply_snapshot({.listing_id = id<contracts::ListingId>(1),
+                             .bids = {level(99, 1), level(100, 2)},
+                             .asks = {level(101, 3)}})
+            .ok());
+  const auto before_bids = units(book.bids());
+  const auto before_asks = units(book.asks());
+
+  const auto result =
+      book.apply_delta({.listing_id = id<contracts::ListingId>(1),
+                        .bid_changes = {set(99, 4), set(100, 5)},
+                        .ask_changes = {set(101, 6)}});
+
+  CHECK(result.failure == market::L2TransitionFailure::ResourceLimitExceeded);
+  CHECK(units(book.bids()) == before_bids);
+  CHECK(units(book.asks()) == before_asks);
+  CHECK(book.transition_sequence() == 1);
+}
+
+TEST_CASE("transitions reuse fixed-capacity internal storage") {
+  auto book = market::L2Book::create(config(4, 3)).value();
+  const auto initial_storage = book.storage_profile();
+  CHECK(initial_storage.bid_capacity >= 4);
+  CHECK(initial_storage.ask_capacity >= 4);
+  CHECK(initial_storage.scratch_bid_capacity >= 4);
+  CHECK(initial_storage.scratch_ask_capacity >= 4);
+  CHECK(initial_storage.validation_capacity >= 3);
+
+  CHECK(book.apply_snapshot({.listing_id = id<contracts::ListingId>(1),
+                             .bids = {level(99, 1), level(100, 2)},
+                             .asks = {level(101, 3)}})
+            .ok());
+  CHECK(book.storage_profile() == initial_storage);
+  CHECK(book.apply_delta({.listing_id = id<contracts::ListingId>(1),
+                          .bid_changes = {set(98, 4), remove(99)},
+                          .ask_changes = {set(102, 5)}})
+            .ok());
+  CHECK(book.storage_profile() == initial_storage);
+  CHECK(book.apply_delta({.listing_id = id<contracts::ListingId>(1),
+                          .bid_changes = {set(100, 6), set(98, 7)},
+                          .ask_changes = {set(101, 8), set(102, 9)}})
+            .failure == market::L2TransitionFailure::ResourceLimitExceeded);
+  CHECK(book.storage_profile() == initial_storage);
+}

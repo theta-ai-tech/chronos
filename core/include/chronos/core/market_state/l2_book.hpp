@@ -71,6 +71,16 @@ struct L2TransitionResult final {
   }
 };
 
+struct L2StorageProfile final {
+  std::size_t bid_capacity{};
+  std::size_t ask_capacity{};
+  std::size_t scratch_bid_capacity{};
+  std::size_t scratch_ask_capacity{};
+  std::size_t validation_capacity{};
+
+  bool operator==(const L2StorageProfile &) const = default;
+};
+
 class L2Book final {
 public:
   [[nodiscard]] static std::optional<L2Book> create(L2BookConfig config);
@@ -86,6 +96,7 @@ public:
   [[nodiscard]] std::span<const L2Level> bids() const noexcept;
   [[nodiscard]] std::span<const L2Level> asks() const noexcept;
   [[nodiscard]] std::uint64_t transition_sequence() const noexcept;
+  [[nodiscard]] L2StorageProfile storage_profile() const noexcept;
 
 private:
   struct State;

@@ -51,12 +51,11 @@ L2TransitionFailure validate_levels(const L2BookConfig &config,
   return L2TransitionFailure::None;
 }
 
-L2TransitionFailure validate_changes(const L2BookConfig &config,
-                                     const std::vector<L2Change> &changes) {
-  if (changes.size() > config.maximum_changes_per_delta)
-    return L2TransitionFailure::ResourceLimitExceeded;
-  std::vector<contracts::AmountUnits> prices;
-  prices.reserve(changes.size());
+L2TransitionFailure
+validate_changes(const L2BookConfig &config,
+                 const std::vector<L2Change> &changes,
+                 std::vector<contracts::AmountUnits> &prices) {
+  prices.clear();
   for (const auto &change : changes) {
     if (change.operation != L2Operation::SetAbsolute &&
         change.operation != L2Operation::Delete) {
@@ -135,11 +134,17 @@ struct L2Book::State final {
       : config(std::move(initial_config)) {
     bids.reserve(config.maximum_levels_per_side);
     asks.reserve(config.maximum_levels_per_side);
+    scratch_bids.reserve(config.maximum_levels_per_side);
+    scratch_asks.reserve(config.maximum_levels_per_side);
+    validation_prices.reserve(config.maximum_changes_per_delta);
   }
 
   L2BookConfig config;
   std::vector<L2Level> bids;
   std::vector<L2Level> asks;
+  std::vector<L2Level> scratch_bids;
+  std::vector<L2Level> scratch_asks;
+  std::vector<contracts::AmountUnits> validation_prices;
   std::uint64_t transition_sequence{};
 };
 
@@ -164,19 +169,20 @@ L2TransitionResult L2Book::apply_snapshot(const L2Snapshot &snapshot) {
   }
   if (state_->transition_sequence == std::numeric_limits<std::uint64_t>::max())
     return {.failure = L2TransitionFailure::ResourceLimitExceeded};
-  auto bids = snapshot.bids;
-  auto asks = snapshot.asks;
-  const auto bid_failure = validate_levels(state_->config, bids);
+  state_->scratch_bids.assign(snapshot.bids.begin(), snapshot.bids.end());
+  state_->scratch_asks.assign(snapshot.asks.begin(), snapshot.asks.end());
+  const auto bid_failure =
+      validate_levels(state_->config, state_->scratch_bids);
   if (bid_failure != L2TransitionFailure::None)
     return {.failure = bid_failure};
-  const auto ask_failure = validate_levels(state_->config, asks);
+  const auto ask_failure =
+      validate_levels(state_->config, state_->scratch_asks);
   if (ask_failure != L2TransitionFailure::None)
     return {.failure = ask_failure};
-  bids.reserve(state_->config.maximum_levels_per_side);
-  asks.reserve(state_->config.maximum_levels_per_side);
-  const bool changed = bids != state_->bids || asks != state_->asks;
-  state_->bids = std::move(bids);
-  state_->asks = std::move(asks);
+  const bool changed = state_->scratch_bids != state_->bids ||
+                       state_->scratch_asks != state_->asks;
+  state_->bids.swap(state_->scratch_bids);
+  state_->asks.swap(state_->scratch_asks);
   ++state_->transition_sequence;
   return {.content_changed = changed,
           .transition_sequence = state_->transition_sequence};
@@ -187,26 +193,32 @@ L2TransitionResult L2Book::apply_delta(const L2Delta &delta) {
     return {.failure = L2TransitionFailure::WrongListing};
   if (state_->transition_sequence == std::numeric_limits<std::uint64_t>::max())
     return {.failure = L2TransitionFailure::ResourceLimitExceeded};
-  const auto bid_failure = validate_changes(state_->config, delta.bid_changes);
+  const auto maximum_changes = state_->config.maximum_changes_per_delta;
+  if (delta.bid_changes.size() > maximum_changes ||
+      delta.ask_changes.size() > maximum_changes - delta.bid_changes.size()) {
+    return {.failure = L2TransitionFailure::ResourceLimitExceeded};
+  }
+  const auto bid_failure = validate_changes(state_->config, delta.bid_changes,
+                                            state_->validation_prices);
   if (bid_failure != L2TransitionFailure::None)
     return {.failure = bid_failure};
-  const auto ask_failure = validate_changes(state_->config, delta.ask_changes);
+  const auto ask_failure = validate_changes(state_->config, delta.ask_changes,
+                                            state_->validation_prices);
   if (ask_failure != L2TransitionFailure::None)
     return {.failure = ask_failure};
 
-  auto bids = state_->bids;
-  auto asks = state_->asks;
-  bids.reserve(state_->config.maximum_levels_per_side);
-  asks.reserve(state_->config.maximum_levels_per_side);
-  if (!apply_changes_bounded(bids, delta.bid_changes,
+  state_->scratch_bids.assign(state_->bids.begin(), state_->bids.end());
+  state_->scratch_asks.assign(state_->asks.begin(), state_->asks.end());
+  if (!apply_changes_bounded(state_->scratch_bids, delta.bid_changes,
                              state_->config.maximum_levels_per_side) ||
-      !apply_changes_bounded(asks, delta.ask_changes,
+      !apply_changes_bounded(state_->scratch_asks, delta.ask_changes,
                              state_->config.maximum_levels_per_side)) {
     return {.failure = L2TransitionFailure::ResourceLimitExceeded};
   }
-  const bool changed = bids != state_->bids || asks != state_->asks;
-  state_->bids = std::move(bids);
-  state_->asks = std::move(asks);
+  const bool changed = state_->scratch_bids != state_->bids ||
+                       state_->scratch_asks != state_->asks;
+  state_->bids.swap(state_->scratch_bids);
+  state_->asks.swap(state_->scratch_asks);
   ++state_->transition_sequence;
   return {.content_changed = changed,
           .transition_sequence = state_->transition_sequence};
@@ -221,6 +233,16 @@ std::span<const L2Level> L2Book::asks() const noexcept { return state_->asks; }
 
 std::uint64_t L2Book::transition_sequence() const noexcept {
   return state_->transition_sequence;
+}
+
+L2StorageProfile L2Book::storage_profile() const noexcept {
+  return {
+      .bid_capacity = state_->bids.capacity(),
+      .ask_capacity = state_->asks.capacity(),
+      .scratch_bid_capacity = state_->scratch_bids.capacity(),
+      .scratch_ask_capacity = state_->scratch_asks.capacity(),
+      .validation_capacity = state_->validation_prices.capacity(),
+  };
 }
 
 } // namespace chronos::core::market_state
