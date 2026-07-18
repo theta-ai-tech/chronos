@@ -10,6 +10,7 @@ add_executable(chronos_unit_tests
   unit/trade_normalizer_test.cpp
   unit/replay_provider_test.cpp
   unit/run_input_dispatcher_test.cpp
+  unit/strategy_sdk_test.cpp
   unit/feature_runtime_test.cpp
   unit/l2_book_test.cpp
   unit/listing_aux_state_test.cpp
@@ -31,6 +32,6 @@ target_compile_definitions(chronos_unit_tests
 
 target_link_libraries(chronos_unit_tests
   PRIVATE chronos_boundary chronos_market_data_normalization chronos_options
-          chronos_replay_providers chronos_warnings)
+          chronos_replay_providers chronos_strategy_sdk chronos_warnings)
 
 add_test(NAME chronos_unit_tests COMMAND chronos_unit_tests)
