@@ -68,6 +68,7 @@ selection_checksum(const RunInputDispatcherConfig &config,
   append_cursor(canonical, pre_cursor);
   append_cursor(canonical, post_cursor);
   append_cursor(canonical, control_cursor);
+  append_id(canonical, config.consumer_boundary_id);
   append_u64(canonical, configuration_epoch);
   append_u64(canonical, static_cast<std::uint64_t>(controls.size()));
   for (const auto &control : controls) {
@@ -167,6 +168,7 @@ struct RunInputDispatcher::State final {
         .selection_id = pending->selection.selection_id,
         .run_input_sequence = pending->selection.run_input_sequence,
         .attempt_id = *pending->attempt_id,
+        .consumer_boundary_id = pending->selection.consumer_boundary_id,
         .attempt_number = pending->attempt_number,
         .from = pending->publication_state,
         .to = next,
@@ -181,6 +183,10 @@ struct RunInputDispatcher::State final {
   DispatchResult publish(RunInputConsumer &consumer) {
     if (!pending.has_value())
       return {.failure = DispatchFailure::NoPendingPublication};
+    if (consumer.boundary_id() != pending->selection.consumer_boundary_id) {
+      return {.selection = pending->selection,
+              .failure = DispatchFailure::ConsumerBoundaryMismatch};
+    }
     if (pending->publication_state ==
         PublicationState::PublicationFailedTerminal) {
       return {.selection = pending->selection,
@@ -339,6 +345,7 @@ RunInputDispatcher::create(RunInputDispatcherConfig config,
   }
   std::vector<contracts::EventId> control_ids;
   std::vector<std::uint64_t> control_sequences;
+  std::vector<const RecoverableControl *> ordered_controls;
   for (const auto &control : saved.pending_controls) {
     const auto &reservation = control.reservation;
     if (!valid_control_reservation(config, reservation) ||
@@ -354,6 +361,23 @@ RunInputDispatcher::create(RunInputDispatcherConfig config,
     }
     control_ids.push_back(reservation.control_outcome_id);
     control_sequences.push_back(reservation.control_sequence);
+    ordered_controls.push_back(&control);
+  }
+  std::sort(
+      ordered_controls.begin(), ordered_controls.end(),
+      [](const RecoverableControl *left, const RecoverableControl *right) {
+        return left->reservation.control_sequence <
+               right->reservation.control_sequence;
+      });
+  auto pending_epoch = saved.configuration_epoch;
+  auto prior_effective_position = saved.run_input_sequence;
+  for (const auto *control : ordered_controls) {
+    if (control->reservation.prior_configuration_epoch != pending_epoch ||
+        control->reservation.effective_position < prior_effective_position) {
+      return std::nullopt;
+    }
+    pending_epoch = control->reservation.new_configuration_epoch;
+    prior_effective_position = control->reservation.effective_position;
   }
   if (saved.pending_publication.has_value()) {
     const auto &publication = *saved.pending_publication;
@@ -382,7 +406,14 @@ RunInputDispatcher::create(RunInputDispatcherConfig config,
       if (!valid_control_reservation(config, control) ||
           control.effective_position != selection.run_input_sequence ||
           control.prior_configuration_epoch != expected_prior_epoch ||
-          control.control_sequence <= prior_control_sequence) {
+          control.control_sequence <= prior_control_sequence ||
+          !saved.control_cursor.last_consumed_sequence().has_value() ||
+          control.control_sequence >
+              *saved.control_cursor.last_consumed_sequence() ||
+          std::find(control_ids.begin(), control_ids.end(),
+                    control.control_outcome_id) != control_ids.end() ||
+          std::find(control_sequences.begin(), control_sequences.end(),
+                    control.control_sequence) != control_sequences.end()) {
         applied_controls_valid = false;
         break;
       }
@@ -422,6 +453,7 @@ RunInputDispatcher::create(RunInputDispatcherConfig config,
         !selection_cursor_valid || !applied_controls_valid ||
         selection.post_selection_cursors.front() != saved.input_cursor ||
         selection.control_cursor != saved.control_cursor ||
+        selection.consumer_boundary_id != config.consumer_boundary_id ||
         selection.selected_event_id != candidate.event_id ||
         selection.selected_event_type != candidate.event_type ||
         selection.selected_event_position != candidate.event_position ||
@@ -454,9 +486,9 @@ RunInputDispatcher::create(RunInputDispatcherConfig config,
   state->control_cursor = saved.control_cursor;
   state->run_input_sequence = saved.run_input_sequence;
   state->configuration_epoch = saved.configuration_epoch;
-  for (const auto &control : saved.pending_controls) {
+  for (const auto *control : ordered_controls) {
     state->controls.push_back(
-        {.reservation = control.reservation, .visible = control.visible});
+        {.reservation = control->reservation, .visible = control->visible});
   }
   if (saved.pending_publication.has_value()) {
     state->pending = State::PendingPublication{
@@ -472,16 +504,26 @@ RunInputDispatcher::create(RunInputDispatcherConfig config,
 
 bool RunInputDispatcher::reserve_control_boundary(
     const ControlBoundaryReservation &reservation) {
-  if (state_->control_cursor.last_consumed_sequence().has_value() &&
-      *state_->control_cursor.last_consumed_sequence() ==
-          std::numeric_limits<std::uint64_t>::max()) {
+  if (state_->run_input_sequence == std::numeric_limits<std::uint64_t>::max() ||
+      (state_->control_cursor.last_consumed_sequence().has_value() &&
+       *state_->control_cursor.last_consumed_sequence() ==
+           std::numeric_limits<std::uint64_t>::max())) {
     return false;
   }
   const auto expected_control_sequence =
       state_->control_cursor.last_consumed_sequence().value_or(0) + 1;
+  const auto expected_prior_epoch =
+      state_->controls.empty()
+          ? state_->configuration_epoch
+          : state_->controls.back().reservation.new_configuration_epoch;
+  const auto minimum_effective_position =
+      state_->controls.empty()
+          ? state_->run_input_sequence + 1
+          : state_->controls.back().reservation.effective_position;
   if (!valid_control_reservation(state_->config, reservation) ||
       reservation.control_sequence != expected_control_sequence ||
-      reservation.effective_position <= state_->run_input_sequence ||
+      reservation.prior_configuration_epoch != expected_prior_epoch ||
+      reservation.effective_position < minimum_effective_position ||
       state_->controls.size() >= state_->config.maximum_pending_controls ||
       std::any_of(state_->controls.begin(), state_->controls.end(),
                   [&](const State::ControlState &existing) {
@@ -606,6 +648,7 @@ DispatchResult RunInputDispatcher::dispatch(RunInputCandidate candidate,
       .post_selection_cursors = {*post_cursor},
       .control_cursor = state_->control_cursor,
       .applied_controls = std::move(applied_controls),
+      .consumer_boundary_id = state_->config.consumer_boundary_id,
       .active_configuration_epoch = configuration_epoch,
       .merge_policy_version = state_->config.merge_policy_version,
       .registry_snapshot_version = state_->config.registry_snapshot_version,

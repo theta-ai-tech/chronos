@@ -35,6 +35,7 @@ enum class DispatchFailure : std::uint8_t {
   PublicationTransitionRejected,
   ConsumerRetryableFailure,
   ConsumerTerminalFailure,
+  ConsumerBoundaryMismatch,
   PublicationPending,
   NoPendingPublication,
   SequenceExhausted,
@@ -55,6 +56,7 @@ struct RunInputDispatcherConfig final {
   contracts::StreamId control_stream_id;
   std::uint64_t control_stream_epoch{};
   std::optional<std::uint64_t> initial_control_sequence;
+  contracts::ConsumerBoundaryId consumer_boundary_id;
   contracts::VersionRef merge_policy_version;
   contracts::VersionRef registry_snapshot_version;
   std::uint64_t initial_configuration_epoch{};
@@ -99,6 +101,7 @@ struct RunInputSelectionRecord final {
   std::vector<contracts::StreamCursor> post_selection_cursors;
   contracts::StreamCursor control_cursor;
   std::vector<ControlBoundaryReservation> applied_controls;
+  contracts::ConsumerBoundaryId consumer_boundary_id;
   std::uint64_t active_configuration_epoch{};
   contracts::VersionRef merge_policy_version;
   contracts::VersionRef registry_snapshot_version;
@@ -113,6 +116,7 @@ struct PublicationTransition final {
   contracts::RunInputSelectionId selection_id;
   std::uint64_t run_input_sequence{};
   contracts::PublicationAttemptId attempt_id;
+  contracts::ConsumerBoundaryId consumer_boundary_id;
   std::uint64_t attempt_number{};
   PublicationState from{PublicationState::NotPublished};
   PublicationState to{PublicationState::PublicationInProgress};
@@ -181,6 +185,8 @@ public:
 class RunInputConsumer {
 public:
   virtual ~RunInputConsumer() = default;
+  [[nodiscard]] virtual contracts::ConsumerBoundaryId
+  boundary_id() const noexcept = 0;
   [[nodiscard]] virtual ConsumerDisposition
   accept(const RunInputSelectionRecord &selection,
          const RunInputCandidate &candidate,

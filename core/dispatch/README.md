@@ -11,7 +11,9 @@ port must reject reused control-outcome identities, atomically retain the
 candidate with its selection, expose exact restart state, and append only legal
 publication-attempt transitions. Applied controls carry their run/control-stream
 identity and bounded checksum-protected behavior bytes to the consumer at the
-reserved boundary.
+reserved boundary. Every selection and publication attempt is bound to the
+consumer boundary declared by the run configuration; recovery cannot redirect a
+pending selection to another consumer.
 
 - **Parent:** `core/`
 - **Owner:** Inherits `core/` ownership.

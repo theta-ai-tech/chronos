@@ -34,6 +34,7 @@ dispatch::RunInputDispatcherConfig config() {
       .input_stream_epoch = 1,
       .control_stream_id = id<contracts::StreamId>(5),
       .control_stream_epoch = 1,
+      .consumer_boundary_id = id<contracts::ConsumerBoundaryId>(6),
       .merge_policy_version = version(3),
       .registry_snapshot_version = version(4),
       .initial_configuration_epoch = 1,
@@ -145,6 +146,8 @@ public:
         !state->pending_publication.has_value() ||
         state->pending_publication->selection.selection_id !=
             transition.selection_id ||
+        state->pending_publication->selection.consumer_boundary_id !=
+            transition.consumer_boundary_id ||
         state->pending_publication->state != transition.from)
       return false;
     transitions.push_back(transition);
@@ -181,6 +184,10 @@ public:
 
 class RecordingConsumer final : public dispatch::RunInputConsumer {
 public:
+  contracts::ConsumerBoundaryId boundary_id() const noexcept override {
+    return configured_boundary_id;
+  }
+
   dispatch::ConsumerDisposition
   accept(const dispatch::RunInputSelectionRecord &selection,
          const dispatch::RunInputCandidate &input,
@@ -198,6 +205,8 @@ public:
 
   dispatch::ConsumerDisposition next_disposition{
       dispatch::ConsumerDisposition::Accepted};
+  contracts::ConsumerBoundaryId configured_boundary_id{
+      id<contracts::ConsumerBoundaryId>(6)};
   bool duplicate_after_acceptance{};
   std::vector<dispatch::RunInputSelectionRecord> selections;
   std::vector<dispatch::RunInputCandidate> candidates;
@@ -290,6 +299,9 @@ TEST_CASE("control reservation blocks and applies at its exact boundary") {
   auto dispatcher =
       dispatch::RunInputDispatcher::create(config(), persistence, registry)
           .value();
+  const auto invalid_epoch = control(19, 1, 1, 5, 6);
+  CHECK(!dispatcher.reserve_control_boundary(invalid_epoch));
+  CHECK(persistence.reservations.empty());
   const auto reserved = control(20, 1, 2, 1, 2);
   CHECK(dispatcher.reserve_control_boundary(reserved));
   CHECK(dispatcher.dispatch(candidate(10, 1), consumer).ok());
@@ -420,12 +432,39 @@ TEST_CASE("restart recovers and publishes the exact persisted selection") {
   auto recovered =
       dispatch::RunInputDispatcher::create(config(), persistence, registry)
           .value();
+  RecordingConsumer wrong_consumer;
+  wrong_consumer.configured_boundary_id = id<contracts::ConsumerBoundaryId>(7);
+  CHECK(recovered.retry_pending(wrong_consumer).failure ==
+        dispatch::DispatchFailure::ConsumerBoundaryMismatch);
+  CHECK(wrong_consumer.selections.empty());
   const auto retried = recovered.retry_pending(consumer);
   CHECK(retried.ok());
   CHECK(retried.selection == uncertain.selection);
   CHECK(consumer.selections.size() == 1);
   CHECK(consumer.selections[0] == *uncertain.selection);
   CHECK(!recovered.has_pending_publication());
+}
+
+TEST_CASE("recovery rejects a control present as applied and pending") {
+  RecordingPersistence persistence;
+  TestRegistry registry;
+  RecordingConsumer consumer;
+  persistence.blocked_transition =
+      dispatch::PublicationState::PublicationInProgress;
+  auto dispatcher =
+      dispatch::RunInputDispatcher::create(config(), persistence, registry)
+          .value();
+  const auto applied = control(20, 1, 1, 1, 2);
+  CHECK(dispatcher.reserve_control_boundary(applied));
+  CHECK(dispatcher.make_control_visible(applied));
+  CHECK(dispatcher.dispatch(candidate(10, 1), consumer).failure ==
+        dispatch::DispatchFailure::PublicationTransitionRejected);
+
+  auto duplicated = control(20, 1, 2, 2, 3);
+  persistence.state->pending_controls.push_back(
+      {.reservation = std::move(duplicated), .visible = true});
+  CHECK(!dispatch::RunInputDispatcher::create(config(), persistence, registry)
+             .has_value());
 }
 
 TEST_CASE("recovery rejects a selection whose semantic identity changed") {
