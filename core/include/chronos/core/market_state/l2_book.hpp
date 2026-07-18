@@ -14,6 +14,15 @@ namespace chronos::core::market_state {
 
 enum class L2Operation : std::uint8_t { SetAbsolute, Delete };
 
+enum class L2BookShape : std::uint8_t {
+  Normal,
+  Locked,
+  Crossed,
+  OneSided,
+  Empty,
+  Unknown,
+};
+
 enum class L2TransitionFailure : std::uint8_t {
   None,
   WrongListing,
@@ -71,6 +80,15 @@ struct L2TransitionResult final {
   }
 };
 
+struct L2TopOfBook final {
+  std::optional<L2Level> best_bid;
+  std::optional<L2Level> best_ask;
+  std::optional<contracts::Price> spread;
+  L2BookShape shape{L2BookShape::Unknown};
+
+  bool operator==(const L2TopOfBook &) const = default;
+};
+
 struct L2StorageProfile final {
   std::size_t bid_capacity{};
   std::size_t ask_capacity{};
@@ -95,6 +113,7 @@ public:
   [[nodiscard]] contracts::ListingId listing_id() const noexcept;
   [[nodiscard]] std::span<const L2Level> bids() const noexcept;
   [[nodiscard]] std::span<const L2Level> asks() const noexcept;
+  [[nodiscard]] L2TopOfBook top_of_book() const noexcept;
   [[nodiscard]] std::uint64_t transition_sequence() const noexcept;
   [[nodiscard]] L2StorageProfile storage_profile() const noexcept;
 

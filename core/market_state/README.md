@@ -7,5 +7,6 @@
 - **Plane:** Inherits `core/` plane.
 - **Language:** Inherits `core/` language policy.
 - **Public API:** `chronos/core/market_state/l2_book.hpp`
-- **Purpose:** Listing-scoped L2 state, StateLineage cuts, immutable view publication.
+- **Purpose:** Listing-scoped L2 state, derived top-of-book, StateLineage cuts,
+  immutable view publication.
 - **Accepted dependencies:** inherits `core/` rules (see parent README).

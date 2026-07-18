@@ -231,6 +231,33 @@ contracts::ListingId L2Book::listing_id() const noexcept {
 std::span<const L2Level> L2Book::bids() const noexcept { return state_->bids; }
 std::span<const L2Level> L2Book::asks() const noexcept { return state_->asks; }
 
+L2TopOfBook L2Book::top_of_book() const noexcept {
+  if (state_->bids.empty() && state_->asks.empty())
+    return {.shape = L2BookShape::Empty};
+  if (state_->bids.empty()) {
+    return {.best_ask = state_->asks.front(), .shape = L2BookShape::OneSided};
+  }
+  if (state_->asks.empty()) {
+    return {.best_bid = state_->bids.back(), .shape = L2BookShape::OneSided};
+  }
+
+  const auto &best_bid = state_->bids.back();
+  const auto &best_ask = state_->asks.front();
+  const auto spread = best_ask.price.checked_subtract(best_bid.price);
+  if (!spread) {
+    return {.best_bid = best_bid,
+            .best_ask = best_ask,
+            .shape = L2BookShape::Unknown};
+  }
+  const auto shape = spread->units() > 0    ? L2BookShape::Normal
+                     : spread->units() == 0 ? L2BookShape::Locked
+                                            : L2BookShape::Crossed;
+  return {.best_bid = best_bid,
+          .best_ask = best_ask,
+          .spread = spread,
+          .shape = shape};
+}
+
 std::uint64_t L2Book::transition_sequence() const noexcept {
   return state_->transition_sequence;
 }

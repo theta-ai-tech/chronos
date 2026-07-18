@@ -232,3 +232,55 @@ TEST_CASE("transitions reuse fixed-capacity internal storage") {
             .failure == market::L2TransitionFailure::ResourceLimitExceeded);
   CHECK(book.storage_profile() == initial_storage);
 }
+
+TEST_CASE("top of book derives best levels and exact normal spread") {
+  auto book = market::L2Book::create(config()).value();
+  CHECK(book.apply_snapshot({.listing_id = id<contracts::ListingId>(1),
+                             .bids = {level(98, 2), level(100, 5)},
+                             .asks = {level(103, 4), level(101, 3)}})
+            .ok());
+
+  const auto top = book.top_of_book();
+  CHECK(top.shape == market::L2BookShape::Normal);
+  CHECK(top.best_bid == level(100, 5));
+  CHECK(top.best_ask == level(101, 3));
+  CHECK(top.spread == price(1));
+}
+
+TEST_CASE("top of book keeps locked and crossed states explicit") {
+  auto book = market::L2Book::create(config()).value();
+  CHECK(book.apply_snapshot({.listing_id = id<contracts::ListingId>(1),
+                             .bids = {level(100, 5)},
+                             .asks = {level(100, 3)}})
+            .ok());
+  CHECK(book.top_of_book().shape == market::L2BookShape::Locked);
+  CHECK(book.top_of_book().spread == price(0));
+
+  CHECK(book.apply_delta({.listing_id = id<contracts::ListingId>(1),
+                          .bid_changes = {set(101, 2)}})
+            .ok());
+  const auto crossed = book.top_of_book();
+  CHECK(crossed.shape == market::L2BookShape::Crossed);
+  CHECK(crossed.best_bid == level(101, 2));
+  CHECK(crossed.best_ask == level(100, 3));
+  CHECK(crossed.spread == price(-1));
+}
+
+TEST_CASE("top of book distinguishes one-sided and empty books") {
+  auto book = market::L2Book::create(config()).value();
+  CHECK(book.top_of_book() ==
+        market::L2TopOfBook{.shape = market::L2BookShape::Empty});
+
+  CHECK(book.apply_snapshot({.listing_id = id<contracts::ListingId>(1),
+                             .asks = {level(101, 3)}})
+            .ok());
+  CHECK(book.top_of_book() ==
+        (market::L2TopOfBook{.best_ask = level(101, 3),
+                             .shape = market::L2BookShape::OneSided}));
+
+  CHECK(book.apply_delta({.listing_id = id<contracts::ListingId>(1),
+                          .ask_changes = {remove(101)}})
+            .ok());
+  CHECK(book.top_of_book() ==
+        market::L2TopOfBook{.shape = market::L2BookShape::Empty});
+}
