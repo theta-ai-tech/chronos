@@ -103,6 +103,26 @@ bool valid_book_proof(const ListingAuxConfig &config,
          *proof.snapshot_cursor.last_consumed_sequence() == 0;
 }
 
+bool valid_book_observation_proof(
+    const ListingAuxConfig &config,
+    const contracts::StreamCursor &current_cursor,
+    const std::optional<BookSynchronizationProof> &last_proof,
+    const BookSynchronizationProof &proof, const L2Book *book) {
+  if (!book || !last_proof || book->listing_id() != config.listing_id ||
+      book->transition_sequence() != proof.l2_transition_sequence ||
+      proof.snapshot_event_id != last_proof->snapshot_event_id ||
+      proof.snapshot_cursor != last_proof->snapshot_cursor ||
+      proof.snapshot_cursor.stream_epoch() !=
+          proof.applied_through_cursor.stream_epoch() ||
+      !proof.bridge_complete || !proof.reference_compatible ||
+      !valid_next_cursor(current_cursor, proof.applied_through_cursor) ||
+      !next_sequence(last_proof->l2_transition_sequence,
+                     proof.l2_transition_sequence)) {
+    return false;
+  }
+  return true;
+}
+
 bool valid_ordered_trade_proof(
     const ListingAuxConfig &config,
     const contracts::StreamCursor &current_trade_cursor,
@@ -318,8 +338,14 @@ ListingAuxState::apply_quality_input(const ListingQualityInput &input,
     book = BookSynchronization::Recovering;
     break;
   case ListingQualityInputKind::BookEvidenceObserved:
-    if (book != BookSynchronization::Synchronized)
+    if (book != BookSynchronization::Synchronized || !input.book_proof ||
+        !valid_book_observation_proof(state_->config, state_->book_cursor,
+                                      state_->last_book_proof,
+                                      *input.book_proof, l2_book)) {
       return {.failure = ListingAuxFailure::InvalidTransition};
+    }
+    book_cursor = input.book_proof->applied_through_cursor;
+    book_proof = input.book_proof;
     book_evidence = input.logical_time_nanoseconds;
     break;
   case ListingQualityInputKind::BookInvalidated:
