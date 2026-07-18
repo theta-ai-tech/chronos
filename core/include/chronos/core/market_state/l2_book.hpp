@@ -70,8 +70,8 @@ struct L2Snapshot final {
   contracts::ListingId listing_id;
   std::vector<L2Level> bids;
   std::vector<L2Level> asks;
-  L2SideCompleteness bid_completeness{L2SideCompleteness::Complete};
-  L2SideCompleteness ask_completeness{L2SideCompleteness::Complete};
+  L2SideCompleteness bid_completeness{L2SideCompleteness::Unknown};
+  L2SideCompleteness ask_completeness{L2SideCompleteness::Unknown};
 };
 
 struct L2Delta final {
