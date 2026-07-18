@@ -4,6 +4,7 @@
 # can prove it can invoke C++ without introducing domain logic yet.
 add_library(chronos_core STATIC
   src/boundary.cpp
+  src/run_input_dispatcher.cpp
   src/reference_data.cpp
   src/version.cpp)
 
