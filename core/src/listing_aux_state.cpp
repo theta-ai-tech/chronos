@@ -1,5 +1,8 @@
 #include "chronos/core/market_state/listing_aux_state.hpp"
 
+#include "chronos/core/market_state/l2_book.hpp"
+
+#include <algorithm>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -31,12 +34,6 @@ bool next_sequence(std::uint64_t current, std::uint64_t candidate) {
          candidate == current + 1;
 }
 
-bool valid_recovery_cursor(const ListingAuxConfig &config,
-                           const contracts::StreamCursor &cursor) {
-  return cursor.stream_id() == config.trade_stream_id &&
-         cursor.stream_epoch() != 0;
-}
-
 bool valid_next_cursor(const contracts::StreamCursor &current,
                        const contracts::StreamCursor &candidate) {
   if (candidate.stream_id() != current.stream_id() ||
@@ -50,30 +47,115 @@ bool valid_next_cursor(const contracts::StreamCursor &current,
                        *candidate.last_consumed_sequence());
 }
 
+contracts::StreamCursor
+configured_cursor(contracts::StreamId stream_id, std::uint64_t epoch,
+                  std::optional<std::uint64_t> sequence) {
+  if (sequence)
+    return *contracts::StreamCursor::at_sequence(stream_id, epoch, *sequence);
+  return *contracts::StreamCursor::at_origin(stream_id, epoch);
+}
+
+bool known_top_side(L2SideCompleteness completeness) {
+  return completeness == L2SideCompleteness::Complete ||
+         completeness == L2SideCompleteness::BoundedWithProvenTop;
+}
+
+bool valid_book_proof(const ListingAuxConfig &config,
+                      const contracts::StreamCursor &current_cursor,
+                      BookSynchronization current_status,
+                      const BookSynchronizationProof &proof,
+                      const L2Book *book) {
+  if (!book || book->listing_id() != config.listing_id ||
+      book->transition_sequence() == 0 ||
+      book->transition_sequence() != proof.l2_transition_sequence ||
+      !proof.bridge_complete || !proof.reference_compatible) {
+    return false;
+  }
+  const auto top = book->top_of_book();
+  if (!known_top_side(top.bid_completeness) ||
+      !known_top_side(top.ask_completeness)) {
+    return false;
+  }
+  if (proof.snapshot_cursor.stream_id() != config.book_stream_id ||
+      proof.applied_through_cursor.stream_id() != config.book_stream_id ||
+      proof.snapshot_cursor.stream_epoch() !=
+          proof.applied_through_cursor.stream_epoch() ||
+      !proof.snapshot_cursor.last_consumed_sequence() ||
+      !proof.applied_through_cursor.last_consumed_sequence() ||
+      *proof.snapshot_cursor.last_consumed_sequence() >
+          *proof.applied_through_cursor.last_consumed_sequence()) {
+    return false;
+  }
+  if (current_status == BookSynchronization::Starting)
+    return proof.applied_through_cursor.stream_epoch() ==
+           current_cursor.stream_epoch();
+  return current_status == BookSynchronization::Recovering &&
+         proof.applied_through_cursor.stream_epoch() !=
+             current_cursor.stream_epoch();
+}
+
+bool valid_trade_proof(const ListingAuxConfig &config,
+                       const contracts::StreamCursor &current_trade_cursor,
+                       const contracts::StreamCursor &continuity_cursor,
+                       const TradeContinuityProof &proof) {
+  if (!valid_next_cursor(continuity_cursor, proof.boundary_cursor) ||
+      proof.boundary_cursor.stream_id() != config.trade_continuity_stream_id ||
+      proof.prior_trade_cursor != current_trade_cursor ||
+      proof.recovered_trade_cursor.stream_id() != config.trade_stream_id ||
+      proof.fidelity == TradeFidelity::Unknown) {
+    return false;
+  }
+  if (proof.recovered_trade_cursor.stream_epoch() ==
+      proof.prior_trade_cursor.stream_epoch()) {
+    return proof.recovered_trade_cursor == proof.prior_trade_cursor &&
+           proof.fidelity == TradeFidelity::Lossless;
+  }
+  return proof.recovered_trade_cursor.is_origin();
+}
+
+bool correction_is_supported(const ListingAuxConfig &config,
+                             std::span<const RecentTrade> retained,
+                             const RecentTrade &trade) {
+  if (!trade.corrects_event_id)
+    return true;
+  if (config.correction_policy != TradeCorrectionPolicy::RetainProspective)
+    return false;
+  return std::any_of(retained.begin(), retained.end(), [&](const auto &prior) {
+    return prior.event_id == *trade.corrects_event_id;
+  });
+}
+
 } // namespace
 
 struct ListingAuxState::State final {
   explicit State(ListingAuxConfig initial_config)
       : config(std::move(initial_config)),
-        trade_cursor(*contracts::StreamCursor::at_origin(
-            config.trade_stream_id, config.trade_stream_epoch)),
+        trade_cursor(configured_cursor(config.trade_stream_id,
+                                       config.trade_stream_epoch,
+                                       config.initial_trade_sequence)),
+        trade_continuity_cursor(
+            configured_cursor(config.trade_continuity_stream_id,
+                              config.trade_continuity_stream_epoch,
+                              config.initial_trade_continuity_sequence)),
+        book_cursor(configured_cursor(config.book_stream_id,
+                                      config.book_stream_epoch,
+                                      config.initial_book_sequence)),
         run_input_sequence(config.initial_run_input_sequence),
         logical_time(config.initial_logical_time_nanoseconds) {
-    if (config.initial_trade_sequence) {
-      trade_cursor = *contracts::StreamCursor::at_sequence(
-          config.trade_stream_id, config.trade_stream_epoch,
-          *config.initial_trade_sequence);
-    }
     trades.reserve(config.recent_trade_capacity);
   }
 
   ListingAuxConfig config;
   contracts::StreamCursor trade_cursor;
+  contracts::StreamCursor trade_continuity_cursor;
+  contracts::StreamCursor book_cursor;
   std::vector<RecentTrade> trades;
   BookSynchronization book_synchronization{BookSynchronization::Starting};
   TradeContinuity trade_continuity{TradeContinuity::Unavailable};
   std::optional<std::int64_t> last_book_evidence;
   std::optional<std::int64_t> last_trade_evidence;
+  std::optional<BookSynchronizationProof> last_book_proof;
+  std::optional<TradeContinuityProof> last_trade_boundary;
   std::uint64_t run_input_sequence{};
   std::int64_t logical_time{};
 };
@@ -87,9 +169,16 @@ ListingAuxState::~ListingAuxState() = default;
 
 std::optional<ListingAuxState>
 ListingAuxState::create(ListingAuxConfig config) {
-  if (config.trade_stream_epoch == 0 || config.recent_trade_capacity == 0 ||
+  if (config.trade_stream_epoch == 0 ||
+      config.trade_continuity_stream_epoch == 0 ||
+      config.book_stream_epoch == 0 || config.recent_trade_capacity == 0 ||
       config.book_freshness_deadline_nanoseconds <= 0 ||
-      config.trade_freshness_deadline_nanoseconds <= 0) {
+      config.trade_freshness_deadline_nanoseconds <= 0 ||
+      !contracts::is_valid(config.accepted_source_clock_class) ||
+      config.required_source_time_quality == SourceTimeQuality::Unknown ||
+      (config.correction_policy != TradeCorrectionPolicy::Reject &&
+       config.correction_policy != TradeCorrectionPolicy::RetainProspective) ||
+      config.trade_window_policy != TradeWindowPolicy::AcceptedCount) {
     return std::nullopt;
   }
   return ListingAuxState(std::make_unique<State>(std::move(config)));
@@ -118,6 +207,16 @@ ListingAuxResult ListingAuxState::apply_trade(const RecentTrade &trade) {
       trade.aggressor_side != TradeAggressorSide::Sell) {
     return {.failure = ListingAuxFailure::InvalidTrade};
   }
+  if (trade.source_event_time.clock_domain_id() !=
+          state_->config.accepted_source_clock_domain ||
+      trade.source_event_time.clock_class() !=
+          state_->config.accepted_source_clock_class ||
+      trade.source_time_quality !=
+          state_->config.required_source_time_quality ||
+      trade.fidelity == TradeFidelity::Unknown ||
+      !correction_is_supported(state_->config, state_->trades, trade)) {
+    return {.failure = ListingAuxFailure::InvalidTrade};
+  }
   if (!valid_next_cursor(state_->trade_cursor, trade.cursor))
     return {.failure = ListingAuxFailure::InvalidCursor};
 
@@ -133,7 +232,8 @@ ListingAuxResult ListingAuxState::apply_trade(const RecentTrade &trade) {
 }
 
 ListingAuxResult
-ListingAuxState::apply_quality_input(const ListingQualityInput &input) {
+ListingAuxState::apply_quality_input(const ListingQualityInput &input,
+                                     const L2Book *l2_book) {
   if (input.listing_id != state_->config.listing_id)
     return {.failure = ListingAuxFailure::WrongListing};
   if (!next_sequence(state_->run_input_sequence, input.run_input_sequence)) {
@@ -148,8 +248,12 @@ ListingAuxState::apply_quality_input(const ListingQualityInput &input) {
   auto book = state_->book_synchronization;
   auto trade = state_->trade_continuity;
   auto trade_cursor = state_->trade_cursor;
+  auto trade_continuity_cursor = state_->trade_continuity_cursor;
+  auto book_cursor = state_->book_cursor;
   auto book_evidence = state_->last_book_evidence;
   auto trade_evidence = state_->last_trade_evidence;
+  auto book_proof = state_->last_book_proof;
+  auto trade_boundary = state_->last_trade_boundary;
   bool clear_trades = false;
 
   switch (input.kind) {
@@ -157,7 +261,14 @@ ListingAuxState::apply_quality_input(const ListingQualityInput &input) {
     if (book != BookSynchronization::Starting &&
         book != BookSynchronization::Recovering)
       return {.failure = ListingAuxFailure::InvalidTransition};
+    if (!input.book_proof ||
+        !valid_book_proof(state_->config, state_->book_cursor, book,
+                          *input.book_proof, l2_book)) {
+      return {.failure = ListingAuxFailure::InvalidTransition};
+    }
     book = BookSynchronization::Synchronized;
+    book_cursor = input.book_proof->applied_through_cursor;
+    book_proof = input.book_proof;
     book_evidence = input.logical_time_nanoseconds;
     break;
   case ListingQualityInputKind::BookGapDetected:
@@ -186,12 +297,16 @@ ListingAuxState::apply_quality_input(const ListingQualityInput &input) {
     if (trade != TradeContinuity::Unavailable &&
         trade != TradeContinuity::Recovering)
       return {.failure = ListingAuxFailure::InvalidTransition};
-    if (!input.recovered_trade_cursor ||
-        !valid_recovery_cursor(state_->config, *input.recovered_trade_cursor)) {
+    if (!input.trade_proof ||
+        !valid_trade_proof(state_->config, state_->trade_cursor,
+                           state_->trade_continuity_cursor,
+                           *input.trade_proof)) {
       return {.failure = ListingAuxFailure::InvalidCursor};
     }
     trade = TradeContinuity::Continuous;
-    trade_cursor = *input.recovered_trade_cursor;
+    trade_cursor = input.trade_proof->recovered_trade_cursor;
+    trade_continuity_cursor = input.trade_proof->boundary_cursor;
+    trade_boundary = input.trade_proof;
     trade_evidence.reset();
     clear_trades = true;
     break;
@@ -226,17 +341,26 @@ ListingAuxState::apply_quality_input(const ListingQualityInput &input) {
     return {.failure = ListingAuxFailure::InvalidTransition};
   }
 
-  const bool changed = book != state_->book_synchronization ||
-                       trade != state_->trade_continuity ||
-                       trade_cursor != state_->trade_cursor || clear_trades ||
-                       book_evidence != state_->last_book_evidence ||
-                       trade_evidence != state_->last_trade_evidence ||
-                       input.logical_time_nanoseconds != state_->logical_time;
+  const bool changed =
+      book != state_->book_synchronization ||
+      trade != state_->trade_continuity ||
+      trade_cursor != state_->trade_cursor || clear_trades ||
+      trade_continuity_cursor != state_->trade_continuity_cursor ||
+      book_cursor != state_->book_cursor ||
+      book_evidence != state_->last_book_evidence ||
+      trade_evidence != state_->last_trade_evidence ||
+      book_proof != state_->last_book_proof ||
+      trade_boundary != state_->last_trade_boundary ||
+      input.logical_time_nanoseconds != state_->logical_time;
   state_->book_synchronization = book;
   state_->trade_continuity = trade;
   state_->trade_cursor = trade_cursor;
+  state_->trade_continuity_cursor = trade_continuity_cursor;
+  state_->book_cursor = book_cursor;
   state_->last_book_evidence = book_evidence;
   state_->last_trade_evidence = trade_evidence;
+  state_->last_book_proof = book_proof;
+  state_->last_trade_boundary = trade_boundary;
   if (clear_trades)
     state_->trades.clear();
   state_->logical_time = input.logical_time_nanoseconds;
@@ -303,6 +427,13 @@ ListingQualityState ListingAuxState::quality() const noexcept {
       .logical_time_nanoseconds = state_->logical_time,
       .run_input_sequence = state_->run_input_sequence,
       .freshness_policy_version = state_->config.freshness_policy_version,
+      .trade_window_policy_version = state_->config.trade_window_policy_version,
+      .trade_window_policy = state_->config.trade_window_policy,
+      .book_cursor = state_->book_cursor,
+      .trade_cursor = state_->trade_cursor,
+      .trade_continuity_cursor = state_->trade_continuity_cursor,
+      .last_book_proof = state_->last_book_proof,
+      .last_trade_boundary = state_->last_trade_boundary,
   };
 }
 
