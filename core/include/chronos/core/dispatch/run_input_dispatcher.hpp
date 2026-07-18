@@ -16,19 +16,25 @@ namespace chronos::core::dispatch {
 
 enum class PublicationState : std::uint8_t {
   NotPublished,
+  PublicationInProgress,
+  PublishedToConsumerBoundary,
   ConsumerAccepted,
+  PublicationFailedRetryable,
+  PublicationFailedTerminal,
 };
 
 enum class DispatchFailure : std::uint8_t {
   None,
+  RecoveryStateInvalid,
   InvalidCandidate,
   IneligibleCandidate,
   CursorMismatch,
   ControlBarrierBlocked,
   ControlStateInvalid,
   SelectionPersistenceRejected,
-  ConsumerRejected,
-  PublicationUnconfirmed,
+  PublicationTransitionRejected,
+  ConsumerRetryableFailure,
+  ConsumerTerminalFailure,
   PublicationPending,
   NoPendingPublication,
   SequenceExhausted,
@@ -37,7 +43,8 @@ enum class DispatchFailure : std::uint8_t {
 enum class ConsumerDisposition : std::uint8_t {
   Accepted,
   AlreadyAccepted,
-  Rejected,
+  RetryableFailure,
+  TerminalFailure,
 };
 
 struct RunInputDispatcherConfig final {
@@ -45,10 +52,14 @@ struct RunInputDispatcherConfig final {
   contracts::StreamId input_stream_id;
   std::uint64_t input_stream_epoch{};
   std::optional<std::uint64_t> initial_stream_sequence;
+  contracts::StreamId control_stream_id;
+  std::uint64_t control_stream_epoch{};
+  std::optional<std::uint64_t> initial_control_sequence;
   contracts::VersionRef merge_policy_version;
   contracts::VersionRef registry_snapshot_version;
   std::uint64_t initial_configuration_epoch{};
   std::size_t maximum_payload_bytes{1U << 20U};
+  std::size_t maximum_control_payload_bytes{1U << 16U};
   std::size_t maximum_pending_controls{1024};
 };
 
@@ -63,10 +74,16 @@ struct RunInputCandidate final {
 };
 
 struct ControlBoundaryReservation final {
+  contracts::RunId run_id;
+  contracts::StreamId control_stream_id;
+  std::uint64_t control_stream_epoch{};
   contracts::EventId control_outcome_id;
   std::uint64_t control_sequence{};
   std::uint64_t effective_position{};
+  std::uint64_t prior_configuration_epoch{};
   std::uint64_t new_configuration_epoch{};
+  std::vector<std::byte> behavior_payload;
+  contracts::Sha256Digest behavior_checksum;
 
   bool operator==(const ControlBoundaryReservation &) const = default;
 };
@@ -80,7 +97,8 @@ struct RunInputSelectionRecord final {
   contracts::EventPosition selected_event_position;
   std::vector<contracts::StreamCursor> pre_selection_cursors;
   std::vector<contracts::StreamCursor> post_selection_cursors;
-  std::vector<contracts::EventId> applied_control_outcome_ids;
+  contracts::StreamCursor control_cursor;
+  std::vector<ControlBoundaryReservation> applied_controls;
   std::uint64_t active_configuration_epoch{};
   contracts::VersionRef merge_policy_version;
   contracts::VersionRef registry_snapshot_version;
@@ -91,18 +109,65 @@ struct RunInputSelectionRecord final {
   bool operator==(const RunInputSelectionRecord &) const = default;
 };
 
+struct PublicationTransition final {
+  contracts::RunInputSelectionId selection_id;
+  std::uint64_t run_input_sequence{};
+  contracts::PublicationAttemptId attempt_id;
+  std::uint64_t attempt_number{};
+  PublicationState from{PublicationState::NotPublished};
+  PublicationState to{PublicationState::PublicationInProgress};
+  std::optional<ConsumerDisposition> consumer_disposition;
+
+  bool operator==(const PublicationTransition &) const = default;
+};
+
+struct RecoverableControl final {
+  ControlBoundaryReservation reservation;
+  bool visible{};
+
+  bool operator==(const RecoverableControl &) const = default;
+};
+
+struct RecoverablePublication final {
+  RunInputSelectionRecord selection;
+  RunInputCandidate candidate;
+  PublicationState state{PublicationState::NotPublished};
+  std::uint64_t attempt_number{};
+  std::optional<contracts::PublicationAttemptId> attempt_id;
+
+  bool operator==(const RecoverablePublication &) const = default;
+};
+
+struct RunInputRecoveryState final {
+  contracts::StreamCursor input_cursor;
+  contracts::StreamCursor control_cursor;
+  std::uint64_t run_input_sequence{};
+  std::uint64_t configuration_epoch{};
+  std::vector<RecoverableControl> pending_controls;
+  std::optional<RecoverablePublication> pending_publication;
+
+  bool operator==(const RunInputRecoveryState &) const = default;
+};
+
+struct RunInputRecoveryLoad final {
+  bool success{};
+  std::optional<RunInputRecoveryState> state;
+};
+
 class RunInputSelectionPersistence {
 public:
   virtual ~RunInputSelectionPersistence() = default;
+  [[nodiscard]] virtual RunInputRecoveryLoad
+  load_recovery_state(const RunInputDispatcherConfig &config) = 0;
   [[nodiscard]] virtual bool
   commit_control_reservation(const ControlBoundaryReservation &reservation) = 0;
   [[nodiscard]] virtual bool
   commit_control_visibility(const ControlBoundaryReservation &reservation) = 0;
   [[nodiscard]] virtual bool
-  commit_selection(const RunInputSelectionRecord &record) = 0;
+  commit_selection(const RunInputSelectionRecord &record,
+                   const RunInputCandidate &candidate) = 0;
   [[nodiscard]] virtual bool
-  commit_consumer_acceptance(contracts::RunInputSelectionId selection_id,
-                             std::uint64_t run_input_sequence) = 0;
+  commit_publication_transition(const PublicationTransition &transition) = 0;
 };
 
 class RunInputEligibilityRegistry {
@@ -118,7 +183,8 @@ public:
   virtual ~RunInputConsumer() = default;
   [[nodiscard]] virtual ConsumerDisposition
   accept(const RunInputSelectionRecord &selection,
-         const RunInputCandidate &candidate) = 0;
+         const RunInputCandidate &candidate,
+         contracts::PublicationAttemptId attempt_id) = 0;
 };
 
 struct DispatchResult final {
@@ -152,6 +218,7 @@ public:
 
   [[nodiscard]] std::uint64_t current_run_input_sequence() const noexcept;
   [[nodiscard]] contracts::StreamCursor current_input_cursor() const noexcept;
+  [[nodiscard]] contracts::StreamCursor current_control_cursor() const noexcept;
   [[nodiscard]] std::uint64_t active_configuration_epoch() const noexcept;
   [[nodiscard]] bool has_pending_publication() const noexcept;
 

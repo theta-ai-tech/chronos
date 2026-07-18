@@ -6,7 +6,12 @@ M4.1 provides the single-stream form of the run-input merge authority. It
 validates one contiguous input cursor, allocates one monotonic
 `run_input_sequence`, persists a complete immutable selection before
 publication, enforces reserved control boundaries, and retries uncertain
-publication with the original selection identity and sequence.
+publication with the original selection identity and sequence. The persistence
+port must reject reused control-outcome identities, atomically retain the
+candidate with its selection, expose exact restart state, and append only legal
+publication-attempt transitions. Applied controls carry their run/control-stream
+identity and bounded checksum-protected behavior bytes to the consumer at the
+reserved boundary.
 
 - **Parent:** `core/`
 - **Owner:** Inherits `core/` ownership.
