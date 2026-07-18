@@ -5,6 +5,7 @@
 add_library(chronos_core STATIC
   src/boundary.cpp
   src/l2_book.cpp
+  src/listing_aux_state.cpp
   src/run_input_dispatcher.cpp
   src/reference_data.cpp
   src/version.cpp)
