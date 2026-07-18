@@ -467,6 +467,33 @@ TEST_CASE("recovery rejects a control present as applied and pending") {
              .has_value());
 }
 
+TEST_CASE("recovery rejects pending control order behind applied order") {
+  RecordingPersistence persistence;
+  TestRegistry registry;
+  RecordingConsumer consumer;
+  auto dispatcher =
+      dispatch::RunInputDispatcher::create(config(), persistence, registry)
+          .value();
+  const auto first = control(20, 1, 1, 1, 2);
+  CHECK(dispatcher.reserve_control_boundary(first));
+  CHECK(dispatcher.make_control_visible(first));
+  CHECK(dispatcher.dispatch(candidate(10, 1), consumer).ok());
+
+  const auto second = control(21, 2, 2, 2, 3);
+  CHECK(dispatcher.reserve_control_boundary(second));
+  CHECK(dispatcher.make_control_visible(second));
+  persistence.blocked_transition =
+      dispatch::PublicationState::PublicationInProgress;
+  CHECK(dispatcher.dispatch(candidate(11, 2), consumer).failure ==
+        dispatch::DispatchFailure::PublicationTransitionRejected);
+
+  auto stale_pending = control(22, 1, 3, 3, 4);
+  persistence.state->pending_controls.push_back(
+      {.reservation = std::move(stale_pending), .visible = true});
+  CHECK(!dispatch::RunInputDispatcher::create(config(), persistence, registry)
+             .has_value());
+}
+
 TEST_CASE("recovery rejects a selection whose semantic identity changed") {
   RecordingPersistence persistence;
   TestRegistry registry;

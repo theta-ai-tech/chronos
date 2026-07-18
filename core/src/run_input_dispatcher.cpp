@@ -422,7 +422,10 @@ RunInputDispatcher::create(RunInputDispatcherConfig config,
     }
     applied_controls_valid =
         applied_controls_valid &&
-        expected_prior_epoch == selection.active_configuration_epoch;
+        expected_prior_epoch == selection.active_configuration_epoch &&
+        (ordered_controls.empty() ||
+         prior_control_sequence <
+             ordered_controls.front()->reservation.control_sequence);
     const bool publication_state_valid =
         publication.state == PublicationState::NotPublished ||
         publication.state == PublicationState::PublicationInProgress ||
