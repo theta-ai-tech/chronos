@@ -14,6 +14,22 @@ namespace chronos::core::market_state {
 
 enum class L2Operation : std::uint8_t { SetAbsolute, Delete };
 
+enum class L2BookShape : std::uint8_t {
+  Normal,
+  Locked,
+  Crossed,
+  OneSided,
+  Empty,
+  Unknown,
+};
+
+enum class L2SideCompleteness : std::uint8_t {
+  Complete,
+  BoundedWithProvenTop,
+  BoundaryExhausted,
+  Unknown,
+};
+
 enum class L2TransitionFailure : std::uint8_t {
   None,
   WrongListing,
@@ -21,6 +37,7 @@ enum class L2TransitionFailure : std::uint8_t {
   InvalidPrice,
   InvalidQuantity,
   InvalidOperation,
+  InvalidCompleteness,
   DuplicateLevel,
   DuplicateChange,
   ResourceLimitExceeded,
@@ -53,6 +70,8 @@ struct L2Snapshot final {
   contracts::ListingId listing_id;
   std::vector<L2Level> bids;
   std::vector<L2Level> asks;
+  L2SideCompleteness bid_completeness{L2SideCompleteness::Unknown};
+  L2SideCompleteness ask_completeness{L2SideCompleteness::Unknown};
 };
 
 struct L2Delta final {
@@ -69,6 +88,17 @@ struct L2TransitionResult final {
   [[nodiscard]] bool ok() const noexcept {
     return failure == L2TransitionFailure::None;
   }
+};
+
+struct L2TopOfBook final {
+  std::optional<L2Level> best_bid;
+  std::optional<L2Level> best_ask;
+  std::optional<contracts::Price> spread;
+  L2SideCompleteness bid_completeness{L2SideCompleteness::Unknown};
+  L2SideCompleteness ask_completeness{L2SideCompleteness::Unknown};
+  L2BookShape shape{L2BookShape::Unknown};
+
+  bool operator==(const L2TopOfBook &) const = default;
 };
 
 struct L2StorageProfile final {
@@ -95,6 +125,7 @@ public:
   [[nodiscard]] contracts::ListingId listing_id() const noexcept;
   [[nodiscard]] std::span<const L2Level> bids() const noexcept;
   [[nodiscard]] std::span<const L2Level> asks() const noexcept;
+  [[nodiscard]] L2TopOfBook top_of_book() const noexcept;
   [[nodiscard]] std::uint64_t transition_sequence() const noexcept;
   [[nodiscard]] L2StorageProfile storage_profile() const noexcept;
 
