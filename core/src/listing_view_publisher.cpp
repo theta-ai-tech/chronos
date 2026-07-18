@@ -959,6 +959,17 @@ ListingViewPublisher::published_bundle() const noexcept {
   return state_->last_published_bundle;
 }
 
+std::optional<AcceptedFeatureCut>
+ListingViewPublisher::accepted_feature_cut() const noexcept {
+  if (state_->publication_state !=
+          ViewPublicationState::FeatureConsumerAccepted ||
+      !state_->last_published || !state_->last_published_bundle) {
+    return std::nullopt;
+  }
+  return AcceptedFeatureCut(state_->last_published,
+                            state_->last_published_bundle);
+}
+
 ViewPublicationState ListingViewPublisher::publication_state() const noexcept {
   return state_->publication_state;
 }

@@ -6,6 +6,7 @@
 #include <limits>
 
 using chronos::contracts::checked_multiply_divide;
+using chronos::contracts::checked_weighted_average;
 using chronos::contracts::DecimalScale;
 using chronos::contracts::DefinitionId;
 using chronos::contracts::Money;
@@ -102,5 +103,23 @@ TEST_CASE("multiply-divide widens intermediates and rejects invalid output") {
   CHECK(
       !checked_multiply_divide(1, 1, 0, RoundingMode::toward_zero).has_value());
   CHECK(!checked_multiply_divide(1, 1, -1, RoundingMode::toward_zero)
+             .has_value());
+}
+
+TEST_CASE("weighted average rounds the complete translated value once") {
+  CHECK(checked_weighted_average(102, 1, 101, 1, 2,
+                                 RoundingMode::nearest_ties_to_even) == 102);
+  CHECK(checked_weighted_average(101, 1, 100, 1, 2,
+                                 RoundingMode::nearest_ties_to_even) == 100);
+  CHECK(checked_weighted_average(-101, 1, -102, 1, 2,
+                                 RoundingMode::nearest_ties_to_even) == -102);
+  CHECK(!checked_weighted_average(std::numeric_limits<std::int64_t>::min(),
+                                  std::numeric_limits<std::int64_t>::min(),
+                                  std::numeric_limits<std::int64_t>::min(),
+                                  std::numeric_limits<std::int64_t>::min(), 1,
+                                  RoundingMode::nearest_ties_to_even)
+             .has_value());
+  CHECK(!checked_weighted_average(1, 1, 2, 1, 0,
+                                  RoundingMode::nearest_ties_to_even)
              .has_value());
 }
