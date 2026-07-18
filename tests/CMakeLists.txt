@@ -10,6 +10,7 @@ add_executable(chronos_unit_tests
   unit/trade_normalizer_test.cpp
   unit/replay_provider_test.cpp
   unit/run_input_dispatcher_test.cpp
+  unit/l2_book_test.cpp
   replay/normalized_stream_golden_test.cpp
   unit/boundary_test.cpp
   unit/event_envelope_test.cpp
