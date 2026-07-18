@@ -1,5 +1,6 @@
 #pragma once
 
+#include "chronos/contracts/digest.hpp"
 #include "chronos/contracts/fixed_point.hpp"
 #include "chronos/contracts/value_objects.hpp"
 
@@ -13,6 +14,15 @@
 namespace chronos::core::market_state {
 
 enum class L2Operation : std::uint8_t { SetAbsolute, Delete };
+enum class L2InputKind : std::uint8_t { Snapshot, Delta };
+
+struct L2InputEvidence final {
+  contracts::EventId event_id;
+  contracts::Sha256Digest semantic_checksum;
+  L2InputKind kind{L2InputKind::Snapshot};
+
+  bool operator==(const L2InputEvidence &) const = default;
+};
 
 enum class L2BookShape : std::uint8_t {
   Normal,
@@ -41,6 +51,7 @@ enum class L2TransitionFailure : std::uint8_t {
   DuplicateLevel,
   DuplicateChange,
   ResourceLimitExceeded,
+  InvalidInputEvidence,
 };
 
 struct L2BookConfig final {
@@ -68,6 +79,7 @@ struct L2Change final {
 
 struct L2Snapshot final {
   contracts::ListingId listing_id;
+  std::optional<L2InputEvidence> input_evidence;
   std::vector<L2Level> bids;
   std::vector<L2Level> asks;
   L2SideCompleteness bid_completeness{L2SideCompleteness::Unknown};
@@ -76,6 +88,7 @@ struct L2Snapshot final {
 
 struct L2Delta final {
   contracts::ListingId listing_id;
+  std::optional<L2InputEvidence> input_evidence;
   std::vector<L2Change> bid_changes;
   std::vector<L2Change> ask_changes;
 };
@@ -127,6 +140,8 @@ public:
   [[nodiscard]] std::span<const L2Level> asks() const noexcept;
   [[nodiscard]] L2TopOfBook top_of_book() const noexcept;
   [[nodiscard]] std::uint64_t transition_sequence() const noexcept;
+  [[nodiscard]] std::optional<L2InputEvidence>
+  last_input_evidence() const noexcept;
   [[nodiscard]] L2StorageProfile storage_profile() const noexcept;
 
 private:

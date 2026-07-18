@@ -103,6 +103,26 @@ bool valid_book_proof(const ListingAuxConfig &config,
          *proof.snapshot_cursor.last_consumed_sequence() == 0;
 }
 
+bool valid_book_observation_proof(
+    const ListingAuxConfig &config,
+    const contracts::StreamCursor &current_cursor,
+    const std::optional<BookSynchronizationProof> &last_proof,
+    const BookSynchronizationProof &proof, const L2Book *book) {
+  if (!book || !last_proof || book->listing_id() != config.listing_id ||
+      book->transition_sequence() != proof.l2_transition_sequence ||
+      proof.snapshot_event_id != last_proof->snapshot_event_id ||
+      proof.snapshot_cursor != last_proof->snapshot_cursor ||
+      proof.snapshot_cursor.stream_epoch() !=
+          proof.applied_through_cursor.stream_epoch() ||
+      !proof.bridge_complete || !proof.reference_compatible ||
+      !valid_next_cursor(current_cursor, proof.applied_through_cursor) ||
+      !next_sequence(last_proof->l2_transition_sequence,
+                     proof.l2_transition_sequence)) {
+    return false;
+  }
+  return true;
+}
+
 bool valid_ordered_trade_proof(
     const ListingAuxConfig &config,
     const contracts::StreamCursor &current_trade_cursor,
@@ -189,6 +209,10 @@ struct ListingAuxState::State final {
   std::optional<std::int64_t> last_trade_evidence;
   std::optional<BookSynchronizationProof> last_book_proof;
   std::optional<TradeContinuityProof> last_trade_boundary;
+  std::optional<contracts::EventId> last_applied_event_id;
+  contracts::Sha256Digest last_applied_input_semantic_checksum;
+  std::optional<ListingQualityInputKind> last_quality_input_kind;
+  bool last_applied_input_was_trade{};
   std::uint64_t run_input_sequence{};
   std::int64_t logical_time{};
 };
@@ -261,6 +285,10 @@ ListingAuxResult ListingAuxState::apply_trade(const RecentTrade &trade) {
   state_->last_trade_evidence = trade.logical_time_nanoseconds;
   state_->logical_time = trade.logical_time_nanoseconds;
   state_->run_input_sequence = trade.run_input_sequence;
+  state_->last_applied_event_id = trade.event_id;
+  state_->last_applied_input_semantic_checksum = trade.input_semantic_checksum;
+  state_->last_quality_input_kind.reset();
+  state_->last_applied_input_was_trade = true;
   return {.content_changed = true,
           .run_input_sequence = state_->run_input_sequence};
 }
@@ -306,20 +334,35 @@ ListingAuxState::apply_quality_input(const ListingQualityInput &input,
     book_evidence = input.logical_time_nanoseconds;
     break;
   case ListingQualityInputKind::BookGapDetected:
-    if (book != BookSynchronization::Synchronized)
+    if (book != BookSynchronization::Synchronized ||
+        (input.event_cursor &&
+         !valid_next_cursor(book_cursor, *input.event_cursor)))
       return {.failure = ListingAuxFailure::InvalidTransition};
     book = BookSynchronization::Gapped;
+    if (input.event_cursor)
+      book_cursor = *input.event_cursor;
     break;
   case ListingQualityInputKind::BookRecoveryStarted:
     if (book != BookSynchronization::Starting &&
         book != BookSynchronization::Gapped &&
         book != BookSynchronization::Invalid)
       return {.failure = ListingAuxFailure::InvalidTransition};
+    if (input.event_cursor &&
+        !valid_next_cursor(book_cursor, *input.event_cursor))
+      return {.failure = ListingAuxFailure::InvalidTransition};
     book = BookSynchronization::Recovering;
+    if (input.event_cursor)
+      book_cursor = *input.event_cursor;
     break;
   case ListingQualityInputKind::BookEvidenceObserved:
-    if (book != BookSynchronization::Synchronized)
+    if (book != BookSynchronization::Synchronized || !input.book_proof ||
+        !valid_book_observation_proof(state_->config, state_->book_cursor,
+                                      state_->last_book_proof,
+                                      *input.book_proof, l2_book)) {
       return {.failure = ListingAuxFailure::InvalidTransition};
+    }
+    book_cursor = input.book_proof->applied_through_cursor;
+    book_proof = input.book_proof;
     book_evidence = input.logical_time_nanoseconds;
     break;
   case ListingQualityInputKind::BookInvalidated:
@@ -415,6 +458,10 @@ ListingAuxState::apply_quality_input(const ListingQualityInput &input,
     state_->trades.clear();
   state_->logical_time = input.logical_time_nanoseconds;
   state_->run_input_sequence = input.run_input_sequence;
+  state_->last_applied_event_id = input.event_id;
+  state_->last_applied_input_semantic_checksum = input.input_semantic_checksum;
+  state_->last_quality_input_kind = input.kind;
+  state_->last_applied_input_was_trade = false;
   return {.content_changed = changed,
           .run_input_sequence = state_->run_input_sequence};
 }
@@ -484,6 +531,11 @@ ListingQualityState ListingAuxState::quality() const noexcept {
       .trade_continuity_cursor = state_->trade_continuity_cursor,
       .last_book_proof = state_->last_book_proof,
       .last_trade_boundary = state_->last_trade_boundary,
+      .last_applied_event_id = state_->last_applied_event_id,
+      .last_applied_input_semantic_checksum =
+          state_->last_applied_input_semantic_checksum,
+      .last_quality_input_kind = state_->last_quality_input_kind,
+      .last_applied_input_was_trade = state_->last_applied_input_was_trade,
   };
 }
 

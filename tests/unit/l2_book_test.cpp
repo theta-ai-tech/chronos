@@ -402,3 +402,30 @@ TEST_CASE("omitted snapshot completeness fails closed to unknown top") {
   CHECK(top.bid_completeness == market::L2SideCompleteness::Unknown);
   CHECK(top.ask_completeness == market::L2SideCompleteness::Unknown);
 }
+
+TEST_CASE("book retains exact applied input evidence") {
+  auto book = market::L2Book::create(config()).value();
+  const std::vector<std::byte> payload = {std::byte{0x2a}};
+  const market::L2InputEvidence snapshot_evidence{
+      .event_id = id<contracts::EventId>(42),
+      .semantic_checksum = contracts::sha256(payload),
+      .kind = market::L2InputKind::Snapshot,
+  };
+  CHECK(book.apply_snapshot(complete_snapshot({
+                                .listing_id = id<contracts::ListingId>(1),
+                                .input_evidence = snapshot_evidence,
+                                .bids = {level(100, 5)},
+                                .asks = {level(101, 3)},
+                            }))
+            .ok());
+  CHECK(book.last_input_evidence() == snapshot_evidence);
+
+  const auto invalid = book.apply_delta({
+      .listing_id = id<contracts::ListingId>(1),
+      .input_evidence = snapshot_evidence,
+      .bid_changes = {set(100, 7)},
+  });
+  CHECK(invalid.failure == market::L2TransitionFailure::InvalidInputEvidence);
+  CHECK(book.last_input_evidence() == snapshot_evidence);
+  CHECK(book.bids().front().quantity == quantity(5));
+}

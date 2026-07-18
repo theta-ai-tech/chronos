@@ -72,6 +72,8 @@ market::RecentTrade trade(std::uint8_t seed, std::uint64_t stream_sequence,
                           std::int64_t logical_time) {
   return {
       .event_id = id<contracts::EventId>(seed),
+      .input_semantic_checksum = contracts::sha256(
+          std::vector<std::byte>{static_cast<std::byte>(run_sequence & 0xffU)}),
       .source_event_id = id<contracts::SourceEventId>(seed),
       .listing_id = id<contracts::ListingId>(1),
       .cursor = cursor(1, stream_sequence),
@@ -89,6 +91,12 @@ market::RecentTrade trade(std::uint8_t seed, std::uint64_t stream_sequence,
 
 contracts::StreamCursor continuity_cursor(std::uint64_t sequence) {
   return contracts::StreamCursor::at_sequence(id<contracts::StreamId>(7), 1,
+                                              sequence)
+      .value();
+}
+
+contracts::StreamCursor book_cursor(std::uint64_t sequence) {
+  return contracts::StreamCursor::at_sequence(id<contracts::StreamId>(8), 1,
                                               sequence)
       .value();
 }
@@ -161,6 +169,10 @@ market::ListingQualityInput quality_input(market::ListingQualityInputKind kind,
                                           std::uint64_t run_sequence,
                                           std::int64_t logical_time) {
   return {
+      .event_id =
+          id<contracts::EventId>(static_cast<std::uint8_t>(100 + run_sequence)),
+      .input_semantic_checksum = contracts::sha256(
+          std::vector<std::byte>{static_cast<std::byte>(run_sequence & 0xffU)}),
       .listing_id = id<contracts::ListingId>(1),
       .kind = kind,
       .run_input_sequence = run_sequence,
@@ -401,12 +413,62 @@ TEST_CASE("freshness recovers only from ordered qualifying evidence") {
                 market::ListingQualityInputKind::LogicalTimerAdvanced, 2, 111))
             .ok());
   CHECK(state.quality().book_freshness == market::FreshnessStatus::Stale);
-  CHECK(state
-            .apply_quality_input(quality_input(
-                market::ListingQualityInputKind::BookEvidenceObserved, 3, 111))
-            .ok());
+  const auto delta = book.apply_delta({
+      .listing_id = id<contracts::ListingId>(1),
+      .bid_changes = {{
+          .price = contracts::Price::from_units(100, version(2)).value(),
+          .quantity = contracts::Quantity::from_units(4, version(3)).value(),
+      }},
+  });
+  CHECK(delta.ok());
+  auto observed = quality_input(
+      market::ListingQualityInputKind::BookEvidenceObserved, 3, 111);
+  observed.book_proof = *state.quality().last_book_proof;
+  observed.book_proof->applied_through_cursor = book_cursor(1);
+  observed.book_proof->l2_transition_sequence = book.transition_sequence();
+  CHECK(state.apply_quality_input(observed, &book).ok());
   CHECK(state.quality().book_freshness == market::FreshnessStatus::Fresh);
   CHECK(state.quality().book_age_nanoseconds == 0);
+  CHECK(state.quality().book_cursor == book_cursor(1));
+  CHECK(state.quality().last_book_proof == observed.book_proof);
+}
+
+TEST_CASE("book evidence requires the next matching book cut") {
+  auto state = market::ListingAuxState::create(config()).value();
+  auto book = synchronized_book();
+  CHECK(state
+            .apply_quality_input(
+                book_sync_input(1, 100, book.transition_sequence()), &book)
+            .ok());
+  CHECK(book
+            .apply_delta({
+                .listing_id = id<contracts::ListingId>(1),
+                .ask_changes = {{
+                    .price =
+                        contracts::Price::from_units(101, version(2)).value(),
+                    .quantity =
+                        contracts::Quantity::from_units(5, version(3)).value(),
+                }},
+            })
+            .ok());
+
+  auto observed = quality_input(
+      market::ListingQualityInputKind::BookEvidenceObserved, 2, 101);
+  observed.book_proof = *state.quality().last_book_proof;
+  observed.book_proof->applied_through_cursor = book_cursor(1);
+  observed.book_proof->l2_transition_sequence = book.transition_sequence();
+  const auto before = state.quality();
+  auto skipped = observed;
+  skipped.book_proof->applied_through_cursor = book_cursor(2);
+  CHECK(state.apply_quality_input(skipped, &book).failure ==
+        market::ListingAuxFailure::InvalidTransition);
+  CHECK(state.quality() == before);
+  auto wrong_transition = observed;
+  ++wrong_transition.book_proof->l2_transition_sequence;
+  CHECK(state.apply_quality_input(wrong_transition, &book).failure ==
+        market::ListingAuxFailure::InvalidTransition);
+  CHECK(state.quality() == before);
+  CHECK(state.apply_quality_input(observed, &book).ok());
 }
 
 TEST_CASE("invalid order time cursor and trade fail atomically") {
