@@ -3,6 +3,7 @@
 #include "chronos/contracts/digest.hpp"
 #include "chronos/contracts/event_envelope.hpp"
 #include "chronos/contracts/state_lineage.hpp"
+#include "chronos/core/dispatch/run_input_dispatcher.hpp"
 #include "chronos/core/market_state/l2_book.hpp"
 #include "chronos/core/market_state/listing_aux_state.hpp"
 
@@ -43,6 +44,7 @@ enum class ListingViewFailure : std::uint8_t {
   WrongBoundary,
   InvalidPublicationTransition,
   PublicationHistoryExhausted,
+  AcceptedViewHistoryExhausted,
 };
 
 struct ListingViewPublisherConfig final {
@@ -58,6 +60,7 @@ struct ListingViewPublisherConfig final {
   contracts::StreamId run_control_stream_id;
   contracts::StreamId run_timer_stream_id;
   contracts::ConsumerBoundaryId feature_boundary_id;
+  dispatch::RunInputDispatcherConfig dispatcher_config;
   contracts::VersionRef merge_policy_version;
   std::uint64_t initial_configuration_epoch{};
   std::optional<std::uint64_t> initial_effective_control_position;
@@ -67,10 +70,13 @@ struct ListingViewPublisherConfig final {
   contracts::VersionRef arithmetic_version;
   contracts::VersionRef canonicalization_version;
   std::size_t maximum_publication_transitions{};
+  std::size_t maximum_retained_views{};
 };
 
 struct ListingViewCutInput final {
   contracts::RunInputSelectionId selection_id;
+  dispatch::RunInputSelectionRecord dispatch_selection;
+  dispatch::RunInputCandidate dispatch_candidate;
   contracts::EventId selected_event_id;
   std::string selected_event_type;
   contracts::EventPosition selected_event_position;
@@ -115,8 +121,27 @@ struct ListingStateView final {
   bool operator==(const ListingStateView &) const = default;
 };
 
+struct StateViewBundle final {
+  contracts::StateViewId bundle_id;
+  contracts::RunId run_id;
+  std::uint64_t run_input_sequence{};
+  contracts::ListingId listing_id;
+  contracts::StateViewId listing_view_id;
+  contracts::Sha256Digest selection_semantic_checksum;
+  contracts::VersionRef merge_policy_version;
+  std::uint64_t configuration_epoch{};
+  std::optional<std::uint64_t> effective_control_position;
+  std::optional<contracts::StateViewId> prior_bundle_id;
+  contracts::VersionRef view_schema_version;
+  contracts::VersionRef canonicalization_version;
+  contracts::Sha256Digest semantic_checksum;
+
+  bool operator==(const StateViewBundle &) const = default;
+};
+
 struct ViewPublicationTransition final {
   contracts::StateViewId view_id;
+  contracts::StateViewId bundle_id;
   contracts::PublicationAttemptId attempt_id;
   contracts::ConsumerBoundaryId boundary_id;
   std::uint64_t attempt_number{};
@@ -129,6 +154,7 @@ struct ViewPublicationTransition final {
 struct ListingViewResult final {
   ListingViewFailure failure{ListingViewFailure::None};
   std::shared_ptr<const ListingStateView> view;
+  std::shared_ptr<const StateViewBundle> bundle;
 
   [[nodiscard]] bool ok() const noexcept {
     return failure == ListingViewFailure::None;
@@ -154,6 +180,10 @@ public:
   accepted_view() const noexcept;
   [[nodiscard]] std::shared_ptr<const ListingStateView>
   published_view() const noexcept;
+  [[nodiscard]] std::shared_ptr<const StateViewBundle>
+  accepted_bundle() const noexcept;
+  [[nodiscard]] std::shared_ptr<const StateViewBundle>
+  published_bundle() const noexcept;
   [[nodiscard]] ViewPublicationState publication_state() const noexcept;
   [[nodiscard]] std::span<const ViewPublicationTransition>
   publication_history() const noexcept;

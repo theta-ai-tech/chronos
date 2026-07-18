@@ -142,6 +142,7 @@ struct TradeContinuityProof final {
 };
 
 struct ListingQualityInput final {
+  contracts::EventId event_id;
   contracts::ListingId listing_id;
   ListingQualityInputKind kind{ListingQualityInputKind::LogicalTimerAdvanced};
   std::uint64_t run_input_sequence{};
@@ -168,6 +169,9 @@ struct ListingQualityState final {
   contracts::StreamCursor trade_continuity_cursor;
   std::optional<BookSynchronizationProof> last_book_proof;
   std::optional<TradeContinuityProof> last_trade_boundary;
+  std::optional<contracts::EventId> last_applied_event_id;
+  std::optional<ListingQualityInputKind> last_quality_input_kind;
+  bool last_applied_input_was_trade{};
 
   bool operator==(const ListingQualityState &) const = default;
 };

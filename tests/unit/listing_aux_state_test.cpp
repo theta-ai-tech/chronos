@@ -167,6 +167,8 @@ market::ListingQualityInput quality_input(market::ListingQualityInputKind kind,
                                           std::uint64_t run_sequence,
                                           std::int64_t logical_time) {
   return {
+      .event_id =
+          id<contracts::EventId>(static_cast<std::uint8_t>(100 + run_sequence)),
       .listing_id = id<contracts::ListingId>(1),
       .kind = kind,
       .run_input_sequence = run_sequence,

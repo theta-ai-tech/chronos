@@ -9,6 +9,7 @@
 
 namespace {
 namespace contracts = chronos::contracts;
+namespace dispatch = chronos::core::dispatch;
 namespace market = chronos::core::market_state;
 
 template <typename Id> Id id(std::uint8_t seed) {
@@ -91,6 +92,7 @@ market::ListingAuxConfig aux_config() {
 market::ListingAuxState make_auxiliary(const market::L2Book &book) {
   auto auxiliary = market::ListingAuxState::create(aux_config()).value();
   market::ListingQualityInput book_sync{
+      .event_id = id<contracts::EventId>(23),
       .listing_id = id<contracts::ListingId>(1),
       .kind = market::ListingQualityInputKind::BookSynchronized,
       .run_input_sequence = 1,
@@ -138,7 +140,8 @@ contracts::Sha256Digest digest(std::uint8_t seed) {
 }
 
 market::ListingViewPublisherConfig
-publisher_config(std::size_t maximum_transitions = 8) {
+publisher_config(std::size_t maximum_transitions = 8,
+                 std::size_t maximum_views = 8) {
   return {
       .run_id = id<contracts::RunId>(30),
       .listing_id = id<contracts::ListingId>(1),
@@ -152,6 +155,18 @@ publisher_config(std::size_t maximum_transitions = 8) {
       .run_control_stream_id = id<contracts::StreamId>(12),
       .run_timer_stream_id = id<contracts::StreamId>(13),
       .feature_boundary_id = id<contracts::ConsumerBoundaryId>(31),
+      .dispatcher_config =
+          {
+              .run_id = id<contracts::RunId>(30),
+              .input_stream_id = id<contracts::StreamId>(14),
+              .input_stream_epoch = 1,
+              .control_stream_id = id<contracts::StreamId>(15),
+              .control_stream_epoch = 1,
+              .consumer_boundary_id = id<contracts::ConsumerBoundaryId>(38),
+              .merge_policy_version = version(37),
+              .registry_snapshot_version = version(39),
+              .initial_configuration_epoch = 1,
+          },
       .merge_policy_version = version(37),
       .initial_configuration_epoch = 1,
       .view_schema_version = version(32),
@@ -160,27 +175,65 @@ publisher_config(std::size_t maximum_transitions = 8) {
       .arithmetic_version = version(35),
       .canonicalization_version = version(36),
       .maximum_publication_transitions = maximum_transitions,
+      .maximum_retained_views = maximum_views,
   };
 }
 
 market::ListingViewCutInput cut_input(std::uint64_t run_sequence = 1) {
   const auto event_sequence = run_sequence - 1;
+  const auto event_id = run_sequence == 1
+                            ? id<contracts::EventId>(23)
+                            : id<contracts::EventId>(
+                                  static_cast<std::uint8_t>(40 + run_sequence));
+  const auto event_type = run_sequence == 1 ? "market.book.observation.snapshot"
+                                            : "market.book.observation.delta";
+  std::vector<std::byte> payload = {
+      static_cast<std::byte>(run_sequence & 0xffU)};
+  dispatch::RunInputCandidate candidate{
+      .event_id = event_id,
+      .event_type = event_type,
+      .event_position = contracts::EventPosition::from(
+                            id<contracts::StreamId>(14), 1, run_sequence)
+                            .value(),
+      .semantic_payload = payload,
+      .semantic_checksum = contracts::sha256(payload),
+  };
+  dispatch::RunInputSelectionRecord selection{
+      .selection_id = id<contracts::RunInputSelectionId>(1),
+      .run_id = id<contracts::RunId>(30),
+      .run_input_sequence = run_sequence,
+      .selected_event_id = event_id,
+      .selected_event_type = event_type,
+      .selected_event_position = candidate.event_position,
+      .pre_selection_cursors = {run_sequence == 1
+                                    ? origin(14)
+                                    : cursor(14, run_sequence - 1)},
+      .post_selection_cursors = {cursor(14, run_sequence)},
+      .control_cursor = origin(15),
+      .consumer_boundary_id = id<contracts::ConsumerBoundaryId>(38),
+      .active_configuration_epoch = 1,
+      .merge_policy_version = version(37),
+      .registry_snapshot_version = version(39),
+      .input_semantic_checksum = candidate.semantic_checksum,
+  };
+  const auto config = publisher_config().dispatcher_config;
+  selection.selection_semantic_checksum =
+      dispatch::derive_run_input_selection_checksum(config, selection,
+                                                    candidate);
+  selection.selection_id = dispatch::derive_run_input_selection_id(
+      selection.selection_semantic_checksum);
   return {
-      .selection_id = id<contracts::RunInputSelectionId>(
-          static_cast<std::uint8_t>(39 + run_sequence)),
-      .selected_event_id =
-          id<contracts::EventId>(static_cast<std::uint8_t>(40 + run_sequence)),
-      .selected_event_type = run_sequence == 1
-                                 ? "market.book.observation.snapshot"
-                                 : "market.book.observation.delta",
+      .selection_id = selection.selection_id,
+      .dispatch_selection = selection,
+      .dispatch_candidate = candidate,
+      .selected_event_id = event_id,
+      .selected_event_type = event_type,
       .selected_event_position =
           contracts::EventPosition::from(id<contracts::StreamId>(8), 1,
                                          event_sequence)
               .value(),
-      .input_semantic_checksum =
-          digest(static_cast<std::uint8_t>(50 + run_sequence)),
-      .selection_semantic_checksum =
-          digest(static_cast<std::uint8_t>(60 + run_sequence)),
+      .input_semantic_checksum = candidate.semantic_checksum,
+      .selection_semantic_checksum = selection.selection_semantic_checksum,
       .merge_policy_version = version(37),
       .configuration_epoch = 1,
       .lineage = lineage(run_sequence, cursor(8, event_sequence)),
@@ -188,12 +241,14 @@ market::ListingViewCutInput cut_input(std::uint64_t run_sequence = 1) {
 }
 
 market::ViewPublicationTransition publication(contracts::StateViewId view_id,
+                                              contracts::StateViewId bundle_id,
                                               std::uint8_t attempt_seed,
                                               std::uint64_t attempt_number,
                                               market::ViewPublicationState from,
                                               market::ViewPublicationState to) {
   return {
       .view_id = view_id,
+      .bundle_id = bundle_id,
       .attempt_id = id<contracts::PublicationAttemptId>(attempt_seed),
       .boundary_id = id<contracts::ConsumerBoundaryId>(31),
       .attempt_number = attempt_number,
@@ -221,6 +276,8 @@ void apply_book_delta(market::L2Book &book, market::ListingAuxState &auxiliary,
     std::abort();
   }
   auto observed = market::ListingQualityInput{
+      .event_id =
+          id<contracts::EventId>(static_cast<std::uint8_t>(40 + run_sequence)),
       .listing_id = id<contracts::ListingId>(1),
       .kind = market::ListingQualityInputKind::BookEvidenceObserved,
       .run_input_sequence = run_sequence,
@@ -234,17 +291,19 @@ void apply_book_delta(market::L2Book &book, market::ListingAuxState &auxiliary,
 }
 
 void acknowledge(market::ListingViewPublisher &publisher,
-                 contracts::StateViewId view_id) {
+                 contracts::StateViewId view_id,
+                 contracts::StateViewId bundle_id) {
   if (publisher.transition_publication(publication(
-          view_id, 60, 1, market::ViewPublicationState::NotPublished,
+          view_id, bundle_id, 60, 1, market::ViewPublicationState::NotPublished,
           market::ViewPublicationState::PublicationInProgress)) !=
           market::ListingViewFailure::None ||
       publisher.transition_publication(publication(
-          view_id, 60, 1, market::ViewPublicationState::PublicationInProgress,
+          view_id, bundle_id, 60, 1,
+          market::ViewPublicationState::PublicationInProgress,
           market::ViewPublicationState::PublishedToFeatureBoundary)) !=
           market::ListingViewFailure::None ||
       publisher.transition_publication(
-          publication(view_id, 60, 1,
+          publication(view_id, bundle_id, 60, 1,
                       market::ViewPublicationState::PublishedToFeatureBoundary,
                       market::ViewPublicationState::FeatureConsumerAccepted)) !=
           market::ListingViewFailure::None) {
@@ -262,10 +321,13 @@ TEST_CASE("accepted view is one immutable complete lineage cut") {
 
   const auto result = publisher.accept_cut(cut_input(), book, auxiliary);
   CHECK(result.ok());
-  if (!result.view)
+  if (!result.view || !result.bundle)
     return;
   CHECK(result.view == publisher.accepted_view());
+  CHECK(result.bundle == publisher.accepted_bundle());
+  CHECK(result.bundle->listing_view_id == result.view->view_id);
   CHECK(!publisher.published_view());
+  CHECK(!publisher.published_bundle());
   CHECK(result.view->lineage.cursors().size() == required_streams().size());
   CHECK(result.view->lineage.run_input_sequence() == 1);
   CHECK(result.view->bids ==
@@ -291,13 +353,15 @@ TEST_CASE("same semantic cut derives the same checksum and identity") {
   const auto second_result = second.accept_cut(cut_input(), book, auxiliary);
   CHECK(first_result.ok());
   CHECK(second_result.ok());
-  if (!first_result.view || !second_result.view)
+  if (!first_result.view || !first_result.bundle || !second_result.view ||
+      !second_result.bundle)
     return;
   const auto &first_view = first_result.view;
   const auto &second_view = second_result.view;
   CHECK(first_view->view_id == second_view->view_id);
   CHECK(first_view->semantic_checksum == second_view->semantic_checksum);
   CHECK(*first_view == *second_view);
+  CHECK(*first_result.bundle == *second_result.bundle);
 }
 
 TEST_CASE("selection redelivery is exact and contradictory reuse fails") {
@@ -308,16 +372,17 @@ TEST_CASE("selection redelivery is exact and contradictory reuse fails") {
   const auto input = cut_input();
   const auto first = publisher.accept_cut(input, book, auxiliary);
   CHECK(first.ok());
-  if (!first.view)
+  if (!first.view || !first.bundle)
     return;
   const auto duplicate = publisher.accept_cut(input, book, auxiliary);
   CHECK(duplicate.ok());
   CHECK(duplicate.view == first.view);
+  CHECK(duplicate.bundle == first.bundle);
   auto contradictory = input;
   contradictory.input_semantic_checksum = digest(99);
   CHECK(publisher.accept_cut(contradictory, book, auxiliary).failure ==
         market::ListingViewFailure::ContradictorySelection);
-  acknowledge(publisher, first.view->view_id);
+  acknowledge(publisher, first.view->view_id, first.bundle->bundle_id);
   CHECK(publisher.accept_cut(input, book, auxiliary).view == first.view);
 }
 
@@ -334,6 +399,10 @@ TEST_CASE("selection evidence is retained and fails closed") {
   invalid.merge_policy_version = version(98);
   CHECK(publisher.accept_cut(invalid, book, auxiliary).failure ==
         market::ListingViewFailure::InvalidSelectionEvidence);
+  invalid = cut_input();
+  invalid.dispatch_candidate.semantic_payload.push_back(std::byte{0x7f});
+  CHECK(publisher.accept_cut(invalid, book, auxiliary).failure ==
+        market::ListingViewFailure::InvalidSelectionEvidence);
   const auto accepted = publisher.accept_cut(cut_input(), book, auxiliary);
   CHECK(accepted.ok());
   if (!accepted.view)
@@ -344,6 +413,27 @@ TEST_CASE("selection evidence is retained and fails closed") {
         cut_input().selection_semantic_checksum);
   CHECK(accepted.view->configuration_epoch == 1);
   CHECK(!accepted.view->effective_control_position);
+}
+
+TEST_CASE("selected event identity proves the applied state mutation") {
+  auto book = make_book();
+  auto auxiliary = market::ListingAuxState::create(aux_config()).value();
+  const auto input = cut_input();
+  const auto applied = auxiliary.apply_quality_input(
+      {
+          .event_id = input.selected_event_id,
+          .listing_id = id<contracts::ListingId>(1),
+          .kind = market::ListingQualityInputKind::ListingClosed,
+          .run_input_sequence = 1,
+          .logical_time_nanoseconds = 100,
+      },
+      &book);
+  CHECK(applied.ok());
+  auto publisher =
+      market::ListingViewPublisher::create(publisher_config()).value();
+  CHECK(publisher.accept_cut(input, book, auxiliary).failure ==
+        market::ListingViewFailure::InvalidSelectionEvidence);
+  CHECK(!publisher.accepted_view());
 }
 
 TEST_CASE("incomplete mismatched and stale cuts fail before acceptance") {
@@ -411,25 +501,29 @@ TEST_CASE("feature consumer sees only exact published view") {
       market::ListingViewPublisher::create(publisher_config()).value();
   const auto result = publisher.accept_cut(cut_input(), book, auxiliary);
   CHECK(result.ok());
-  if (!result.view)
+  if (!result.view || !result.bundle)
     return;
   const auto &view = result.view;
   const auto capacity = publisher.publication_storage_capacity();
 
-  const auto begin = publication(
-      view->view_id, 60, 1, market::ViewPublicationState::NotPublished,
-      market::ViewPublicationState::PublicationInProgress);
+  const auto begin =
+      publication(view->view_id, result.bundle->bundle_id, 60, 1,
+                  market::ViewPublicationState::NotPublished,
+                  market::ViewPublicationState::PublicationInProgress);
   CHECK(publisher.transition_publication(begin) ==
         market::ListingViewFailure::None);
   CHECK(!publisher.published_view());
-  const auto published = publication(
-      view->view_id, 60, 1, market::ViewPublicationState::PublicationInProgress,
-      market::ViewPublicationState::PublishedToFeatureBoundary);
+  CHECK(!publisher.published_bundle());
+  const auto published =
+      publication(view->view_id, result.bundle->bundle_id, 60, 1,
+                  market::ViewPublicationState::PublicationInProgress,
+                  market::ViewPublicationState::PublishedToFeatureBoundary);
   CHECK(publisher.transition_publication(published) ==
         market::ListingViewFailure::None);
   CHECK(publisher.published_view() == view);
+  CHECK(publisher.published_bundle() == result.bundle);
   const auto accepted =
-      publication(view->view_id, 60, 1,
+      publication(view->view_id, result.bundle->bundle_id, 60, 1,
                   market::ViewPublicationState::PublishedToFeatureBoundary,
                   market::ViewPublicationState::FeatureConsumerAccepted);
   CHECK(publisher.transition_publication(accepted) ==
@@ -447,33 +541,41 @@ TEST_CASE("publication retry is append-only and exact-view guarded") {
       market::ListingViewPublisher::create(publisher_config()).value();
   const auto result = publisher.accept_cut(cut_input(), book, auxiliary);
   CHECK(result.ok());
-  if (!result.view)
+  if (!result.view || !result.bundle)
     return;
   const auto &view = result.view;
 
-  const auto begin = publication(
-      view->view_id, 60, 1, market::ViewPublicationState::NotPublished,
-      market::ViewPublicationState::PublicationInProgress);
+  const auto begin =
+      publication(view->view_id, result.bundle->bundle_id, 60, 1,
+                  market::ViewPublicationState::NotPublished,
+                  market::ViewPublicationState::PublicationInProgress);
   CHECK(publisher.transition_publication(begin) ==
         market::ListingViewFailure::None);
-  const auto failed = publication(
-      view->view_id, 60, 1, market::ViewPublicationState::PublicationInProgress,
-      market::ViewPublicationState::PublicationFailedRetryable);
+  const auto failed =
+      publication(view->view_id, result.bundle->bundle_id, 60, 1,
+                  market::ViewPublicationState::PublicationInProgress,
+                  market::ViewPublicationState::PublicationFailedRetryable);
   CHECK(publisher.transition_publication(failed) ==
         market::ListingViewFailure::None);
   const auto retry =
-      publication(view->view_id, 61, 2,
+      publication(view->view_id, result.bundle->bundle_id, 61, 2,
                   market::ViewPublicationState::PublicationFailedRetryable,
                   market::ViewPublicationState::PublicationInProgress);
   CHECK(publisher.transition_publication(retry) ==
         market::ListingViewFailure::None);
   auto wrong_view =
-      publication(id<contracts::StateViewId>(99), 61, 2,
-                  market::ViewPublicationState::PublicationInProgress,
+      publication(id<contracts::StateViewId>(99), result.bundle->bundle_id, 61,
+                  2, market::ViewPublicationState::PublicationInProgress,
                   market::ViewPublicationState::PublishedToFeatureBoundary);
   CHECK(publisher.transition_publication(wrong_view) ==
         market::ListingViewFailure::WrongView);
   CHECK(publisher.publication_history().size() == 3);
+  auto wrong_bundle =
+      publication(view->view_id, id<contracts::StateViewId>(98), 61, 2,
+                  market::ViewPublicationState::PublicationInProgress,
+                  market::ViewPublicationState::PublishedToFeatureBoundary);
+  CHECK(publisher.transition_publication(wrong_bundle) ==
+        market::ListingViewFailure::WrongView);
 }
 
 TEST_CASE("publication failures preserve bounded lifecycle state") {
@@ -483,41 +585,45 @@ TEST_CASE("publication failures preserve bounded lifecycle state") {
       market::ListingViewPublisher::create(publisher_config(3)).value();
   const auto result = publisher.accept_cut(cut_input(), book, auxiliary);
   CHECK(result.ok());
-  if (!result.view)
+  if (!result.view || !result.bundle)
     return;
   const auto &view = result.view;
 
-  auto wrong_boundary = publication(
-      view->view_id, 60, 1, market::ViewPublicationState::NotPublished,
-      market::ViewPublicationState::PublicationInProgress);
+  auto wrong_boundary =
+      publication(view->view_id, result.bundle->bundle_id, 60, 1,
+                  market::ViewPublicationState::NotPublished,
+                  market::ViewPublicationState::PublicationInProgress);
   wrong_boundary.boundary_id = id<contracts::ConsumerBoundaryId>(99);
   CHECK(publisher.transition_publication(wrong_boundary) ==
         market::ListingViewFailure::WrongBoundary);
-  const auto begin = publication(
-      view->view_id, 60, 1, market::ViewPublicationState::NotPublished,
-      market::ViewPublicationState::PublicationInProgress);
+  const auto begin =
+      publication(view->view_id, result.bundle->bundle_id, 60, 1,
+                  market::ViewPublicationState::NotPublished,
+                  market::ViewPublicationState::PublicationInProgress);
   CHECK(publisher.transition_publication(begin) ==
         market::ListingViewFailure::None);
-  const auto failed = publication(
-      view->view_id, 60, 1, market::ViewPublicationState::PublicationInProgress,
-      market::ViewPublicationState::PublicationFailedRetryable);
+  const auto failed =
+      publication(view->view_id, result.bundle->bundle_id, 60, 1,
+                  market::ViewPublicationState::PublicationInProgress,
+                  market::ViewPublicationState::PublicationFailedRetryable);
   CHECK(publisher.transition_publication(failed) ==
         market::ListingViewFailure::None);
   const auto reused_attempt =
-      publication(view->view_id, 60, 2,
+      publication(view->view_id, result.bundle->bundle_id, 60, 2,
                   market::ViewPublicationState::PublicationFailedRetryable,
                   market::ViewPublicationState::PublicationInProgress);
   CHECK(publisher.transition_publication(reused_attempt) ==
         market::ListingViewFailure::InvalidPublicationTransition);
   const auto retry =
-      publication(view->view_id, 61, 2,
+      publication(view->view_id, result.bundle->bundle_id, 61, 2,
                   market::ViewPublicationState::PublicationFailedRetryable,
                   market::ViewPublicationState::PublicationInProgress);
   CHECK(publisher.transition_publication(retry) ==
         market::ListingViewFailure::None);
-  const auto published = publication(
-      view->view_id, 61, 2, market::ViewPublicationState::PublicationInProgress,
-      market::ViewPublicationState::PublishedToFeatureBoundary);
+  const auto published =
+      publication(view->view_id, result.bundle->bundle_id, 61, 2,
+                  market::ViewPublicationState::PublicationInProgress,
+                  market::ViewPublicationState::PublishedToFeatureBoundary);
   CHECK(publisher.transition_publication(published) ==
         market::ListingViewFailure::PublicationHistoryExhausted);
   CHECK(publisher.publication_state() ==
@@ -532,15 +638,15 @@ TEST_CASE("terminal publication failure blocks every later cut") {
       market::ListingViewPublisher::create(publisher_config()).value();
   const auto first = publisher.accept_cut(cut_input(), book, auxiliary);
   CHECK(first.ok());
-  if (!first.view)
+  if (!first.view || !first.bundle)
     return;
   CHECK(publisher.transition_publication(
-            publication(first.view->view_id, 60, 1,
+            publication(first.view->view_id, first.bundle->bundle_id, 60, 1,
                         market::ViewPublicationState::NotPublished,
                         market::ViewPublicationState::PublicationInProgress)) ==
         market::ListingViewFailure::None);
   CHECK(publisher.transition_publication(publication(
-            first.view->view_id, 60, 1,
+            first.view->view_id, first.bundle->bundle_id, 60, 1,
             market::ViewPublicationState::PublicationInProgress,
             market::ViewPublicationState::PublicationFailedTerminal)) ==
         market::ListingViewFailure::None);
@@ -558,7 +664,7 @@ TEST_CASE("next cut waits for prior acknowledgement and links ancestry") {
       market::ListingViewPublisher::create(publisher_config()).value();
   const auto first_result = publisher.accept_cut(cut_input(), book, auxiliary);
   CHECK(first_result.ok());
-  if (!first_result.view)
+  if (!first_result.view || !first_result.bundle)
     return;
   const auto &first = first_result.view;
   apply_book_delta(book, auxiliary, 2);
@@ -566,18 +672,41 @@ TEST_CASE("next cut waits for prior acknowledgement and links ancestry") {
   CHECK(publisher.accept_cut(second_input, book, auxiliary).failure ==
         market::ListingViewFailure::PriorViewPending);
 
-  acknowledge(publisher, first->view_id);
+  acknowledge(publisher, first->view_id, first_result.bundle->bundle_id);
 
   const auto second_result =
       publisher.accept_cut(second_input, book, auxiliary);
   CHECK(second_result.ok());
-  if (!second_result.view)
+  if (!second_result.view || !second_result.bundle)
     return;
   const auto &second = second_result.view;
   CHECK(second->prior_view_id == first->view_id);
+  CHECK(second_result.bundle->prior_bundle_id ==
+        first_result.bundle->bundle_id);
   CHECK(second->view_id != first->view_id);
   CHECK(second->bids.front().quantity.units() == 4);
   CHECK(first->bids.front().quantity.units() == 2);
+  acknowledge(publisher, second->view_id, second_result.bundle->bundle_id);
+  const auto historical = publisher.accept_cut(cut_input(), book, auxiliary);
+  CHECK(historical.view == first_result.view);
+  CHECK(historical.bundle == first_result.bundle);
+}
+
+TEST_CASE("accepted selection history has explicit fixed exhaustion") {
+  auto book = make_book();
+  auto auxiliary = make_auxiliary(book);
+  auto publisher =
+      market::ListingViewPublisher::create(publisher_config(8, 1)).value();
+  const auto first = publisher.accept_cut(cut_input(), book, auxiliary);
+  CHECK(first.ok());
+  if (!first.view || !first.bundle)
+    return;
+  acknowledge(publisher, first.view->view_id, first.bundle->bundle_id);
+  apply_book_delta(book, auxiliary, 2);
+  CHECK(publisher.accept_cut(cut_input(2), book, auxiliary).failure ==
+        market::ListingViewFailure::AcceptedViewHistoryExhausted);
+  CHECK(publisher.accepted_view() == first.view);
+  CHECK(publisher.accepted_bundle() == first.bundle);
 }
 
 TEST_CASE("publisher configuration requires every registered role stream") {
@@ -586,6 +715,12 @@ TEST_CASE("publisher configuration requires every registered role stream") {
   CHECK(!market::ListingViewPublisher::create(invalid));
   invalid = publisher_config();
   invalid.maximum_publication_transitions = 0;
+  CHECK(!market::ListingViewPublisher::create(invalid));
+  invalid = publisher_config();
+  invalid.maximum_publication_transitions = 2;
+  CHECK(!market::ListingViewPublisher::create(invalid));
+  invalid = publisher_config();
+  invalid.maximum_retained_views = 0;
   CHECK(!market::ListingViewPublisher::create(invalid));
   invalid = publisher_config();
   invalid.run_timer_stream_id = invalid.run_control_stream_id;

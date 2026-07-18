@@ -175,6 +175,10 @@ void append_quality(std::vector<std::byte> &output,
   append_cursor(output, quality.trade_continuity_cursor);
   append_optional(output, quality.last_book_proof, append_book_proof);
   append_optional(output, quality.last_trade_boundary, append_trade_proof);
+  append_optional_id(output, quality.last_applied_event_id);
+  append_optional(output, quality.last_quality_input_kind,
+                  [](auto &bytes, auto value) { append_enum(bytes, value); });
+  append_bool(output, quality.last_applied_input_was_trade);
 }
 
 std::vector<std::byte> canonical_view_bytes(
@@ -234,6 +238,29 @@ std::vector<std::byte> canonical_view_bytes(
   return output;
 }
 
+std::vector<std::byte> canonical_bundle_bytes(
+    const ListingViewPublisherConfig &config, const ListingViewCutInput &input,
+    contracts::StateViewId listing_view_id,
+    const std::optional<contracts::StateViewId> &prior_bundle_id) {
+  std::vector<std::byte> output;
+  output.reserve(320);
+  constexpr std::string_view domain = "chronos.state-view-bundle.v1";
+  for (const auto character : domain)
+    output.push_back(static_cast<std::byte>(character));
+  append_id(output, config.run_id);
+  append_integer(output, input.lineage.run_input_sequence());
+  append_id(output, config.listing_id);
+  append_id(output, listing_view_id);
+  append_digest(output, input.selection_semantic_checksum);
+  append_version(output, input.merge_policy_version);
+  append_integer(output, input.configuration_epoch);
+  append_optional_u64(output, input.effective_control_position);
+  append_optional_id(output, prior_bundle_id);
+  append_version(output, config.view_schema_version);
+  append_version(output, config.canonicalization_version);
+  return output;
+}
+
 std::optional<contracts::StateViewId>
 view_id(const contracts::Sha256Digest &checksum) {
   contracts::StateViewId::bytes_type bytes{};
@@ -250,9 +277,37 @@ find_cursor(const contracts::StateLineage &lineage,
   return found == lineage.cursors().end() ? nullptr : &*found;
 }
 
-bool nonzero(const contracts::Sha256Digest &value) {
-  return std::any_of(value.bytes.begin(), value.bytes.end(),
-                     [](std::uint8_t byte) { return byte != 0; });
+bool selected_event_was_applied(std::string_view event_type,
+                                const contracts::EventId &event_id,
+                                const ListingQualityState &quality) {
+  if (quality.last_applied_event_id != event_id)
+    return false;
+  if (event_type.starts_with("market.trade.observation."))
+    return quality.last_applied_input_was_trade;
+  if (quality.last_applied_input_was_trade ||
+      !quality.last_quality_input_kind) {
+    return false;
+  }
+  const auto kind = *quality.last_quality_input_kind;
+  if (event_type == "market.book.observation.snapshot")
+    return kind == ListingQualityInputKind::BookSynchronized;
+  if (event_type == "market.book.observation.delta")
+    return kind == ListingQualityInputKind::BookEvidenceObserved;
+  if (event_type == "market.trade.continuity.synchronized")
+    return kind == ListingQualityInputKind::TradeSynchronized;
+  if (event_type == "market.trade.continuity.gap_detected")
+    return kind == ListingQualityInputKind::TradeGapDetected;
+  if (event_type == "market.trade.continuity.recovery_started")
+    return kind == ListingQualityInputKind::TradeRecoveryStarted;
+  if (event_type.starts_with("run.timer."))
+    return kind == ListingQualityInputKind::LogicalTimerAdvanced;
+  if (event_type == "market.control.listing_unavailable")
+    return kind == ListingQualityInputKind::ListingUnavailable;
+  if (event_type == "market.control.listing_closed")
+    return kind == ListingQualityInputKind::ListingClosed;
+  if (event_type.starts_with("reference."))
+    return kind == ListingQualityInputKind::BookInvalidated;
+  return false;
 }
 
 bool complete_lineage(const ListingViewPublisherConfig &config,
@@ -364,14 +419,22 @@ bool valid_transition(ViewPublicationState from, ViewPublicationState to) {
 } // namespace
 
 struct ListingViewPublisher::State final {
+  struct AcceptedRecord final {
+    ListingViewCutInput input;
+    std::shared_ptr<const ListingStateView> view;
+    std::shared_ptr<const StateViewBundle> bundle;
+  };
+
   explicit State(ListingViewPublisherConfig initial_config)
       : config(std::move(initial_config)) {
     publication_history.reserve(config.maximum_publication_transitions);
+    accepted_history.reserve(config.maximum_retained_views);
   }
 
   ListingViewPublisherConfig config;
   std::shared_ptr<const ListingStateView> accepted;
-  std::optional<ListingViewCutInput> last_input;
+  std::shared_ptr<const StateViewBundle> accepted_bundle;
+  std::vector<AcceptedRecord> accepted_history;
   std::uint64_t configuration_epoch{config.initial_configuration_epoch};
   std::optional<std::uint64_t> effective_control_position{
       config.initial_effective_control_position};
@@ -392,14 +455,20 @@ ListingViewPublisher::~ListingViewPublisher() = default;
 std::optional<ListingViewPublisher>
 ListingViewPublisher::create(ListingViewPublisherConfig config) {
   if (config.required_streams.empty() ||
-      config.maximum_publication_transitions == 0 ||
+      config.maximum_publication_transitions < 3 ||
+      config.maximum_retained_views == 0 ||
       config.initial_configuration_epoch == 0 ||
       config.initial_effective_control_position ||
       config.initial_lineage.run_input_sequence() != 0 ||
       !complete_lineage(config, config.initial_lineage) ||
       std::any_of(config.initial_lineage.cursors().begin(),
                   config.initial_lineage.cursors().end(),
-                  [](const auto &cursor) { return !cursor.is_origin(); })) {
+                  [](const auto &cursor) { return !cursor.is_origin(); }) ||
+      config.dispatcher_config.run_id != config.run_id ||
+      config.dispatcher_config.merge_policy_version !=
+          config.merge_policy_version ||
+      config.dispatcher_config.initial_configuration_epoch !=
+          config.initial_configuration_epoch) {
     return std::nullopt;
   }
   auto streams = config.required_streams;
@@ -439,10 +508,14 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       auxiliary.listing_id() != state_->config.listing_id) {
     return {.failure = ListingViewFailure::WrongListing};
   }
-  if (state_->accepted &&
-      input.selection_id == state_->accepted->causing_selection_id) {
-    if (state_->last_input && input == *state_->last_input)
-      return {.view = state_->accepted};
+  const auto prior_record =
+      std::find_if(state_->accepted_history.begin(),
+                   state_->accepted_history.end(), [&](const auto &record) {
+                     return record.input.selection_id == input.selection_id;
+                   });
+  if (prior_record != state_->accepted_history.end()) {
+    if (input == prior_record->input)
+      return {.view = prior_record->view, .bundle = prior_record->bundle};
     return {.failure = ListingViewFailure::ContradictorySelection};
   }
   if (state_->accepted && state_->publication_state !=
@@ -452,26 +525,36 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
   if (!complete_lineage(state_->config, input.lineage)) {
     return {.failure = ListingViewFailure::IncompleteLineage};
   }
-  const auto selected_stream =
-      event_stream(state_->config, input.selected_event_type);
-  const bool run_control =
-      selected_stream &&
-      *selected_stream == state_->config.run_control_stream_id;
+  const auto &applied_controls = input.dispatch_selection.applied_controls;
   const bool evidence_valid =
-      contracts::is_valid_event_type(input.selected_event_type) &&
-      nonzero(input.input_semantic_checksum) &&
-      nonzero(input.selection_semantic_checksum) &&
+      dispatch::validate_run_input_selection(state_->config.dispatcher_config,
+                                             input.dispatch_selection,
+                                             input.dispatch_candidate) &&
+      input.selection_id == input.dispatch_selection.selection_id &&
+      input.selected_event_id == input.dispatch_selection.selected_event_id &&
+      input.selected_event_type ==
+          input.dispatch_selection.selected_event_type &&
+      input.input_semantic_checksum ==
+          input.dispatch_selection.input_semantic_checksum &&
+      input.selection_semantic_checksum ==
+          input.dispatch_selection.selection_semantic_checksum &&
+      input.merge_policy_version ==
+          input.dispatch_selection.merge_policy_version &&
+      input.configuration_epoch ==
+          input.dispatch_selection.active_configuration_epoch &&
+      input.lineage.run_input_sequence() ==
+          input.dispatch_selection.run_input_sequence &&
       input.merge_policy_version == state_->config.merge_policy_version &&
-      ((!run_control &&
-        input.configuration_epoch == state_->configuration_epoch &&
-        input.effective_control_position ==
-            state_->effective_control_position) ||
-       (run_control &&
-        state_->configuration_epoch !=
-            std::numeric_limits<std::uint64_t>::max() &&
-        input.configuration_epoch == state_->configuration_epoch + 1 &&
-        input.effective_control_position ==
-            input.lineage.run_input_sequence()));
+      (applied_controls.empty()
+           ? input.configuration_epoch == state_->configuration_epoch &&
+                 input.effective_control_position ==
+                     state_->effective_control_position
+           : applied_controls.front().prior_configuration_epoch ==
+                     state_->configuration_epoch &&
+                 applied_controls.back().new_configuration_epoch ==
+                     input.configuration_epoch &&
+                 input.effective_control_position ==
+                     input.lineage.run_input_sequence());
   if (!evidence_valid) {
     return {.failure = ListingViewFailure::InvalidSelectionEvidence};
   }
@@ -480,6 +563,10 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
   const auto transition_before = book.transition_sequence();
   if (input.lineage.run_input_sequence() != quality_before.run_input_sequence)
     return {.failure = ListingViewFailure::RunInputMismatch};
+  if (!selected_event_was_applied(input.selected_event_type,
+                                  input.selected_event_id, quality_before)) {
+    return {.failure = ListingViewFailure::InvalidSelectionEvidence};
+  }
   const auto &prior_lineage = state_->accepted ? state_->accepted->lineage
                                                : state_->config.initial_lineage;
   if (!valid_lineage_transition(state_->config, prior_lineage, input,
@@ -521,6 +608,10 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
 
   const auto prior = state_->accepted ? std::optional(state_->accepted->view_id)
                                       : std::nullopt;
+  const auto prior_bundle =
+      state_->accepted_bundle
+          ? std::optional(state_->accepted_bundle->bundle_id)
+          : std::nullopt;
   const auto canonical =
       canonical_view_bytes(state_->config, input, transition_before, bids, asks,
                            top, trades, quality_before, prior);
@@ -528,6 +619,17 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
   const auto identity = view_id(checksum);
   if (!identity)
     return {.failure = ListingViewFailure::IdentityDerivationFailed};
+
+  const auto bundle_canonical =
+      canonical_bundle_bytes(state_->config, input, *identity, prior_bundle);
+  const auto bundle_checksum = contracts::sha256(bundle_canonical);
+  const auto bundle_identity = view_id(bundle_checksum);
+  if (!bundle_identity)
+    return {.failure = ListingViewFailure::IdentityDerivationFailed};
+  if (state_->accepted_history.size() ==
+      state_->config.maximum_retained_views) {
+    return {.failure = ListingViewFailure::AcceptedViewHistoryExhausted};
+  }
 
   auto accepted = std::make_shared<const ListingStateView>(ListingStateView{
       .view_id = *identity,
@@ -557,20 +659,38 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .canonicalization_version = state_->config.canonicalization_version,
       .semantic_checksum = checksum,
   });
+  auto bundle = std::make_shared<const StateViewBundle>(StateViewBundle{
+      .bundle_id = *bundle_identity,
+      .run_id = state_->config.run_id,
+      .run_input_sequence = input.lineage.run_input_sequence(),
+      .listing_id = state_->config.listing_id,
+      .listing_view_id = accepted->view_id,
+      .selection_semantic_checksum = input.selection_semantic_checksum,
+      .merge_policy_version = input.merge_policy_version,
+      .configuration_epoch = input.configuration_epoch,
+      .effective_control_position = input.effective_control_position,
+      .prior_bundle_id = prior_bundle,
+      .view_schema_version = state_->config.view_schema_version,
+      .canonicalization_version = state_->config.canonicalization_version,
+      .semantic_checksum = bundle_checksum,
+  });
   state_->accepted = accepted;
-  state_->last_input = input;
+  state_->accepted_bundle = bundle;
+  state_->accepted_history.push_back({input, accepted, bundle});
   state_->configuration_epoch = input.configuration_epoch;
   state_->effective_control_position = input.effective_control_position;
   state_->publication_state = ViewPublicationState::NotPublished;
   state_->active_attempt_id.reset();
   state_->active_attempt_number = 0;
   state_->publication_history.clear();
-  return {.view = std::move(accepted)};
+  return {.view = std::move(accepted), .bundle = std::move(bundle)};
 }
 
 ListingViewFailure ListingViewPublisher::transition_publication(
     const ViewPublicationTransition &transition) {
-  if (!state_->accepted || transition.view_id != state_->accepted->view_id)
+  if (!state_->accepted || !state_->accepted_bundle ||
+      transition.view_id != state_->accepted->view_id ||
+      transition.bundle_id != state_->accepted_bundle->bundle_id)
     return ListingViewFailure::WrongView;
   if (transition.boundary_id != state_->config.feature_boundary_id)
     return ListingViewFailure::WrongBoundary;
@@ -617,6 +737,22 @@ ListingViewPublisher::published_view() const noexcept {
       state_->publication_state ==
           ViewPublicationState::FeatureConsumerAccepted) {
     return state_->accepted;
+  }
+  return {};
+}
+
+std::shared_ptr<const StateViewBundle>
+ListingViewPublisher::accepted_bundle() const noexcept {
+  return state_->accepted_bundle;
+}
+
+std::shared_ptr<const StateViewBundle>
+ListingViewPublisher::published_bundle() const noexcept {
+  if (state_->publication_state ==
+          ViewPublicationState::PublishedToFeatureBoundary ||
+      state_->publication_state ==
+          ViewPublicationState::FeatureConsumerAccepted) {
+    return state_->accepted_bundle;
   }
   return {};
 }

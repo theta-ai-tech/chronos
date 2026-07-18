@@ -135,6 +135,98 @@ selection_id(const contracts::Sha256Digest &checksum) {
 
 } // namespace
 
+contracts::Sha256Digest
+derive_run_input_selection_checksum(const RunInputDispatcherConfig &config,
+                                    const RunInputSelectionRecord &selection,
+                                    const RunInputCandidate &candidate) {
+  if (selection.pre_selection_cursors.size() != 1 ||
+      selection.post_selection_cursors.size() != 1) {
+    return {};
+  }
+  return selection_checksum(
+      config, selection.run_input_sequence, candidate,
+      selection.pre_selection_cursors.front(),
+      selection.post_selection_cursors.front(), selection.control_cursor,
+      selection.active_configuration_epoch, selection.applied_controls);
+}
+
+contracts::RunInputSelectionId
+derive_run_input_selection_id(const contracts::Sha256Digest &checksum) {
+  return selection_id(checksum);
+}
+
+bool validate_run_input_selection(const RunInputDispatcherConfig &config,
+                                  const RunInputSelectionRecord &selection,
+                                  const RunInputCandidate &candidate) {
+  if (selection.pre_selection_cursors.size() != 1 ||
+      selection.post_selection_cursors.size() != 1 ||
+      selection.run_id != config.run_id || selection.run_input_sequence == 0 ||
+      selection.selected_event_id != candidate.event_id ||
+      selection.selected_event_type != candidate.event_type ||
+      selection.selected_event_position != candidate.event_position ||
+      selection.consumer_boundary_id != config.consumer_boundary_id ||
+      selection.merge_policy_version != config.merge_policy_version ||
+      selection.registry_snapshot_version != config.registry_snapshot_version ||
+      selection.input_semantic_checksum != candidate.semantic_checksum ||
+      selection.initial_publication_state != PublicationState::NotPublished ||
+      !contracts::is_valid_event_type(candidate.event_type) ||
+      candidate.semantic_payload.empty() ||
+      candidate.semantic_payload.size() > config.maximum_payload_bytes ||
+      candidate.semantic_checksum !=
+          contracts::sha256(candidate.semantic_payload)) {
+    return false;
+  }
+  const auto &pre = selection.pre_selection_cursors.front();
+  const auto &post = selection.post_selection_cursors.front();
+  if (pre.last_consumed_sequence() ==
+      std::optional(std::numeric_limits<std::uint64_t>::max())) {
+    return false;
+  }
+  if (pre.stream_id() != config.input_stream_id ||
+      pre.stream_epoch() != config.input_stream_epoch ||
+      post.stream_id() != config.input_stream_id ||
+      post.stream_epoch() != config.input_stream_epoch ||
+      selection.control_cursor.stream_id() != config.control_stream_id ||
+      selection.control_cursor.stream_epoch() != config.control_stream_epoch ||
+      candidate.event_position.stream_id() != config.input_stream_id ||
+      candidate.event_position.stream_epoch() != config.input_stream_epoch ||
+      candidate.event_position.stream_sequence() !=
+          pre.last_consumed_sequence().value_or(0) + 1 ||
+      post.last_consumed_sequence() !=
+          std::optional(candidate.event_position.stream_sequence())) {
+    return false;
+  }
+  std::uint64_t expected_epoch =
+      selection.applied_controls.empty()
+          ? selection.active_configuration_epoch
+          : selection.applied_controls.front().prior_configuration_epoch;
+  std::uint64_t prior_control_sequence{};
+  std::vector<contracts::EventId> control_ids;
+  control_ids.reserve(selection.applied_controls.size());
+  for (const auto &control : selection.applied_controls) {
+    if (!valid_control_reservation(config, control) ||
+        control.effective_position != selection.run_input_sequence ||
+        control.prior_configuration_epoch != expected_epoch ||
+        control.control_sequence <= prior_control_sequence ||
+        std::find(control_ids.begin(), control_ids.end(),
+                  control.control_outcome_id) != control_ids.end() ||
+        !selection.control_cursor.last_consumed_sequence() ||
+        control.control_sequence >
+            *selection.control_cursor.last_consumed_sequence()) {
+      return false;
+    }
+    expected_epoch = control.new_configuration_epoch;
+    prior_control_sequence = control.control_sequence;
+    control_ids.push_back(control.control_outcome_id);
+  }
+  if (expected_epoch != selection.active_configuration_epoch)
+    return false;
+  const auto checksum =
+      derive_run_input_selection_checksum(config, selection, candidate);
+  return selection.selection_semantic_checksum == checksum &&
+         selection.selection_id == derive_run_input_selection_id(checksum);
+}
+
 struct RunInputDispatcher::State final {
   struct ControlState final {
     ControlBoundaryReservation reservation;

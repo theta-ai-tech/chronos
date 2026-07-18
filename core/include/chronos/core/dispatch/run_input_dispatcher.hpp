@@ -158,6 +158,19 @@ struct RunInputRecoveryLoad final {
   std::optional<RunInputRecoveryState> state;
 };
 
+[[nodiscard]] contracts::Sha256Digest
+derive_run_input_selection_checksum(const RunInputDispatcherConfig &config,
+                                    const RunInputSelectionRecord &selection,
+                                    const RunInputCandidate &candidate);
+
+[[nodiscard]] contracts::RunInputSelectionId derive_run_input_selection_id(
+    const contracts::Sha256Digest &selection_checksum);
+
+[[nodiscard]] bool
+validate_run_input_selection(const RunInputDispatcherConfig &config,
+                             const RunInputSelectionRecord &selection,
+                             const RunInputCandidate &candidate);
+
 class RunInputSelectionPersistence {
 public:
   virtual ~RunInputSelectionPersistence() = default;

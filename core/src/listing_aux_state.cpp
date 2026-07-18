@@ -209,6 +209,9 @@ struct ListingAuxState::State final {
   std::optional<std::int64_t> last_trade_evidence;
   std::optional<BookSynchronizationProof> last_book_proof;
   std::optional<TradeContinuityProof> last_trade_boundary;
+  std::optional<contracts::EventId> last_applied_event_id;
+  std::optional<ListingQualityInputKind> last_quality_input_kind;
+  bool last_applied_input_was_trade{};
   std::uint64_t run_input_sequence{};
   std::int64_t logical_time{};
 };
@@ -281,6 +284,9 @@ ListingAuxResult ListingAuxState::apply_trade(const RecentTrade &trade) {
   state_->last_trade_evidence = trade.logical_time_nanoseconds;
   state_->logical_time = trade.logical_time_nanoseconds;
   state_->run_input_sequence = trade.run_input_sequence;
+  state_->last_applied_event_id = trade.event_id;
+  state_->last_quality_input_kind.reset();
+  state_->last_applied_input_was_trade = true;
   return {.content_changed = true,
           .run_input_sequence = state_->run_input_sequence};
 }
@@ -441,6 +447,9 @@ ListingAuxState::apply_quality_input(const ListingQualityInput &input,
     state_->trades.clear();
   state_->logical_time = input.logical_time_nanoseconds;
   state_->run_input_sequence = input.run_input_sequence;
+  state_->last_applied_event_id = input.event_id;
+  state_->last_quality_input_kind = input.kind;
+  state_->last_applied_input_was_trade = false;
   return {.content_changed = changed,
           .run_input_sequence = state_->run_input_sequence};
 }
@@ -510,6 +519,9 @@ ListingQualityState ListingAuxState::quality() const noexcept {
       .trade_continuity_cursor = state_->trade_continuity_cursor,
       .last_book_proof = state_->last_book_proof,
       .last_trade_boundary = state_->last_trade_boundary,
+      .last_applied_event_id = state_->last_applied_event_id,
+      .last_quality_input_kind = state_->last_quality_input_kind,
+      .last_applied_input_was_trade = state_->last_applied_input_was_trade,
   };
 }
 
