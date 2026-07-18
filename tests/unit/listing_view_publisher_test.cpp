@@ -735,6 +735,7 @@ TEST_CASE("feature consumer sees only exact published view") {
                   market::ViewPublicationState::PublicationInProgress);
   CHECK(publisher.transition_publication(begin) ==
         market::ListingViewFailure::None);
+  CHECK(!publisher.accepted_feature_cut());
   CHECK(!publisher.published_view());
   CHECK(!publisher.published_bundle());
   const auto published =
@@ -745,12 +746,17 @@ TEST_CASE("feature consumer sees only exact published view") {
         market::ListingViewFailure::None);
   CHECK(publisher.published_view() == view);
   CHECK(publisher.published_bundle() == result.bundle);
+  CHECK(!publisher.accepted_feature_cut());
   const auto accepted =
       publication(view->view_id, result.bundle->bundle_id, 60, 1,
                   market::ViewPublicationState::PublishedToFeatureBoundary,
                   market::ViewPublicationState::FeatureConsumerAccepted);
   CHECK(publisher.transition_publication(accepted) ==
         market::ListingViewFailure::None);
+  const auto feature_cut = publisher.accepted_feature_cut();
+  CHECK(feature_cut.has_value());
+  CHECK(&feature_cut->view() == view.get());
+  CHECK(&feature_cut->bundle() == result.bundle.get());
   CHECK(publisher.transition_publication(accepted) ==
         market::ListingViewFailure::None);
   CHECK(publisher.publication_history().size() == 3);

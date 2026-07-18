@@ -165,8 +165,7 @@ public:
   explicit FeatureRuntime(FeatureRuntimeConfig config);
 
   [[nodiscard]] FeatureRuntimeResult
-  evaluate(const market_state::StateViewBundle &bundle,
-           const market_state::ListingStateView &view) const;
+  evaluate(const market_state::AcceptedFeatureCut &cut) const;
 
   [[nodiscard]] const FeatureRuntimeConfig &config() const noexcept;
   [[nodiscard]] static constexpr std::string_view

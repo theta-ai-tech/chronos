@@ -128,19 +128,20 @@ static_assert(std::is_trivially_copyable_v<Price>);
 static_assert(std::is_trivially_copyable_v<Quantity>);
 static_assert(std::is_trivially_copyable_v<Money>);
 
+namespace detail {
+
 [[nodiscard]] constexpr std::optional<AmountUnits>
-checked_multiply_divide(AmountUnits value, AmountUnits multiplier,
-                        AmountUnits divisor, RoundingMode rounding) noexcept {
+checked_divide_wide(__int128 numerator, AmountUnits divisor,
+                    RoundingMode rounding) noexcept {
   if (divisor <= 0) {
     return std::nullopt;
   }
 
-  const __int128 product = static_cast<__int128>(value) * multiplier;
-  __int128 quotient = product / divisor;
-  const __int128 remainder = product % divisor;
+  __int128 quotient = numerator / divisor;
+  const __int128 remainder = numerator % divisor;
 
   if (remainder != 0) {
-    const bool negative = product < 0;
+    const bool negative = numerator < 0;
     switch (rounding) {
     case RoundingMode::toward_zero:
       break;
@@ -171,6 +172,31 @@ checked_multiply_divide(AmountUnits value, AmountUnits multiplier,
     return std::nullopt;
   }
   return static_cast<AmountUnits>(quotient);
+}
+
+} // namespace detail
+
+[[nodiscard]] constexpr std::optional<AmountUnits>
+checked_multiply_divide(AmountUnits value, AmountUnits multiplier,
+                        AmountUnits divisor, RoundingMode rounding) noexcept {
+  return detail::checked_divide_wide(static_cast<__int128>(value) * multiplier,
+                                     divisor, rounding);
+}
+
+[[nodiscard]] constexpr std::optional<AmountUnits>
+checked_weighted_average(AmountUnits first_value, AmountUnits first_weight,
+                         AmountUnits second_value, AmountUnits second_weight,
+                         AmountUnits total_weight,
+                         RoundingMode rounding) noexcept {
+  const __int128 first_product =
+      static_cast<__int128>(first_value) * first_weight;
+  const __int128 second_product =
+      static_cast<__int128>(second_value) * second_weight;
+  __int128 numerator{};
+  if (__builtin_add_overflow(first_product, second_product, &numerator)) {
+    return std::nullopt;
+  }
+  return detail::checked_divide_wide(numerator, total_weight, rounding);
 }
 
 } // namespace chronos::contracts

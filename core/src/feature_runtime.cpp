@@ -289,10 +289,6 @@ book_unavailable_reason(const market_state::ListingStateView &view) {
     return FeatureUnavailableReason::BookClosed;
   }
 
-  if (view.top.shape != market_state::L2BookShape::Normal &&
-      view.top.shape != market_state::L2BookShape::Locked) {
-    return FeatureUnavailableReason::UnsupportedBookShape;
-  }
   const auto proven = [](market_state::L2SideCompleteness completeness) {
     return completeness == market_state::L2SideCompleteness::Complete ||
            completeness ==
@@ -301,6 +297,10 @@ book_unavailable_reason(const market_state::ListingStateView &view) {
   if (!proven(view.top.bid_completeness) ||
       !proven(view.top.ask_completeness)) {
     return FeatureUnavailableReason::TopNotProven;
+  }
+  if (view.top.shape != market_state::L2BookShape::Normal &&
+      view.top.shape != market_state::L2BookShape::Locked) {
+    return FeatureUnavailableReason::UnsupportedBookShape;
   }
   if (!view.top.best_bid || !view.top.best_ask || !view.top.spread ||
       view.bids.empty() || view.asks.empty()) {
@@ -403,8 +403,9 @@ FeatureRuntime::FeatureRuntime(FeatureRuntimeConfig config)
     : config_(std::move(config)) {}
 
 FeatureRuntimeResult
-FeatureRuntime::evaluate(const market_state::StateViewBundle &bundle,
-                         const market_state::ListingStateView &view) const {
+FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
+  const auto &bundle = cut.bundle();
+  const auto &view = cut.view();
   FeatureRuntimeResult result;
   result.failure = validate_cut(config_, bundle, view);
   if (!result.ok())
@@ -462,20 +463,19 @@ FeatureRuntime::evaluate(const market_state::StateViewBundle &bundle,
         config_, FeatureKind::Microprice, bundle, view,
         price_reason ? *price_reason : *quantity_failure));
   } else {
-    const auto spread = ask.price.checked_subtract(bid.price);
     contracts::AmountUnits total{};
     const auto total_overflow = __builtin_add_overflow(
         bid.quantity.units(), ask.quantity.units(), &total);
-    const auto offset =
-        !spread || total_overflow
-            ? std::nullopt
-            : contracts::checked_multiply_divide(
-                  spread->units(), bid.quantity.units(), total,
-                  contracts::RoundingMode::nearest_ties_to_even);
-    const auto weighted =
-        offset ? bid.price.checked_add(*contracts::Price::from_units(
-                     *offset, bid.price.definition_ref()))
-               : std::nullopt;
+    const auto weighted_units =
+        total_overflow ? std::nullopt
+                       : contracts::checked_weighted_average(
+                             ask.price.units(), bid.quantity.units(),
+                             bid.price.units(), ask.quantity.units(), total,
+                             contracts::RoundingMode::nearest_ties_to_even);
+    const auto weighted = weighted_units
+                              ? contracts::Price::from_units(
+                                    *weighted_units, bid.price.definition_ref())
+                              : std::nullopt;
     if (!weighted) {
       result.evaluations.push_back(
           unavailable_evaluation(config_, FeatureKind::Microprice, bundle, view,

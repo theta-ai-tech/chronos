@@ -171,6 +171,24 @@ struct StateViewBundle final {
   bool operator==(const StateViewBundle &) const = default;
 };
 
+class AcceptedFeatureCut final {
+public:
+  [[nodiscard]] const ListingStateView &view() const noexcept { return *view_; }
+  [[nodiscard]] const StateViewBundle &bundle() const noexcept {
+    return *bundle_;
+  }
+
+private:
+  AcceptedFeatureCut(std::shared_ptr<const ListingStateView> view,
+                     std::shared_ptr<const StateViewBundle> bundle)
+      : view_(std::move(view)), bundle_(std::move(bundle)) {}
+
+  std::shared_ptr<const ListingStateView> view_;
+  std::shared_ptr<const StateViewBundle> bundle_;
+
+  friend class ListingViewPublisher;
+};
+
 struct ViewPublicationTransition final {
   contracts::StateViewId view_id;
   contracts::StateViewId bundle_id;
@@ -216,6 +234,8 @@ public:
   accepted_bundle() const noexcept;
   [[nodiscard]] std::shared_ptr<const StateViewBundle>
   published_bundle() const noexcept;
+  [[nodiscard]] std::optional<AcceptedFeatureCut>
+  accepted_feature_cut() const noexcept;
   [[nodiscard]] ViewPublicationState publication_state() const noexcept;
   [[nodiscard]] std::span<const ViewPublicationTransition>
   publication_history() const noexcept;
