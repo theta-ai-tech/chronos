@@ -100,6 +100,8 @@ market::ListingAuxState make_auxiliary(const market::L2Book &book) {
   auto auxiliary = market::ListingAuxState::create(aux_config()).value();
   market::ListingQualityInput book_sync{
       .event_id = id<contracts::EventId>(23),
+      .input_semantic_checksum =
+          contracts::sha256(std::vector<std::byte>{std::byte{1}}),
       .listing_id = id<contracts::ListingId>(1),
       .kind = market::ListingQualityInputKind::BookSynchronized,
       .run_input_sequence = 1,
@@ -129,11 +131,12 @@ std::vector<contracts::StreamId> required_streams() {
 contracts::StateLineage
 lineage(std::uint64_t run_sequence, contracts::StreamCursor book_cursor,
         contracts::StreamCursor trade_cursor = origin(4),
-        contracts::StreamCursor continuity_cursor = origin(7)) {
+        contracts::StreamCursor continuity_cursor = origin(7),
+        contracts::StreamCursor run_control_cursor = origin(12)) {
   const auto required = required_streams();
   const std::array cursors = {
-      trade_cursor, continuity_cursor, book_cursor, origin(10),
-      origin(11),   origin(12),        origin(13),
+      trade_cursor, continuity_cursor,  book_cursor, origin(10),
+      origin(11),   run_control_cursor, origin(13),
   };
   return contracts::StateLineage::from(id<contracts::RunId>(30), run_sequence,
                                        required, cursors)
@@ -152,6 +155,10 @@ publisher_config(std::size_t maximum_transitions = 8,
   return {
       .run_id = id<contracts::RunId>(30),
       .listing_id = id<contracts::ListingId>(1),
+      .canonical_instrument_id = id<contracts::CanonicalInstrumentId>(42),
+      .reference_snapshot_version = version(43),
+      .listing_definition_version = version(44),
+      .reference_configuration_lineage_version = version(45),
       .required_streams = required_streams(),
       .initial_lineage = lineage(0, origin(8)),
       .book_stream_id = id<contracts::StreamId>(8),
@@ -249,6 +256,39 @@ market::ListingViewCutInput cut_input(std::uint64_t run_sequence = 1) {
   };
 }
 
+market::ListingViewCutInput cut_input_with_control() {
+  auto input = cut_input();
+  std::vector<std::byte> behavior_payload = {std::byte{9}};
+  input.dispatch_selection.applied_controls = {{
+      .run_id = id<contracts::RunId>(30),
+      .control_stream_id = id<contracts::StreamId>(15),
+      .control_stream_epoch = 1,
+      .control_outcome_id = id<contracts::EventId>(46),
+      .control_sequence = 1,
+      .effective_position = 1,
+      .prior_configuration_epoch = 1,
+      .new_configuration_epoch = 2,
+      .behavior_payload = behavior_payload,
+      .behavior_checksum = contracts::sha256(behavior_payload),
+  }};
+  input.dispatch_selection.control_cursor = cursor(15, 1);
+  input.dispatch_selection.active_configuration_epoch = 2;
+  input.dispatch_selection.selection_semantic_checksum =
+      dispatch::derive_run_input_selection_checksum(
+          publisher_config().dispatcher_config, input.dispatch_selection,
+          input.dispatch_candidate);
+  input.dispatch_selection.selection_id =
+      dispatch::derive_run_input_selection_id(
+          input.dispatch_selection.selection_semantic_checksum);
+  input.selection_id = input.dispatch_selection.selection_id;
+  input.selection_semantic_checksum =
+      input.dispatch_selection.selection_semantic_checksum;
+  input.configuration_epoch = 2;
+  input.effective_control_position = 1;
+  input.lineage = lineage(1, cursor(8, 0), origin(4), origin(7), cursor(12, 1));
+  return input;
+}
+
 market::ViewPublicationTransition publication(contracts::StateViewId view_id,
                                               contracts::StateViewId bundle_id,
                                               std::uint8_t attempt_seed,
@@ -296,6 +336,8 @@ void apply_book_delta(market::L2Book &book, market::ListingAuxState &auxiliary,
   auto observed = market::ListingQualityInput{
       .event_id =
           id<contracts::EventId>(static_cast<std::uint8_t>(40 + run_sequence)),
+      .input_semantic_checksum = contracts::sha256(
+          std::vector<std::byte>{static_cast<std::byte>(run_sequence & 0xffU)}),
       .listing_id = id<contracts::ListingId>(1),
       .kind = market::ListingQualityInputKind::BookEvidenceObserved,
       .run_input_sequence = run_sequence,
@@ -348,6 +390,13 @@ TEST_CASE("accepted view is one immutable complete lineage cut") {
         result.view->causing_selection_id);
   CHECK(result.bundle->causing_event_id == result.view->causing_event_id);
   CHECK(result.bundle->listing_views.size() == 1);
+  CHECK(result.view->canonical_instrument_id ==
+        id<contracts::CanonicalInstrumentId>(42));
+  CHECK(result.bundle->canonical_instrument_id ==
+        id<contracts::CanonicalInstrumentId>(42));
+  CHECK(result.bundle->reference_snapshot_version == version(43));
+  CHECK(result.bundle->listing_definition_version == version(44));
+  CHECK(result.bundle->reference_configuration_lineage_version == version(45));
   CHECK(result.bundle->run_control_cursor == origin(12));
   CHECK(result.bundle->run_timer_cursor == origin(13));
   CHECK(result.bundle->reference_cursor == origin(10));
@@ -452,6 +501,7 @@ TEST_CASE("selected event identity proves the applied state mutation") {
   const auto applied = auxiliary.apply_quality_input(
       {
           .event_id = input.selected_event_id,
+          .input_semantic_checksum = input.input_semantic_checksum,
           .listing_id = id<contracts::ListingId>(1),
           .kind = market::ListingQualityInputKind::ListingClosed,
           .run_input_sequence = 1,
@@ -464,6 +514,26 @@ TEST_CASE("selected event identity proves the applied state mutation") {
   CHECK(publisher.accept_cut(input, book, auxiliary).failure ==
         market::ListingViewFailure::InvalidSelectionEvidence);
   CHECK(!publisher.accepted_view());
+}
+
+TEST_CASE("applied controls advance the exact run-control lineage") {
+  auto book = make_book();
+  auto auxiliary = make_auxiliary(book);
+  auto publisher =
+      market::ListingViewPublisher::create(publisher_config()).value();
+  auto stale = cut_input_with_control();
+  stale.lineage = lineage(1, cursor(8, 0));
+  CHECK(publisher.accept_cut(stale, book, auxiliary).failure ==
+        market::ListingViewFailure::InvalidLineageTransition);
+
+  const auto accepted =
+      publisher.accept_cut(cut_input_with_control(), book, auxiliary);
+  CHECK(accepted.ok());
+  if (!accepted.bundle)
+    return;
+  CHECK(accepted.bundle->configuration_epoch == 2);
+  CHECK(accepted.bundle->effective_control_position == 1);
+  CHECK(accepted.bundle->run_control_cursor == cursor(12, 1));
 }
 
 TEST_CASE("incomplete mismatched and stale cuts fail before acceptance") {
@@ -735,11 +805,15 @@ TEST_CASE("next cut waits for prior acknowledgement and links ancestry") {
   CHECK(second_result.bundle->prior_bundle_id ==
         first_result.bundle->bundle_id);
   CHECK(publisher.publication_history().size() == 3);
+  CHECK(publisher.published_view() == first_result.view);
+  CHECK(publisher.published_bundle() == first_result.bundle);
   CHECK(second->view_id != first->view_id);
   CHECK(second->bids.front().quantity.units() == 4);
   CHECK(first->bids.front().quantity.units() == 2);
   acknowledge(publisher, second->view_id, second_result.bundle->bundle_id);
   CHECK(publisher.publication_history().size() == 6);
+  CHECK(publisher.published_view() == second_result.view);
+  CHECK(publisher.published_bundle() == second_result.bundle);
   const auto historical = publisher.accept_cut(cut_input(), book, auxiliary);
   CHECK(historical.view == first_result.view);
   CHECK(historical.bundle == first_result.bundle);

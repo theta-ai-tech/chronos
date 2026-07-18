@@ -109,6 +109,7 @@ void append_time(std::vector<std::byte> &output,
 
 void append_trade(std::vector<std::byte> &output, const RecentTrade &trade) {
   append_id(output, trade.event_id);
+  append_digest(output, trade.input_semantic_checksum);
   append_id(output, trade.source_event_id);
   append_id(output, trade.listing_id);
   append_cursor(output, trade.cursor);
@@ -183,6 +184,7 @@ void append_quality(std::vector<std::byte> &output,
   append_optional(output, quality.last_book_proof, append_book_proof);
   append_optional(output, quality.last_trade_boundary, append_trade_proof);
   append_optional_id(output, quality.last_applied_event_id);
+  append_digest(output, quality.last_applied_input_semantic_checksum);
   append_optional(output, quality.last_quality_input_kind,
                   [](auto &bytes, auto value) { append_enum(bytes, value); });
   append_bool(output, quality.last_applied_input_was_trade);
@@ -202,6 +204,10 @@ std::vector<std::byte> canonical_view_bytes(
     output.push_back(static_cast<std::byte>(character));
   append_id(output, config.run_id);
   append_id(output, config.listing_id);
+  append_id(output, config.canonical_instrument_id);
+  append_version(output, config.reference_snapshot_version);
+  append_version(output, config.listing_definition_version);
+  append_version(output, config.reference_configuration_lineage_version);
   append_id(output, input.selection_id);
   append_id(output, input.selected_event_id);
   append_string(output, input.selected_event_type);
@@ -267,6 +273,7 @@ std::vector<std::byte> canonical_bundle_bytes(
   append_id(output, input.selected_event_id);
   append_integer<std::uint64_t>(output, 1);
   append_id(output, config.listing_id);
+  append_id(output, config.canonical_instrument_id);
   append_id(output, listing_view_id);
   append_cursor(output,
                 *find_cursor(input.lineage, config.run_control_stream_id));
@@ -283,6 +290,9 @@ std::vector<std::byte> canonical_bundle_bytes(
   append_version(output, config.view_schema_version);
   append_version(output, config.bundle_schema_version);
   append_version(output, config.dispatcher_config.registry_snapshot_version);
+  append_version(output, config.reference_snapshot_version);
+  append_version(output, config.listing_definition_version);
+  append_version(output, config.reference_configuration_lineage_version);
   append_version(output, config.arithmetic_version);
   append_version(output, config.canonicalization_version);
   append_version(output, config.identity_policy_version);
@@ -305,10 +315,12 @@ find_cursor(const contracts::StateLineage &lineage,
   return found == lineage.cursors().end() ? nullptr : &*found;
 }
 
-bool selected_event_was_applied(std::string_view event_type,
-                                const contracts::EventId &event_id,
-                                const ListingQualityState &quality) {
-  if (quality.last_applied_event_id != event_id)
+bool selected_event_was_applied(
+    std::string_view event_type, const contracts::EventId &event_id,
+    const contracts::Sha256Digest &semantic_checksum,
+    const ListingQualityState &quality) {
+  if (quality.last_applied_event_id != event_id ||
+      quality.last_applied_input_semantic_checksum != semantic_checksum)
     return false;
   if (event_type.starts_with("market.trade.observation."))
     return quality.last_applied_input_was_trade;
@@ -404,6 +416,30 @@ bool cursor_at_or_after(const contracts::StreamCursor &prior,
          *next.last_consumed_sequence() >= *prior.last_consumed_sequence();
 }
 
+bool valid_applied_control_cursor(
+    const contracts::StreamCursor &prior, const contracts::StreamCursor &next,
+    std::span<const dispatch::ControlBoundaryReservation> controls) {
+  if (controls.empty() || prior.stream_id() != next.stream_id() ||
+      prior.stream_epoch() != next.stream_epoch()) {
+    return false;
+  }
+  const auto prior_sequence = prior.last_consumed_sequence().value_or(0);
+  if (prior_sequence == std::numeric_limits<std::uint64_t>::max() ||
+      controls.front().control_sequence != prior_sequence + 1) {
+    return false;
+  }
+  for (std::size_t index = 1; index < controls.size(); ++index) {
+    if (controls[index - 1].control_sequence ==
+            std::numeric_limits<std::uint64_t>::max() ||
+        controls[index].control_sequence !=
+            controls[index - 1].control_sequence + 1) {
+      return false;
+    }
+  }
+  return next.last_consumed_sequence() ==
+         std::optional(controls.back().control_sequence);
+}
+
 bool valid_lineage_transition(const ListingViewPublisherConfig &config,
                               const contracts::StateLineage &prior,
                               const ListingViewCutInput &input,
@@ -430,6 +466,18 @@ bool valid_lineage_transition(const ListingViewPublisherConfig &config,
                                input.selected_event_position)) {
     return false;
   }
+  if (!input.dispatch_selection.applied_controls.empty()) {
+    const auto *prior_control =
+        find_cursor(prior, config.run_control_stream_id);
+    const auto *next_control =
+        find_cursor(input.lineage, config.run_control_stream_id);
+    if (!prior_control || !next_control ||
+        !valid_applied_control_cursor(
+            *prior_control, *next_control,
+            input.dispatch_selection.applied_controls)) {
+      return false;
+    }
+  }
 
   for (const auto &next : input.lineage.cursors()) {
     const auto *previous = find_cursor(prior, next.stream_id());
@@ -438,6 +486,12 @@ bool valid_lineage_transition(const ListingViewPublisherConfig &config,
     if (next.stream_id() == *selected_stream)
       continue;
     if (*previous == next)
+      continue;
+    const bool applied_control_transition =
+        next.stream_id() == config.run_control_stream_id &&
+        valid_applied_control_cursor(*previous, next,
+                                     input.dispatch_selection.applied_controls);
+    if (applied_control_transition)
       continue;
     const bool continuity_epoch_transition =
         *selected_stream == config.trade_continuity_stream_id &&
@@ -491,6 +545,8 @@ struct ListingViewPublisher::State final {
   ListingViewPublisherConfig config;
   std::shared_ptr<const ListingStateView> accepted;
   std::shared_ptr<const StateViewBundle> accepted_bundle;
+  std::shared_ptr<const ListingStateView> last_published;
+  std::shared_ptr<const StateViewBundle> last_published_bundle;
   std::vector<AcceptedRecord> accepted_history;
   contracts::StreamCursor dispatcher_cursor;
   contracts::StreamCursor dispatcher_control_cursor;
@@ -641,8 +697,9 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
   const auto book_input_before = book.last_input_evidence();
   if (input.lineage.run_input_sequence() != quality_before.run_input_sequence)
     return {.failure = ListingViewFailure::RunInputMismatch};
-  if (!selected_event_was_applied(input.selected_event_type,
-                                  input.selected_event_id, quality_before)) {
+  if (!selected_event_was_applied(
+          input.selected_event_type, input.selected_event_id,
+          input.input_semantic_checksum, quality_before)) {
     return {.failure = ListingViewFailure::InvalidSelectionEvidence};
   }
   const auto expected_book_kind =
@@ -728,6 +785,11 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .view_id = *identity,
       .run_id = state_->config.run_id,
       .listing_id = state_->config.listing_id,
+      .canonical_instrument_id = state_->config.canonical_instrument_id,
+      .reference_snapshot_version = state_->config.reference_snapshot_version,
+      .listing_definition_version = state_->config.listing_definition_version,
+      .reference_configuration_lineage_version =
+          state_->config.reference_configuration_lineage_version,
       .causing_selection_id = input.selection_id,
       .causing_event_id = input.selected_event_id,
       .causing_event_type = input.selected_event_type,
@@ -761,6 +823,7 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .causing_event_id = input.selected_event_id,
       .listing_views = {{state_->config.listing_id, accepted->view_id}},
       .listing_id = state_->config.listing_id,
+      .canonical_instrument_id = state_->config.canonical_instrument_id,
       .listing_view_id = accepted->view_id,
       .run_control_cursor =
           *find_cursor(input.lineage, state_->config.run_control_stream_id),
@@ -778,6 +841,10 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .bundle_schema_version = state_->config.bundle_schema_version,
       .registry_snapshot_version =
           state_->config.dispatcher_config.registry_snapshot_version,
+      .reference_snapshot_version = state_->config.reference_snapshot_version,
+      .listing_definition_version = state_->config.listing_definition_version,
+      .reference_configuration_lineage_version =
+          state_->config.reference_configuration_lineage_version,
       .arithmetic_version = state_->config.arithmetic_version,
       .canonicalization_version = state_->config.canonicalization_version,
       .identity_policy_version = state_->config.identity_policy_version,
@@ -833,6 +900,10 @@ ListingViewFailure ListingViewPublisher::transition_publication(
   }
   state_->publication_history.push_back(transition);
   state_->publication_state = transition.to;
+  if (transition.to == ViewPublicationState::PublishedToFeatureBoundary) {
+    state_->last_published = state_->accepted;
+    state_->last_published_bundle = state_->accepted_bundle;
+  }
   return ListingViewFailure::None;
 }
 
@@ -843,13 +914,7 @@ ListingViewPublisher::accepted_view() const noexcept {
 
 std::shared_ptr<const ListingStateView>
 ListingViewPublisher::published_view() const noexcept {
-  if (state_->publication_state ==
-          ViewPublicationState::PublishedToFeatureBoundary ||
-      state_->publication_state ==
-          ViewPublicationState::FeatureConsumerAccepted) {
-    return state_->accepted;
-  }
-  return {};
+  return state_->last_published;
 }
 
 std::shared_ptr<const StateViewBundle>
@@ -859,13 +924,7 @@ ListingViewPublisher::accepted_bundle() const noexcept {
 
 std::shared_ptr<const StateViewBundle>
 ListingViewPublisher::published_bundle() const noexcept {
-  if (state_->publication_state ==
-          ViewPublicationState::PublishedToFeatureBoundary ||
-      state_->publication_state ==
-          ViewPublicationState::FeatureConsumerAccepted) {
-    return state_->accepted_bundle;
-  }
-  return {};
+  return state_->last_published_bundle;
 }
 
 ViewPublicationState ListingViewPublisher::publication_state() const noexcept {

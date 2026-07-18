@@ -51,6 +51,10 @@ enum class ListingViewFailure : std::uint8_t {
 struct ListingViewPublisherConfig final {
   contracts::RunId run_id;
   contracts::ListingId listing_id;
+  contracts::CanonicalInstrumentId canonical_instrument_id;
+  contracts::VersionRef reference_snapshot_version;
+  contracts::VersionRef listing_definition_version;
+  contracts::VersionRef reference_configuration_lineage_version;
   std::vector<contracts::StreamId> required_streams;
   contracts::StateLineage initial_lineage;
   contracts::StreamId book_stream_id;
@@ -97,6 +101,10 @@ struct ListingStateView final {
   contracts::StateViewId view_id;
   contracts::RunId run_id;
   contracts::ListingId listing_id;
+  contracts::CanonicalInstrumentId canonical_instrument_id;
+  contracts::VersionRef reference_snapshot_version;
+  contracts::VersionRef listing_definition_version;
+  contracts::VersionRef reference_configuration_lineage_version;
   contracts::RunInputSelectionId causing_selection_id;
   contracts::EventId causing_event_id;
   std::string causing_event_type;
@@ -134,6 +142,7 @@ struct StateViewBundle final {
   std::vector<std::pair<contracts::ListingId, contracts::StateViewId>>
       listing_views;
   contracts::ListingId listing_id;
+  contracts::CanonicalInstrumentId canonical_instrument_id;
   contracts::StateViewId listing_view_id;
   contracts::StreamCursor run_control_cursor;
   contracts::StreamCursor run_timer_cursor;
@@ -147,6 +156,9 @@ struct StateViewBundle final {
   contracts::VersionRef view_schema_version;
   contracts::VersionRef bundle_schema_version;
   contracts::VersionRef registry_snapshot_version;
+  contracts::VersionRef reference_snapshot_version;
+  contracts::VersionRef listing_definition_version;
+  contracts::VersionRef reference_configuration_lineage_version;
   contracts::VersionRef arithmetic_version;
   contracts::VersionRef canonicalization_version;
   contracts::VersionRef identity_policy_version;

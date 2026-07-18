@@ -1,5 +1,6 @@
 #pragma once
 
+#include "chronos/contracts/digest.hpp"
 #include "chronos/contracts/fixed_point.hpp"
 #include "chronos/contracts/value_objects.hpp"
 
@@ -104,6 +105,7 @@ struct ListingAuxConfig final {
 
 struct RecentTrade final {
   contracts::EventId event_id;
+  contracts::Sha256Digest input_semantic_checksum;
   contracts::SourceEventId source_event_id;
   contracts::ListingId listing_id;
   contracts::StreamCursor cursor;
@@ -143,6 +145,7 @@ struct TradeContinuityProof final {
 
 struct ListingQualityInput final {
   contracts::EventId event_id;
+  contracts::Sha256Digest input_semantic_checksum;
   contracts::ListingId listing_id;
   ListingQualityInputKind kind{ListingQualityInputKind::LogicalTimerAdvanced};
   std::uint64_t run_input_sequence{};
@@ -170,6 +173,7 @@ struct ListingQualityState final {
   std::optional<BookSynchronizationProof> last_book_proof;
   std::optional<TradeContinuityProof> last_trade_boundary;
   std::optional<contracts::EventId> last_applied_event_id;
+  contracts::Sha256Digest last_applied_input_semantic_checksum;
   std::optional<ListingQualityInputKind> last_quality_input_kind;
   bool last_applied_input_was_trade{};
 

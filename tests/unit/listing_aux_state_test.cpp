@@ -72,6 +72,8 @@ market::RecentTrade trade(std::uint8_t seed, std::uint64_t stream_sequence,
                           std::int64_t logical_time) {
   return {
       .event_id = id<contracts::EventId>(seed),
+      .input_semantic_checksum = contracts::sha256(
+          std::vector<std::byte>{static_cast<std::byte>(run_sequence & 0xffU)}),
       .source_event_id = id<contracts::SourceEventId>(seed),
       .listing_id = id<contracts::ListingId>(1),
       .cursor = cursor(1, stream_sequence),
@@ -169,6 +171,8 @@ market::ListingQualityInput quality_input(market::ListingQualityInputKind kind,
   return {
       .event_id =
           id<contracts::EventId>(static_cast<std::uint8_t>(100 + run_sequence)),
+      .input_semantic_checksum = contracts::sha256(
+          std::vector<std::byte>{static_cast<std::byte>(run_sequence & 0xffU)}),
       .listing_id = id<contracts::ListingId>(1),
       .kind = kind,
       .run_input_sequence = run_sequence,
