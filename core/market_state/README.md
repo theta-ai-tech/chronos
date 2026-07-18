@@ -17,6 +17,8 @@
   correction relations, book synchronization proof, and trade-boundary lineage
   remain explicit in retained state.
 - **Publication:** Complete book/trade/quality cuts become immutable,
-  content-addressed views only after full `StateLineage` validation; feature
-  access follows an append-only exact-view publication lifecycle.
+  content-addressed views only after the selected event proves its one complete
+  `StateLineage` transition. Exact selection redelivery is idempotent;
+  contradictory evidence and terminal feature-publication failure stop
+  progression. Feature access follows an append-only exact-view lifecycle.
 - **Accepted dependencies:** inherits `core/` rules (see parent README).

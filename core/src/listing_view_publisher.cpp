@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -33,6 +34,32 @@ void append_enum(std::vector<std::byte> &output, Enum value) {
 
 void append_bool(std::vector<std::byte> &output, bool value) {
   append_integer<std::uint8_t>(output, value ? 1 : 0);
+}
+
+void append_string(std::vector<std::byte> &output, std::string_view value) {
+  append_integer(output, static_cast<std::uint64_t>(value.size()));
+  for (const auto character : value)
+    output.push_back(static_cast<std::byte>(character));
+}
+
+void append_digest(std::vector<std::byte> &output,
+                   const contracts::Sha256Digest &value) {
+  for (const auto byte : value.bytes)
+    output.push_back(static_cast<std::byte>(byte));
+}
+
+void append_event_position(std::vector<std::byte> &output,
+                           const contracts::EventPosition &value) {
+  append_id(output, value.stream_id());
+  append_integer(output, value.stream_epoch());
+  append_integer(output, value.stream_sequence());
+}
+
+void append_optional_u64(std::vector<std::byte> &output,
+                         const std::optional<std::uint64_t> &value) {
+  append_bool(output, value.has_value());
+  if (value)
+    append_integer(output, *value);
 }
 
 void append_version(std::vector<std::byte> &output,
@@ -165,6 +192,13 @@ std::vector<std::byte> canonical_view_bytes(
   append_id(output, config.listing_id);
   append_id(output, input.selection_id);
   append_id(output, input.selected_event_id);
+  append_string(output, input.selected_event_type);
+  append_event_position(output, input.selected_event_position);
+  append_digest(output, input.input_semantic_checksum);
+  append_digest(output, input.selection_semantic_checksum);
+  append_version(output, input.merge_policy_version);
+  append_integer(output, input.configuration_epoch);
+  append_optional_u64(output, input.effective_control_position);
   append_integer(output, input.lineage.run_input_sequence());
   append_integer(output,
                  static_cast<std::uint64_t>(input.lineage.cursors().size()));
@@ -216,6 +250,103 @@ find_cursor(const contracts::StateLineage &lineage,
   return found == lineage.cursors().end() ? nullptr : &*found;
 }
 
+bool nonzero(const contracts::Sha256Digest &value) {
+  return std::any_of(value.bytes.begin(), value.bytes.end(),
+                     [](std::uint8_t byte) { return byte != 0; });
+}
+
+bool complete_lineage(const ListingViewPublisherConfig &config,
+                      const contracts::StateLineage &lineage) {
+  if (lineage.run_id() != config.run_id ||
+      lineage.cursors().size() != config.required_streams.size()) {
+    return false;
+  }
+  return std::all_of(config.required_streams.begin(),
+                     config.required_streams.end(), [&](const auto stream) {
+                       return find_cursor(lineage, stream) != nullptr;
+                     });
+}
+
+std::optional<contracts::StreamId>
+event_stream(const ListingViewPublisherConfig &config,
+             std::string_view event_type) {
+  if (event_type.starts_with("market.book."))
+    return config.book_stream_id;
+  if (event_type.starts_with("market.trade.continuity."))
+    return config.trade_continuity_stream_id;
+  if (event_type.starts_with("market.trade."))
+    return config.trade_stream_id;
+  if (event_type.starts_with("reference."))
+    return config.reference_stream_id;
+  if (event_type.starts_with("market.control."))
+    return config.market_control_stream_id;
+  if (event_type.starts_with("run.control."))
+    return config.run_control_stream_id;
+  if (event_type.starts_with("run.timer."))
+    return config.run_timer_stream_id;
+  return std::nullopt;
+}
+
+bool cursor_follows_position(const contracts::StreamCursor &prior,
+                             const contracts::EventPosition &position) {
+  if (prior.stream_id() != position.stream_id() ||
+      prior.stream_epoch() != position.stream_epoch()) {
+    return false;
+  }
+  if (prior.is_origin())
+    return position.stream_sequence() == 0;
+  const auto sequence = prior.last_consumed_sequence();
+  return sequence && *sequence != std::numeric_limits<std::uint64_t>::max() &&
+         position.stream_sequence() == *sequence + 1;
+}
+
+bool valid_lineage_transition(const ListingViewPublisherConfig &config,
+                              const contracts::StateLineage &prior,
+                              const ListingViewCutInput &input,
+                              const ListingQualityState &quality) {
+  if (!complete_lineage(config, prior) ||
+      !complete_lineage(config, input.lineage) ||
+      prior.run_input_sequence() == std::numeric_limits<std::uint64_t>::max() ||
+      input.lineage.run_input_sequence() != prior.run_input_sequence() + 1) {
+    return false;
+  }
+  const auto selected_stream = event_stream(config, input.selected_event_type);
+  if (!selected_stream ||
+      input.selected_event_position.stream_id() != *selected_stream) {
+    return false;
+  }
+  const auto expected_cursor = contracts::StreamCursor::at_sequence(
+      *selected_stream, input.selected_event_position.stream_epoch(),
+      input.selected_event_position.stream_sequence());
+  const auto *prior_selected = find_cursor(prior, *selected_stream);
+  const auto *next_selected = find_cursor(input.lineage, *selected_stream);
+  if (!expected_cursor || !prior_selected || !next_selected ||
+      *next_selected != *expected_cursor ||
+      !cursor_follows_position(*prior_selected,
+                               input.selected_event_position)) {
+    return false;
+  }
+
+  for (const auto &next : input.lineage.cursors()) {
+    const auto *previous = find_cursor(prior, next.stream_id());
+    if (!previous)
+      return false;
+    if (next.stream_id() == *selected_stream)
+      continue;
+    if (*previous == next)
+      continue;
+    const bool continuity_epoch_transition =
+        *selected_stream == config.trade_continuity_stream_id &&
+        next.stream_id() == config.trade_stream_id &&
+        quality.last_trade_boundary &&
+        quality.last_trade_boundary->prior_trade_cursor == *previous &&
+        quality.last_trade_boundary->recovered_trade_cursor == next;
+    if (!continuity_epoch_transition)
+      return false;
+  }
+  return true;
+}
+
 bool valid_transition(ViewPublicationState from, ViewPublicationState to) {
   if (to == ViewPublicationState::PublicationInProgress) {
     return from == ViewPublicationState::NotPublished ||
@@ -240,6 +371,10 @@ struct ListingViewPublisher::State final {
 
   ListingViewPublisherConfig config;
   std::shared_ptr<const ListingStateView> accepted;
+  std::optional<ListingViewCutInput> last_input;
+  std::uint64_t configuration_epoch{config.initial_configuration_epoch};
+  std::optional<std::uint64_t> effective_control_position{
+      config.initial_effective_control_position};
   ViewPublicationState publication_state{ViewPublicationState::NotPublished};
   std::optional<contracts::PublicationAttemptId> active_attempt_id;
   std::uint64_t active_attempt_number{};
@@ -257,7 +392,14 @@ ListingViewPublisher::~ListingViewPublisher() = default;
 std::optional<ListingViewPublisher>
 ListingViewPublisher::create(ListingViewPublisherConfig config) {
   if (config.required_streams.empty() ||
-      config.maximum_publication_transitions == 0) {
+      config.maximum_publication_transitions == 0 ||
+      config.initial_configuration_epoch == 0 ||
+      config.initial_effective_control_position ||
+      config.initial_lineage.run_input_sequence() != 0 ||
+      !complete_lineage(config, config.initial_lineage) ||
+      std::any_of(config.initial_lineage.cursors().begin(),
+                  config.initial_lineage.cursors().end(),
+                  [](const auto &cursor) { return !cursor.is_origin(); })) {
     return std::nullopt;
   }
   auto streams = config.required_streams;
@@ -276,7 +418,8 @@ ListingViewPublisher::create(ListingViewPublisherConfig config) {
   auto sorted_roles = roles;
   std::sort(sorted_roles.begin(), sorted_roles.end());
   if (std::adjacent_find(sorted_roles.begin(), sorted_roles.end()) !=
-      sorted_roles.end()) {
+          sorted_roles.end() ||
+      streams.size() != sorted_roles.size()) {
     return std::nullopt;
   }
   for (const auto role : roles) {
@@ -297,25 +440,52 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
     return {.failure = ListingViewFailure::WrongListing};
   }
   if (state_->accepted &&
-      state_->publication_state !=
-          ViewPublicationState::FeatureConsumerAccepted &&
-      state_->publication_state !=
-          ViewPublicationState::PublicationFailedTerminal) {
+      input.selection_id == state_->accepted->causing_selection_id) {
+    if (state_->last_input && input == *state_->last_input)
+      return {.view = state_->accepted};
+    return {.failure = ListingViewFailure::ContradictorySelection};
+  }
+  if (state_->accepted && state_->publication_state !=
+                              ViewPublicationState::FeatureConsumerAccepted) {
     return {.failure = ListingViewFailure::PriorViewPending};
   }
-  if (input.lineage.cursors().size() !=
-      state_->config.required_streams.size()) {
+  if (!complete_lineage(state_->config, input.lineage)) {
     return {.failure = ListingViewFailure::IncompleteLineage};
   }
-  for (const auto stream : state_->config.required_streams) {
-    if (!find_cursor(input.lineage, stream))
-      return {.failure = ListingViewFailure::IncompleteLineage};
+  const auto selected_stream =
+      event_stream(state_->config, input.selected_event_type);
+  const bool run_control =
+      selected_stream &&
+      *selected_stream == state_->config.run_control_stream_id;
+  const bool evidence_valid =
+      contracts::is_valid_event_type(input.selected_event_type) &&
+      nonzero(input.input_semantic_checksum) &&
+      nonzero(input.selection_semantic_checksum) &&
+      input.merge_policy_version == state_->config.merge_policy_version &&
+      ((!run_control &&
+        input.configuration_epoch == state_->configuration_epoch &&
+        input.effective_control_position ==
+            state_->effective_control_position) ||
+       (run_control &&
+        state_->configuration_epoch !=
+            std::numeric_limits<std::uint64_t>::max() &&
+        input.configuration_epoch == state_->configuration_epoch + 1 &&
+        input.effective_control_position ==
+            input.lineage.run_input_sequence()));
+  if (!evidence_valid) {
+    return {.failure = ListingViewFailure::InvalidSelectionEvidence};
   }
 
   const auto quality_before = auxiliary.quality();
   const auto transition_before = book.transition_sequence();
   if (input.lineage.run_input_sequence() != quality_before.run_input_sequence)
     return {.failure = ListingViewFailure::RunInputMismatch};
+  const auto &prior_lineage = state_->accepted ? state_->accepted->lineage
+                                               : state_->config.initial_lineage;
+  if (!valid_lineage_transition(state_->config, prior_lineage, input,
+                                quality_before)) {
+    return {.failure = ListingViewFailure::InvalidLineageTransition};
+  }
   const auto *book_cursor =
       find_cursor(input.lineage, state_->config.book_stream_id);
   const auto *trade_cursor =
@@ -365,6 +535,13 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .listing_id = state_->config.listing_id,
       .causing_selection_id = input.selection_id,
       .causing_event_id = input.selected_event_id,
+      .causing_event_type = input.selected_event_type,
+      .causing_event_position = input.selected_event_position,
+      .input_semantic_checksum = input.input_semantic_checksum,
+      .selection_semantic_checksum = input.selection_semantic_checksum,
+      .merge_policy_version = input.merge_policy_version,
+      .configuration_epoch = input.configuration_epoch,
+      .effective_control_position = input.effective_control_position,
       .lineage = input.lineage,
       .l2_transition_sequence = transition_before,
       .bids = std::move(bids),
@@ -381,6 +558,9 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .semantic_checksum = checksum,
   });
   state_->accepted = accepted;
+  state_->last_input = input;
+  state_->configuration_epoch = input.configuration_epoch;
+  state_->effective_control_position = input.effective_control_position;
   state_->publication_state = ViewPublicationState::NotPublished;
   state_->active_attempt_id.reset();
   state_->active_attempt_number = 0;

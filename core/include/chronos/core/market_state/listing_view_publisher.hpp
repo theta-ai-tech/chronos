@@ -1,6 +1,7 @@
 #pragma once
 
 #include "chronos/contracts/digest.hpp"
+#include "chronos/contracts/event_envelope.hpp"
 #include "chronos/contracts/state_lineage.hpp"
 #include "chronos/core/market_state/l2_book.hpp"
 #include "chronos/core/market_state/listing_aux_state.hpp"
@@ -10,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace chronos::core::market_state {
@@ -31,6 +33,9 @@ enum class ListingViewFailure : std::uint8_t {
   CursorMismatch,
   BookStateMismatch,
   RunInputMismatch,
+  InvalidSelectionEvidence,
+  InvalidLineageTransition,
+  ContradictorySelection,
   SourceCutChanged,
   IdentityDerivationFailed,
   PriorViewPending,
@@ -44,6 +49,7 @@ struct ListingViewPublisherConfig final {
   contracts::RunId run_id;
   contracts::ListingId listing_id;
   std::vector<contracts::StreamId> required_streams;
+  contracts::StateLineage initial_lineage;
   contracts::StreamId book_stream_id;
   contracts::StreamId trade_stream_id;
   contracts::StreamId trade_continuity_stream_id;
@@ -52,6 +58,9 @@ struct ListingViewPublisherConfig final {
   contracts::StreamId run_control_stream_id;
   contracts::StreamId run_timer_stream_id;
   contracts::ConsumerBoundaryId feature_boundary_id;
+  contracts::VersionRef merge_policy_version;
+  std::uint64_t initial_configuration_epoch{};
+  std::optional<std::uint64_t> initial_effective_control_position;
   contracts::VersionRef view_schema_version;
   contracts::VersionRef capability_version;
   contracts::VersionRef transition_policy_version;
@@ -63,7 +72,16 @@ struct ListingViewPublisherConfig final {
 struct ListingViewCutInput final {
   contracts::RunInputSelectionId selection_id;
   contracts::EventId selected_event_id;
+  std::string selected_event_type;
+  contracts::EventPosition selected_event_position;
+  contracts::Sha256Digest input_semantic_checksum;
+  contracts::Sha256Digest selection_semantic_checksum;
+  contracts::VersionRef merge_policy_version;
+  std::uint64_t configuration_epoch{};
+  std::optional<std::uint64_t> effective_control_position;
   contracts::StateLineage lineage;
+
+  bool operator==(const ListingViewCutInput &) const = default;
 };
 
 struct ListingStateView final {
@@ -72,6 +90,13 @@ struct ListingStateView final {
   contracts::ListingId listing_id;
   contracts::RunInputSelectionId causing_selection_id;
   contracts::EventId causing_event_id;
+  std::string causing_event_type;
+  contracts::EventPosition causing_event_position;
+  contracts::Sha256Digest input_semantic_checksum;
+  contracts::Sha256Digest selection_semantic_checksum;
+  contracts::VersionRef merge_policy_version;
+  std::uint64_t configuration_epoch{};
+  std::optional<std::uint64_t> effective_control_position;
   contracts::StateLineage lineage;
   std::uint64_t l2_transition_sequence{};
   std::vector<L2Level> bids;
