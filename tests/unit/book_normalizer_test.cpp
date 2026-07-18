@@ -207,7 +207,7 @@ TEST_CASE("Bybit snapshots map to canonical fully-lineaged observations") {
                            id<contracts::ClockDomainId>(12), kVersions);
   CHECK(result.ok());
   const auto &fact = *result.fact;
-  CHECK(fact.event_type() == "market.book.snapshot_observed");
+  CHECK(fact.event_type() == "market.book.observation.snapshot");
   CHECK(fact.canonical_instrument_id ==
         reference_snapshot().instrument().instrument_id);
   CHECK(fact.listing_id == reference_snapshot().listing().listing_id);
@@ -275,7 +275,7 @@ TEST_CASE("Bybit deltas retain absolute set and delete semantics") {
   CHECK(first.ok());
   CHECK(second.ok());
   CHECK(first.fact == second.fact);
-  CHECK(first.fact->event_type() == "market.book.delta_observed");
+  CHECK(first.fact->event_type() == "market.book.observation.delta");
   const auto &delta = std::get<book::BookDeltaObservation>(first.fact->payload);
   CHECK(delta.bid_changes.size() == 2);
   CHECK(delta.bid_changes[0].price.units() == 420002);

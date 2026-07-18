@@ -191,7 +191,7 @@ TEST_CASE("all Bybit trade members normalize in source order with lineage") {
   CHECK(result.facts.size() == 2);
   const auto &first = result.facts[0];
   const auto &second = result.facts[1];
-  CHECK(first.event_type() == "market.trade.observed");
+  CHECK(first.event_type() == "market.trade.observation.executed");
   CHECK(first.source_assertions.source_trade_id == "trade-b");
   CHECK(second.source_assertions.source_trade_id == "trade-a");
   CHECK(first.source_assertions.member_index == 0);

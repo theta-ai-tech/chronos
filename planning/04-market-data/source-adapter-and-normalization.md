@@ -569,7 +569,7 @@ The concrete type registry activates the Phase 03 namespaces without changing th
 
 ### Book snapshot
 
-`market.book.snapshot_observed` represents one venue-emitted L2 snapshot message or independently framed snapshot member.
+`market.book.observation.snapshot` represents one venue-emitted L2 snapshot message or independently framed snapshot member.
 
 Minimum semantics:
 
@@ -589,7 +589,7 @@ One source snapshot containing many levels remains one normalized snapshot fact 
 
 ### Book delta
 
-`market.book.delta_observed` represents one venue-emitted incremental L2 change message or independently framed member.
+`market.book.observation.delta` represents one venue-emitted incremental L2 change message or independently framed member.
 
 Minimum semantics:
 
@@ -607,7 +607,7 @@ Normalization must not guess whether quantity means absolute level size, delta s
 
 ### Public trade
 
-`market.trade.observed` represents one public trade fact. If one source message contains multiple independently identified trades, normalization may emit one normalized trade per trade member; each references the same single source event and preserves its member index/identity.
+`market.trade.observation.executed` represents one public trade fact. If one source message contains multiple independently identified trades, normalization may emit one normalized trade per trade member; each references the same single source event and preserves its member index/identity.
 
 Minimum semantics:
 

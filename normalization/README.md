@@ -20,7 +20,7 @@
   versions, and one pinned reference/configuration lineage and snapshot.
 
 M3.2 and M3.3 normalize observations only. Trade messages produce one
-`market.trade.observed` fact per source array member, in source order, with the
+`market.trade.observation.executed` fact per source array member, in source order, with the
 same `source_event_id` and a stable member index. Neither path mutates market
 state or allocates normalized stream, epoch, event, or run-input positions;
 those remain later stream/dispatch and M4 authorities.

@@ -10,6 +10,14 @@ semantic records. A committed SHA-256 identity covers every normalized fact
 field plus stream/source/version/acceptance provenance, and normalized-fact
 replay must reproduce the same bytes and metadata exactly.
 
+M4.6 extends that captured session through the real run-input dispatcher and
+market-state authorities. It applies the normalized snapshot, delta, and
+trades, inserts the required deterministic trade-continuity boundary, and
+publishes five immutable listing views and bundles. Replaying the identical
+manifest twice must reproduce every complete view and bundle exactly. The
+committed M4 SHA-256 golden covers the semantic checksums of every intermediate
+view and bundle, so drift in identity, content, ancestry, or lineage is visible.
+
 - **Parent:** `tests/`
 - **Owner:** Inherits `tests/` ownership.
 - **Plane:** Inherits `tests/` plane.
