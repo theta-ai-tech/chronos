@@ -10,7 +10,6 @@
 
 namespace {
 namespace contracts = chronos::contracts;
-namespace features = chronos::core::features;
 namespace sdk = chronos::strategies::sdk;
 
 template <typename Id> Id id(std::uint8_t seed) {
@@ -51,7 +50,7 @@ sdk::SignalDraft signal() {
 sdk::StrategyDescriptor descriptor() {
   static const std::array dependencies = {
       sdk::FeatureDependency{
-          .kind = features::FeatureKind::OrderBookImbalance,
+          .kind = sdk::StrategyFeatureKind::OrderBookImbalance,
           .definition_version = version(20),
       },
   };
@@ -73,7 +72,7 @@ sdk::StrategyDescriptor descriptor() {
       .explanation_policy_version = version(26),
       .resource_limits =
           {
-              .maximum_operations = 16,
+              .operations_per_evaluation = 16,
               .maximum_features = 1,
               .maximum_parameters = 1,
               .maximum_explanation_factors = 2,
@@ -82,10 +81,10 @@ sdk::StrategyDescriptor descriptor() {
   };
 }
 
-static_assert(std::is_same_v<decltype(sdk::StrategyInvocation::features),
-                             std::span<const features::FeatureEvaluation>>);
-static_assert(std::is_same_v<decltype(sdk::StrategyInvocation::parameters),
-                             std::span<const sdk::StrategyParameter>>);
+static_assert(
+    !std::is_default_constructible_v<sdk::AcceptedStrategyInvocation>);
+static_assert(!std::is_aggregate_v<sdk::AcceptedStrategyInvocation>);
+static_assert(!std::is_default_constructible_v<sdk::StrategyWorkspace>);
 
 } // namespace
 
@@ -94,7 +93,7 @@ TEST_CASE("strategy descriptors pin dependencies and bounded resources") {
   CHECK(sdk::validate_descriptor(valid));
 
   auto no_fuel = valid;
-  no_fuel.resource_limits.maximum_operations = 0;
+  no_fuel.resource_limits.operations_per_evaluation = 0;
   CHECK(!sdk::validate_descriptor(no_fuel));
 
   auto too_many_features = valid;
@@ -112,20 +111,17 @@ TEST_CASE("strategy descriptors pin dependencies and bounded resources") {
 TEST_CASE(
     "deterministic operation fuel is exact and non-consuming on failure") {
   sdk::DeterministicOperationBudget budget(5);
-  CHECK(budget.consume(2));
-  CHECK(budget.consumed_operations() == 2);
-  CHECK(budget.remaining_operations() == 3);
-  CHECK(!budget.exhausted());
-  CHECK(!budget.consume(4));
-  CHECK(budget.consumed_operations() == 2);
-  CHECK(budget.consume(3));
-  CHECK(budget.exhausted());
-  CHECK(!budget.consume());
+  CHECK(budget.charge(2));
+  CHECK(budget.charged_operations() == 2);
+  CHECK(!budget.charge(4));
+  CHECK(budget.charged_operations() == 2);
+  CHECK(budget.charge(3));
+  CHECK(!budget.charge(1));
 
   sdk::DeterministicOperationBudget maximum(
       std::numeric_limits<std::uint64_t>::max());
-  CHECK(maximum.consume(std::numeric_limits<std::uint64_t>::max()));
-  CHECK(!maximum.consume());
+  CHECK(maximum.charge(std::numeric_limits<std::uint64_t>::max()));
+  CHECK(!maximum.charge(1));
 }
 
 TEST_CASE("logical deadlines depend only on the recorded cut") {
@@ -192,4 +188,12 @@ TEST_CASE("abstention is terminal and cannot be encoded as a signal") {
   no_horizon.horizon_nanoseconds = 0;
   CHECK(!invalid_signal.emit_signal(no_horizon));
   CHECK(!invalid_signal.terminal());
+
+  auto no_strength = signal();
+  no_strength.strength.units = 0;
+  CHECK(!invalid_signal.emit_signal(no_strength));
+  auto excessive_strength = signal();
+  excessive_strength.strength.units =
+      excessive_strength.strength.scale.denominator() + 1;
+  CHECK(!invalid_signal.emit_signal(excessive_strength));
 }

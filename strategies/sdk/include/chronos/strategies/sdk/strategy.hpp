@@ -2,19 +2,18 @@
 
 #include "chronos/contracts/digest.hpp"
 #include "chronos/contracts/fixed_point.hpp"
-#include "chronos/core/features/feature_runtime.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <utility>
 #include <variant>
+#include <vector>
 
 namespace chronos::strategies::sdk {
 
-enum class StrategyScope : std::uint8_t {
-  SingleListing,
-};
+enum class StrategyScope : std::uint8_t { SingleListing };
 
 enum class StrategyFamily : std::uint8_t {
   OrderBookImbalance,
@@ -22,10 +21,35 @@ enum class StrategyFamily : std::uint8_t {
   ShortHorizonMomentum,
 };
 
-enum class StrategyDirection : std::uint8_t {
-  Positive,
-  Negative,
+enum class StrategyFeatureKind : std::uint8_t {
+  OrderBookImbalance,
+  Microprice,
+  Spread,
 };
+
+enum class StrategyFeatureDisposition : std::uint8_t {
+  ValidObservation,
+  Unavailable,
+};
+
+enum class StrategyFeatureUnavailableReason : std::uint8_t {
+  BookStarting,
+  BookRecovering,
+  BookGapped,
+  BookInvalid,
+  BookUnavailable,
+  BookClosed,
+  BookStale,
+  BookFreshnessUnknown,
+  UnsupportedBookShape,
+  TopNotProven,
+  TopUnavailable,
+  InvalidQuantity,
+  DefinitionMismatch,
+  ArithmeticOverflow,
+};
+
+enum class StrategyDirection : std::uint8_t { Positive, Negative };
 
 enum class ExplanationSource : std::uint8_t {
   Feature,
@@ -55,14 +79,15 @@ enum class StrategyAbstentionReason : std::uint8_t {
 
 enum class StrategyExecutionStatus : std::uint8_t {
   Completed,
+  LogicalDeadlineExceeded,
   DeterministicBudgetExhausted,
+  InsufficientWorkspace,
   OutputCapacityExceeded,
   ContractViolation,
 };
 
 struct FeatureDependency final {
-  core::features::FeatureKind kind{
-      core::features::FeatureKind::OrderBookImbalance};
+  StrategyFeatureKind kind{StrategyFeatureKind::OrderBookImbalance};
   contracts::VersionRef definition_version;
 
   bool operator==(const FeatureDependency &) const = default;
@@ -86,7 +111,9 @@ struct StrategyParameter final {
 };
 
 struct StrategyResourceLimits final {
-  std::uint64_t maximum_operations{};
+  // Native strategies use one declared fixed charge per invocation. The host
+  // charges it before entering strategy code, so fuel cannot be ignored.
+  std::uint64_t operations_per_evaluation{};
   std::size_t maximum_features{};
   std::size_t maximum_parameters{};
   std::size_t maximum_explanation_factors{};
@@ -118,39 +145,122 @@ struct LogicalCut final {
   bool operator==(const LogicalCut &) const = default;
 };
 
-struct StrategyInvocation final {
+struct ScaledRatio final {
+  contracts::AmountUnits units{};
+  contracts::DecimalScale scale;
+
+  bool operator==(const ScaledRatio &) const = default;
+};
+
+using StrategyFeatureValue = std::variant<ScaledRatio, contracts::Price>;
+
+struct StrategyFeatureProvenance final {
   contracts::RunId run_id;
-  contracts::StrategyInstanceId strategy_instance_id;
   contracts::ListingId listing_id;
   contracts::CanonicalInstrumentId canonical_instrument_id;
-  std::span<const core::features::FeatureEvaluation> features;
-  std::span<const StrategyParameter> parameters;
-  LogicalCut cut;
+  std::uint64_t run_input_sequence{};
+  std::int64_t logical_time_nanoseconds{};
+  std::uint64_t configuration_epoch{};
+  std::optional<std::uint64_t> effective_control_position;
+  contracts::VersionRef feature_definition_version;
+  contracts::Sha256Digest input_view_semantic_checksum;
+  contracts::Sha256Digest input_bundle_semantic_checksum;
+
+  bool operator==(const StrategyFeatureProvenance &) const = default;
+};
+
+struct StrategyFeature final {
+  contracts::FeatureEvaluationId evaluation_id;
+  StrategyFeatureKind kind{StrategyFeatureKind::OrderBookImbalance};
+  StrategyFeatureDisposition disposition{
+      StrategyFeatureDisposition::Unavailable};
+  StrategyFeatureProvenance provenance;
+  std::optional<StrategyFeatureValue> value;
+  std::optional<StrategyFeatureUnavailableReason> unavailable_reason;
+  contracts::Sha256Digest semantic_checksum;
+
+  bool operator==(const StrategyFeature &) const = default;
+};
+
+class AcceptedStrategyInvocation final {
+public:
+  [[nodiscard]] const contracts::RunId &run_id() const noexcept {
+    return run_id_;
+  }
+  [[nodiscard]] const contracts::StrategyInstanceId &
+  strategy_instance_id() const noexcept {
+    return strategy_instance_id_;
+  }
+  [[nodiscard]] const contracts::ListingId &listing_id() const noexcept {
+    return listing_id_;
+  }
+  [[nodiscard]] const contracts::CanonicalInstrumentId &
+  canonical_instrument_id() const noexcept {
+    return canonical_instrument_id_;
+  }
+  [[nodiscard]] std::span<const StrategyFeature> features() const noexcept {
+    return features_;
+  }
+  [[nodiscard]] std::span<const StrategyParameter> parameters() const noexcept {
+    return parameters_;
+  }
+  [[nodiscard]] const LogicalCut &cut() const noexcept { return cut_; }
+
+private:
+  AcceptedStrategyInvocation(
+      contracts::RunId run_id,
+      contracts::StrategyInstanceId strategy_instance_id,
+      contracts::ListingId listing_id,
+      contracts::CanonicalInstrumentId canonical_instrument_id,
+      std::vector<StrategyFeature> features,
+      std::vector<StrategyParameter> parameters, LogicalCut cut)
+      : run_id_(run_id), strategy_instance_id_(strategy_instance_id),
+        listing_id_(listing_id),
+        canonical_instrument_id_(canonical_instrument_id),
+        features_(std::move(features)), parameters_(std::move(parameters)),
+        cut_(std::move(cut)) {}
+
+  contracts::RunId run_id_;
+  contracts::StrategyInstanceId strategy_instance_id_;
+  contracts::ListingId listing_id_;
+  contracts::CanonicalInstrumentId canonical_instrument_id_;
+  std::vector<StrategyFeature> features_;
+  std::vector<StrategyParameter> parameters_;
+  LogicalCut cut_;
+
+  friend class StrategyHost;
 };
 
 class DeterministicOperationBudget final {
 public:
   explicit constexpr DeterministicOperationBudget(
-      std::uint64_t maximum_operations) noexcept
-      : maximum_operations_(maximum_operations) {}
+      std::uint64_t available_operations) noexcept
+      : available_operations_(available_operations) {}
 
-  [[nodiscard]] bool consume(std::uint64_t operations = 1) noexcept;
-  [[nodiscard]] constexpr std::uint64_t maximum_operations() const noexcept {
-    return maximum_operations_;
+  [[nodiscard]] bool charge(std::uint64_t operations) noexcept;
+  [[nodiscard]] constexpr std::uint64_t available_operations() const noexcept {
+    return available_operations_;
   }
-  [[nodiscard]] constexpr std::uint64_t consumed_operations() const noexcept {
-    return consumed_operations_;
-  }
-  [[nodiscard]] constexpr std::uint64_t remaining_operations() const noexcept {
-    return maximum_operations_ - consumed_operations_;
-  }
-  [[nodiscard]] constexpr bool exhausted() const noexcept {
-    return consumed_operations_ == maximum_operations_;
+  [[nodiscard]] constexpr std::uint64_t charged_operations() const noexcept {
+    return charged_operations_;
   }
 
 private:
-  std::uint64_t maximum_operations_{};
-  std::uint64_t consumed_operations_{};
+  std::uint64_t available_operations_{};
+  std::uint64_t charged_operations_{};
+};
+
+class StrategyWorkspace final {
+public:
+  [[nodiscard]] std::span<std::byte> bytes() const noexcept { return bytes_; }
+
+private:
+  explicit StrategyWorkspace(std::span<std::byte> bytes) noexcept
+      : bytes_(bytes) {}
+
+  std::span<std::byte> bytes_;
+
+  friend class StrategyHost;
 };
 
 struct ExplanationFactor final {
@@ -170,7 +280,7 @@ struct ExplanationFactor final {
 
 struct SignalDraft final {
   StrategyDirection direction{StrategyDirection::Positive};
-  core::features::ScaledRatio strength;
+  ScaledRatio strength;
   std::int64_t horizon_nanoseconds{};
   std::optional<contracts::Price> reference_price;
 
@@ -189,8 +299,7 @@ using TerminalDraft = std::variant<SignalDraft, AbstentionDraft>;
 class StrategyOutput final {
 public:
   explicit StrategyOutput(
-      std::span<std::optional<ExplanationFactor>> factor_storage) noexcept
-      : factor_storage_(factor_storage) {}
+      std::span<std::optional<ExplanationFactor>> factor_storage) noexcept;
 
   [[nodiscard]] bool append_factor(ExplanationFactor factor) noexcept;
   [[nodiscard]] bool emit_signal(SignalDraft signal) noexcept;
@@ -220,8 +329,8 @@ public:
   [[nodiscard]] virtual const StrategyDescriptor &
   descriptor() const noexcept = 0;
   [[nodiscard]] virtual StrategyExecutionStatus
-  evaluate(const StrategyInvocation &invocation,
-           DeterministicOperationBudget &budget,
+  evaluate(const AcceptedStrategyInvocation &invocation,
+           StrategyWorkspace &workspace,
            StrategyOutput &output) const noexcept = 0;
 };
 

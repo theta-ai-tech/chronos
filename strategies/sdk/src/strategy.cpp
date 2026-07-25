@@ -5,11 +5,18 @@
 
 namespace chronos::strategies::sdk {
 
-bool DeterministicOperationBudget::consume(std::uint64_t operations) noexcept {
-  if (operations > remaining_operations())
+bool DeterministicOperationBudget::charge(std::uint64_t operations) noexcept {
+  if (operations > available_operations_ - charged_operations_)
     return false;
-  consumed_operations_ += operations;
+  charged_operations_ += operations;
   return true;
+}
+
+StrategyOutput::StrategyOutput(
+    std::span<std::optional<ExplanationFactor>> factor_storage) noexcept
+    : factor_storage_(factor_storage) {
+  for (auto &factor : factor_storage_)
+    factor.reset();
 }
 
 bool StrategyOutput::append_factor(ExplanationFactor factor) noexcept {
@@ -21,7 +28,9 @@ bool StrategyOutput::append_factor(ExplanationFactor factor) noexcept {
 }
 
 bool StrategyOutput::emit_signal(SignalDraft signal) noexcept {
-  if (terminal_ || signal.horizon_nanoseconds <= 0)
+  if (terminal_ || signal.horizon_nanoseconds <= 0 ||
+      signal.strength.units <= 0 ||
+      signal.strength.units > signal.strength.scale.denominator())
     return false;
   terminal_ = std::move(signal);
   return true;
@@ -39,7 +48,7 @@ bool validate_descriptor(const StrategyDescriptor &descriptor) noexcept {
   if (descriptor.required_features.empty() ||
       descriptor.required_features.size() > limits.maximum_features ||
       descriptor.parameter_schema.size() > limits.maximum_parameters ||
-      limits.maximum_operations == 0 || limits.maximum_features == 0 ||
+      limits.operations_per_evaluation == 0 || limits.maximum_features == 0 ||
       limits.maximum_explanation_factors == 0 ||
       limits.maximum_working_bytes == 0)
     return false;

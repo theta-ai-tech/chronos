@@ -6,6 +6,7 @@
 #include "chronos/core/market_state/listing_view_publisher.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <variant>
@@ -147,15 +148,50 @@ struct FeatureEvaluation final {
   bool operator==(const FeatureEvaluation &) const = default;
 };
 
-struct FeatureRuntimeResult final {
+class AcceptedFeatureEvaluationCut final {
+public:
+  [[nodiscard]] const std::vector<FeatureEvaluation> &
+  evaluations() const noexcept {
+    return *evaluations_;
+  }
+
+  bool operator==(const AcceptedFeatureEvaluationCut &other) const noexcept {
+    return evaluations() == other.evaluations();
+  }
+
+private:
+  explicit AcceptedFeatureEvaluationCut(
+      std::shared_ptr<const std::vector<FeatureEvaluation>> evaluations)
+      : evaluations_(std::move(evaluations)) {}
+
+  std::shared_ptr<const std::vector<FeatureEvaluation>> evaluations_;
+
+  friend class FeatureRuntime;
+};
+
+class FeatureRuntimeResult final {
+public:
   FeatureRuntimeFailure failure{FeatureRuntimeFailure::None};
-  std::vector<FeatureEvaluation> evaluations;
 
   [[nodiscard]] bool ok() const noexcept {
-    return failure == FeatureRuntimeFailure::None;
+    return failure == FeatureRuntimeFailure::None && accepted_cut_.has_value();
+  }
+  [[nodiscard]] const std::vector<FeatureEvaluation> &
+  evaluations() const noexcept {
+    static const std::vector<FeatureEvaluation> empty;
+    return accepted_cut_ ? accepted_cut_->evaluations() : empty;
+  }
+  [[nodiscard]] const AcceptedFeatureEvaluationCut *
+  accepted_cut() const noexcept {
+    return accepted_cut_ ? &*accepted_cut_ : nullptr;
   }
 
   bool operator==(const FeatureRuntimeResult &) const = default;
+
+private:
+  std::optional<AcceptedFeatureEvaluationCut> accepted_cut_;
+
+  friend class FeatureRuntime;
 };
 
 class FeatureRuntime final {

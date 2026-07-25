@@ -33,6 +33,8 @@ include = [
   "/contracts/conformance/fixtures",
   "/tests/python",
   "/tools/development/bootstrap_m0.py",
+  "/tools/development/verify_strategy_capabilities.py",
+  "/tools/development/verify_strategy_symbols.py",
 ]
 
 [tool.pytest.ini_options]

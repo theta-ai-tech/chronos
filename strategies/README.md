@@ -13,6 +13,10 @@
 - **Reconstruction source:** declared feature outcomes, immutable parameters,
   logical cut, and deterministic operation budget.
 
+Concrete native strategies are registered with the CMake
+`chronos_add_strategy` function. That restricted target links the strategy SDK
+surface and applies source and linked-symbol capability checks on every build.
+
 See `planning/01-architecture/architecture.md` (Repository and module structure,
 Dependency direction) and `planning/01-architecture/domain-model.md` for the
 authoritative ownership and dependency rules.

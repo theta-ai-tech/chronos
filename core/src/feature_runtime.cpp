@@ -408,17 +408,21 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
   const auto &view = cut.view();
   FeatureRuntimeResult result;
   result.failure = validate_cut(config_, bundle, view);
-  if (!result.ok())
+  if (result.failure != FeatureRuntimeFailure::None)
     return result;
-  result.evaluations.reserve(3);
+  std::vector<FeatureEvaluation> evaluations;
+  evaluations.reserve(3);
 
   const auto book_reason = book_unavailable_reason(view);
   if (book_reason) {
     for (const auto kind : {FeatureKind::OrderBookImbalance,
                             FeatureKind::Microprice, FeatureKind::Spread}) {
-      result.evaluations.push_back(
+      evaluations.push_back(
           unavailable_evaluation(config_, kind, bundle, view, *book_reason));
     }
+    result.accepted_cut_ = AcceptedFeatureEvaluationCut(
+        std::make_shared<const std::vector<FeatureEvaluation>>(
+            std::move(evaluations)));
     return result;
   }
 
@@ -428,7 +432,7 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
   const auto &ask = *view.top.best_ask;
 
   if (quantity_failure) {
-    result.evaluations.push_back(
+    evaluations.push_back(
         unavailable_evaluation(config_, FeatureKind::OrderBookImbalance, bundle,
                                view, *quantity_failure));
   } else {
@@ -445,11 +449,11 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
                                  difference, 1'000'000, total,
                                  contracts::RoundingMode::nearest_ties_to_even);
     if (!units) {
-      result.evaluations.push_back(unavailable_evaluation(
+      evaluations.push_back(unavailable_evaluation(
           config_, FeatureKind::OrderBookImbalance, bundle, view,
           FeatureUnavailableReason::ArithmeticOverflow));
     } else {
-      result.evaluations.push_back(evaluate_observation(observation(
+      evaluations.push_back(evaluate_observation(observation(
           FeatureKind::OrderBookImbalance,
           provenance(config_, FeatureKind::OrderBookImbalance, bundle, view),
           ScaledRatio{.units = *units,
@@ -459,7 +463,7 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
   }
 
   if (price_reason || quantity_failure) {
-    result.evaluations.push_back(unavailable_evaluation(
+    evaluations.push_back(unavailable_evaluation(
         config_, FeatureKind::Microprice, bundle, view,
         price_reason ? *price_reason : *quantity_failure));
   } else {
@@ -477,11 +481,11 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
                                     *weighted_units, bid.price.definition_ref())
                               : std::nullopt;
     if (!weighted) {
-      result.evaluations.push_back(
+      evaluations.push_back(
           unavailable_evaluation(config_, FeatureKind::Microprice, bundle, view,
                                  FeatureUnavailableReason::ArithmeticOverflow));
     } else {
-      result.evaluations.push_back(evaluate_observation(observation(
+      evaluations.push_back(evaluate_observation(observation(
           FeatureKind::Microprice,
           provenance(config_, FeatureKind::Microprice, bundle, view),
           *weighted)));
@@ -489,20 +493,23 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
   }
 
   if (price_reason) {
-    result.evaluations.push_back(unavailable_evaluation(
-        config_, FeatureKind::Spread, bundle, view, *price_reason));
+    evaluations.push_back(unavailable_evaluation(config_, FeatureKind::Spread,
+                                                 bundle, view, *price_reason));
   } else {
     const auto spread = ask.price.checked_subtract(bid.price);
     if (!spread || spread->units() < 0) {
-      result.evaluations.push_back(
+      evaluations.push_back(
           unavailable_evaluation(config_, FeatureKind::Spread, bundle, view,
                                  FeatureUnavailableReason::ArithmeticOverflow));
     } else {
-      result.evaluations.push_back(evaluate_observation(observation(
+      evaluations.push_back(evaluate_observation(observation(
           FeatureKind::Spread,
           provenance(config_, FeatureKind::Spread, bundle, view), *spread)));
     }
   }
+  result.accepted_cut_ = AcceptedFeatureEvaluationCut(
+      std::make_shared<const std::vector<FeatureEvaluation>>(
+          std::move(evaluations)));
   return result;
 }
 

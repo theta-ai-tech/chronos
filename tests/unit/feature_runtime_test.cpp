@@ -1,4 +1,5 @@
 #include "chronos/core/features/feature_runtime.hpp"
+#include "chronos/strategies/sdk/strategy_host.hpp"
 
 #include "microtest.hpp"
 
@@ -14,6 +15,7 @@ namespace contracts = chronos::contracts;
 namespace dispatch = chronos::core::dispatch;
 namespace features = chronos::core::features;
 namespace market = chronos::core::market_state;
+namespace sdk = chronos::strategies::sdk;
 
 template <typename Id> Id id(std::uint8_t seed) {
   typename Id::bytes_type value{};
@@ -334,11 +336,121 @@ const features::FeatureEvaluation &
 evaluation(const features::FeatureRuntimeResult &result,
            features::FeatureKind kind) {
   const auto found =
-      std::find_if(result.evaluations.begin(), result.evaluations.end(),
+      std::find_if(result.evaluations().begin(), result.evaluations().end(),
                    [&](const auto &value) { return value.kind == kind; });
-  if (found == result.evaluations.end())
+  if (found == result.evaluations().end())
     std::abort();
   return *found;
+}
+
+enum class HostBehavior : std::uint8_t {
+  Signal,
+  NoTerminal,
+  FailureAfterTerminal,
+  FailureWithoutOutput,
+};
+
+class HostTestStrategy final : public sdk::Strategy {
+public:
+  explicit HostTestStrategy(HostBehavior behavior) : behavior_(behavior) {}
+
+  [[nodiscard]] const sdk::StrategyDescriptor &
+  descriptor() const noexcept override {
+    static const std::array dependencies = {
+        sdk::FeatureDependency{
+            .kind = sdk::StrategyFeatureKind::OrderBookImbalance,
+            .definition_version = version(50),
+        },
+    };
+    static const sdk::StrategyDescriptor value{
+        .definition_version = version(90),
+        .implementation_version = version(91),
+        .required_features = dependencies,
+        .arithmetic_version = version(93),
+        .explanation_policy_version = version(92),
+        .resource_limits =
+            {
+                .operations_per_evaluation = 5,
+                .maximum_features = 1,
+                .maximum_parameters = 0,
+                .maximum_explanation_factors = 1,
+                .maximum_working_bytes = 8,
+            },
+    };
+    return value;
+  }
+
+  [[nodiscard]] sdk::StrategyExecutionStatus
+  evaluate(const sdk::AcceptedStrategyInvocation &invocation,
+           sdk::StrategyWorkspace &workspace,
+           sdk::StrategyOutput &output) const noexcept override {
+    ++invocation_count;
+    saw_one_accepted_feature =
+        invocation.features().size() == 1 && workspace.bytes().size() == 8 &&
+        std::all_of(workspace.bytes().begin(), workspace.bytes().end(),
+                    [](auto byte) { return byte == std::byte{}; });
+    if (behavior_ == HostBehavior::NoTerminal)
+      return sdk::StrategyExecutionStatus::Completed;
+    if (behavior_ == HostBehavior::FailureWithoutOutput)
+      return sdk::StrategyExecutionStatus::OutputCapacityExceeded;
+
+    const auto &feature = invocation.features().front();
+    if (!output.append_factor({
+            .factor_id = id<contracts::DefinitionId>(94),
+            .rank = 1,
+            .source = sdk::ExplanationSource::Feature,
+            .role = sdk::ExplanationRole::SupportsPositive,
+            .observed_units = 500000,
+            .observed_scale = *contracts::DecimalScale::from_exponent(6),
+            .signed_contribution_units = 500000,
+            .contribution_scale = *contracts::DecimalScale::from_exponent(6),
+            .causal_feature_evaluation_id = feature.evaluation_id,
+            .ranking_policy_version = version(92),
+        }) ||
+        !output.emit_signal({
+            .direction = sdk::StrategyDirection::Positive,
+            .strength = {.units = 500000,
+                         .scale = *contracts::DecimalScale::from_exponent(6)},
+            .horizon_nanoseconds = 1'000'000,
+        }))
+      return sdk::StrategyExecutionStatus::ContractViolation;
+    if (behavior_ == HostBehavior::FailureAfterTerminal)
+      return sdk::StrategyExecutionStatus::OutputCapacityExceeded;
+    return sdk::StrategyExecutionStatus::Completed;
+  }
+
+  mutable std::uint64_t invocation_count{};
+  mutable bool saw_one_accepted_feature{};
+
+private:
+  HostBehavior behavior_;
+};
+
+sdk::StrategyInvocationRequest
+host_request(const features::AcceptedFeatureEvaluationCut &accepted,
+             std::optional<std::int64_t> deadline = std::nullopt) {
+  const auto &feature = accepted.evaluations().front();
+  const auto &provenance = feature.observation
+                               ? feature.observation->provenance
+                               : feature.unavailable->provenance;
+  return {
+      .run_id = provenance.run_id,
+      .strategy_instance_id = id<contracts::StrategyInstanceId>(95),
+      .listing_id = provenance.listing_id,
+      .canonical_instrument_id = provenance.canonical_instrument_id,
+      .feature_cut = accepted,
+      .parameters = {},
+      .cut =
+          {
+              .run_input_sequence = provenance.run_input_sequence,
+              .logical_time_nanoseconds = provenance.logical_time_nanoseconds,
+              .run_timer_cursor = cursor(13, 1),
+              .configuration_epoch = provenance.configuration_epoch,
+              .effective_control_position =
+                  provenance.effective_control_position,
+              .logical_deadline_nanoseconds = deadline,
+          },
+  };
 }
 
 market::ListingViewPublisher
@@ -452,7 +564,8 @@ TEST_CASE("top features are deterministic and carry authority provenance") {
   const auto second = runtime.evaluate(*cut);
   CHECK(first.ok());
   CHECK(first == second);
-  CHECK(first.evaluations.size() == 3);
+  CHECK(first.evaluations().size() == 3);
+  CHECK(first.accepted_cut() != nullptr);
 
   const auto &imbalance =
       evaluation(first, features::FeatureKind::OrderBookImbalance);
@@ -468,7 +581,7 @@ TEST_CASE("top features are deterministic and carry authority provenance") {
             evaluation(first, features::FeatureKind::Spread).observation->value)
             .units() == 2);
 
-  for (const auto &item : first.evaluations) {
+  for (const auto &item : first.evaluations()) {
     CHECK(item.disposition == features::FeatureDisposition::ValidObservation);
     CHECK(item.observation->provenance.bundle_id == cut->bundle().bundle_id);
     CHECK(item.observation->provenance.listing_view_id == cut->view().view_id);
@@ -514,10 +627,10 @@ TEST_CASE("stale and gapped authority cuts produce typed unavailability") {
   const auto gapped_result = runtime.evaluate(*gapped.accepted_feature_cut());
   CHECK(stale_result.ok());
   CHECK(gapped_result.ok());
-  for (const auto &item : stale_result.evaluations)
+  for (const auto &item : stale_result.evaluations())
     CHECK(item.unavailable->reason ==
           features::FeatureUnavailableReason::BookStale);
-  for (const auto &item : gapped_result.evaluations)
+  for (const auto &item : gapped_result.evaluations())
     CHECK(item.unavailable->reason ==
           features::FeatureUnavailableReason::BookGapped);
   CHECK(stale_result != gapped_result);
@@ -530,10 +643,10 @@ TEST_CASE("crossed and unproven authority cuts are explicit non-valid inputs") {
   const auto crossed_result = runtime.evaluate(*crossed.accepted_feature_cut());
   const auto unproven_result =
       runtime.evaluate(*unproven.accepted_feature_cut());
-  for (const auto &item : crossed_result.evaluations)
+  for (const auto &item : crossed_result.evaluations())
     CHECK(item.unavailable->reason ==
           features::FeatureUnavailableReason::UnsupportedBookShape);
-  for (const auto &item : unproven_result.evaluations)
+  for (const auto &item : unproven_result.evaluations())
     CHECK(item.unavailable->reason ==
           features::FeatureUnavailableReason::TopNotProven);
 }
@@ -668,4 +781,104 @@ TEST_CASE("retained accepted handles prevent future-view look-ahead") {
         evaluation(before, features::FeatureKind::Microprice));
   CHECK(evaluation(changed, features::FeatureKind::Spread) ==
         evaluation(before, features::FeatureKind::Spread));
+}
+
+TEST_CASE("strategy host admits only authority-issued immutable feature cuts") {
+  auto publisher = publish_initial();
+  const features::FeatureRuntime runtime(runtime_config());
+  const auto result = runtime.evaluate(*publisher.accepted_feature_cut());
+  CHECK(result.ok());
+  CHECK(result.accepted_cut() != nullptr);
+
+  HostTestStrategy strategy(HostBehavior::Signal);
+  auto request = host_request(*result.accepted_cut());
+  sdk::DeterministicOperationBudget budget(5);
+  std::array<std::byte, 8> workspace;
+  workspace.fill(std::byte{0x7f});
+  std::array<std::optional<sdk::ExplanationFactor>, 1> factors;
+  const auto host_result = sdk::StrategyHost::evaluate(
+      strategy, request, budget, workspace, factors);
+
+  CHECK(host_result.completed());
+  CHECK(host_result.charged_operations == 5);
+  CHECK(host_result.factor_count == 1);
+  CHECK(strategy.invocation_count == 1);
+  CHECK(strategy.saw_one_accepted_feature);
+  CHECK(std::holds_alternative<sdk::SignalDraft>(*host_result.terminal));
+}
+
+TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
+  auto publisher = publish_initial();
+  const features::FeatureRuntime runtime(runtime_config());
+  const auto result = runtime.evaluate(*publisher.accepted_feature_cut());
+  HostTestStrategy strategy(HostBehavior::Signal);
+  std::array<std::byte, 8> workspace;
+  std::array<std::optional<sdk::ExplanationFactor>, 1> factors;
+
+  auto request = host_request(*result.accepted_cut());
+  sdk::DeterministicOperationBudget no_fuel(4);
+  CHECK(sdk::StrategyHost::evaluate(strategy, request, no_fuel, workspace,
+                                    factors)
+            .status ==
+        sdk::StrategyExecutionStatus::DeterministicBudgetExhausted);
+  CHECK(strategy.invocation_count == 0);
+
+  auto wrong_authority = request;
+  wrong_authority.run_id = id<contracts::RunId>(96);
+  sdk::DeterministicOperationBudget wrong_authority_budget(5);
+  CHECK(sdk::StrategyHost::evaluate(strategy, wrong_authority,
+                                    wrong_authority_budget, workspace, factors)
+            .status == sdk::StrategyExecutionStatus::ContractViolation);
+  CHECK(strategy.invocation_count == 0);
+
+  auto late_request = host_request(*result.accepted_cut(),
+                                   request.cut.logical_time_nanoseconds - 1);
+  sdk::DeterministicOperationBudget late_budget(5);
+  CHECK(sdk::StrategyHost::evaluate(strategy, late_request, late_budget,
+                                    workspace, factors)
+            .status == sdk::StrategyExecutionStatus::LogicalDeadlineExceeded);
+  CHECK(late_budget.charged_operations() == 0);
+
+  sdk::DeterministicOperationBudget short_workspace_budget(5);
+  CHECK(sdk::StrategyHost::evaluate(strategy, request, short_workspace_budget,
+                                    std::span<std::byte>(workspace).first(7),
+                                    factors)
+            .status == sdk::StrategyExecutionStatus::InsufficientWorkspace);
+  CHECK(short_workspace_budget.charged_operations() == 5);
+
+  sdk::DeterministicOperationBudget no_output_budget(5);
+  CHECK(sdk::StrategyHost::evaluate(
+            strategy, request, no_output_budget, workspace,
+            std::span<std::optional<sdk::ExplanationFactor>>{})
+            .status == sdk::StrategyExecutionStatus::OutputCapacityExceeded);
+  CHECK(strategy.invocation_count == 0);
+}
+
+TEST_CASE("strategy host rejects invalid status and terminal combinations") {
+  auto publisher = publish_initial();
+  const features::FeatureRuntime runtime(runtime_config());
+  const auto result = runtime.evaluate(*publisher.accepted_feature_cut());
+  auto request = host_request(*result.accepted_cut());
+  std::array<std::byte, 8> workspace;
+  std::array<std::optional<sdk::ExplanationFactor>, 1> factors;
+
+  HostTestStrategy no_terminal(HostBehavior::NoTerminal);
+  sdk::DeterministicOperationBudget first_budget(5);
+  CHECK(sdk::StrategyHost::evaluate(no_terminal, request, first_budget,
+                                    workspace, factors)
+            .status == sdk::StrategyExecutionStatus::ContractViolation);
+
+  HostTestStrategy partial_failure(HostBehavior::FailureAfterTerminal);
+  sdk::DeterministicOperationBudget second_budget(5);
+  CHECK(sdk::StrategyHost::evaluate(partial_failure, request, second_budget,
+                                    workspace, factors)
+            .status == sdk::StrategyExecutionStatus::ContractViolation);
+
+  HostTestStrategy clean_failure(HostBehavior::FailureWithoutOutput);
+  sdk::DeterministicOperationBudget third_budget(5);
+  const auto clean_result = sdk::StrategyHost::evaluate(
+      clean_failure, request, third_budget, workspace, factors);
+  CHECK(clean_result.status ==
+        sdk::StrategyExecutionStatus::OutputCapacityExceeded);
+  CHECK(!clean_result.terminal);
 }
