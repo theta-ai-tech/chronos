@@ -700,9 +700,11 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
                          ? state_->accepted_control_outcome
                                ->selection_semantic_checksum()
                          : input.selection_semantic_checksum) &&
-                input.accepted_control_outcome->accepted_control_cursor() ==
-                    input.dispatch_selection.control_cursor
-          : !state_->accepted_control_outcome.has_value();
+                cursor_at_or_after(
+                    input.accepted_control_outcome->accepted_control_cursor(),
+                    input.dispatch_selection.control_cursor)
+          : applied_controls.empty() &&
+                !state_->accepted_control_outcome.has_value();
   const auto selected_stream =
       event_stream(state_->config, input.selected_event_type);
   const bool is_reference_input =

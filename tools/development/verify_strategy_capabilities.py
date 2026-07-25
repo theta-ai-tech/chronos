@@ -63,12 +63,16 @@ FORBIDDEN_TOKENS = {
     r"\b(?:printf|fprintf|puts|fputs)\s*\(": "telemetry-or-process-output",
     r"\b(?:sleep|usleep|nanosleep)\s*\(": "host-scheduling",
     r"\bpthread_[a-zA-Z0-9_]+\s*\(": "host-scheduling",
+    r"\b(?:fork|vfork|execve|execvp|posix_spawn|popen)\s*\(": "host-process",
     r"\b(?:dlopen|dlsym|dlclose)\s*\(": "dynamic-loading",
     r"\b(?:open|read|write|syscall)\s*\(": "host-syscall",
     r"\benviron\b": "environment-or-secret",
 }
 
 INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]')
+QUOTED_INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*"([^"]+)"')
+ANGLE_INCLUDE_PATTERN = re.compile(r"^\s*#\s*include\s*<([^>]+)>")
+INCLUDE_DIRECTIVE_PATTERN = re.compile(r"^\s*#\s*include\b")
 TOKEN_PATTERNS = [(re.compile(pattern), name) for pattern, name in FORBIDDEN_TOKENS.items()]
 CMAKE_ADD_LIBRARY_PATTERN = re.compile(r"\badd_library\s*\(\s*([^\s)]+)")
 CMAKE_LINK_PATTERN = re.compile(r"\btarget_link_libraries\s*\(\s*([^\s)]+)")
@@ -88,7 +92,25 @@ TRUSTED_SDK_SOURCES = {
     Path("strategies/sdk/src/strategy_host.cpp"),
 }
 TRUSTED_ROOT_CMAKE_SHA256 = "10671f41a3917ae6ad87272064be171cb83b4328d39f56153a5ca2842d6a4ffe"
-CPP_SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".ipp"}
+TRUSTED_SDK_LOCAL_INCLUDES = {
+    "chronos/contracts/digest.hpp",
+    "chronos/contracts/fixed_point.hpp",
+    "chronos/core/features/feature_runtime.hpp",
+    "chronos/strategies/sdk/strategy.hpp",
+    "chronos/strategies/sdk/strategy_host.hpp",
+}
+TRUSTED_SDK_SYSTEM_INCLUDES = {
+    "algorithm",
+    "array",
+    "cstddef",
+    "cstdint",
+    "optional",
+    "span",
+    "string_view",
+    "type_traits",
+    "utility",
+    "variant",
+}
 
 
 def find_violations(paths: list[Path]) -> list[Violation]:
@@ -116,13 +138,33 @@ def find_authored_strategy_code(paths: list[Path]) -> list[Violation]:
     return [Violation(path, 1, "authored-strategy-code") for path in paths]
 
 
+def find_untrusted_sdk_includes(paths: list[Path]) -> list[Violation]:
+    violations: list[Violation] = []
+    for path in paths:
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            quoted = QUOTED_INCLUDE_PATTERN.match(line)
+            angled = ANGLE_INCLUDE_PATTERN.match(line)
+            trusted = (quoted and quoted.group(1) in TRUSTED_SDK_LOCAL_INCLUDES) or (
+                angled and angled.group(1) in TRUSTED_SDK_SYSTEM_INCLUDES
+            )
+            if INCLUDE_DIRECTIVE_PATTERN.match(line) and not trusted:
+                violations.append(Violation(path, line_number, "untrusted-sdk-local-include"))
+    return violations
+
+
 def default_strategy_sources(root: Path) -> list[Path]:
     source_root = root / "strategies"
     return sorted(
         path
         for path in source_root.rglob("*")
-        if path.suffix.lower() in CPP_SOURCE_SUFFIXES
+        if path.is_file()
+        and (
+            ("sdk" in path.relative_to(source_root).parts)
+            or path.suffix.lower()
+            in {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".ipp"}
+        )
         and path.relative_to(root) not in TRUSTED_SDK_SOURCES
+        and path.relative_to(root) != Path("strategies/sdk/README.md")
     )
 
 
@@ -182,6 +224,7 @@ def main() -> int:
     violations = (
         find_authored_strategy_code(paths)
         + [Violation(path, 1, "missing-trusted-sdk-source") for path in missing_trusted]
+        + find_untrusted_sdk_includes([path for path in trusted if path.is_file()])
         + trusted_violations
         + find_cmake_violations(args.root)
     )

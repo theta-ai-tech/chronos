@@ -165,8 +165,9 @@ std::optional<StrategyRuntime> StrategyRuntime::activate(
           reservation.control_stream_id ||
       control.accepted_control_cursor().stream_epoch() !=
           reservation.control_stream_epoch ||
-      control.accepted_control_cursor().last_consumed_sequence() !=
-          std::optional(reservation.control_sequence))
+      !control.accepted_control_cursor().last_consumed_sequence() ||
+      *control.accepted_control_cursor().last_consumed_sequence() <
+          reservation.control_sequence)
     return std::nullopt;
   const auto checksum = derive_activation_checksum(config, control);
   return StrategyRuntime(std::move(config), control, checksum);

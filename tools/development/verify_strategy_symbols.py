@@ -30,6 +30,7 @@ FORBIDDEN_SYMBOLS = {
     r"\b(?:printf|fprintf|puts|fputs)\b": "telemetry-or-process-output",
     r"\b(?:sleep|usleep|nanosleep)\b": "host-scheduling",
     r"\bpthread_[A-Za-z0-9_]+\b": "host-scheduling",
+    r"\b(?:fork|vfork|execve|execvp|posix_spawn|popen)\b": "host-process",
     r"\b(?:dlopen|dlsym|dlclose)\b": "dynamic-loading",
     r"\b(?:open|read|write|syscall)\b": "host-syscall",
     r"\benviron\b": "environment-or-secret",

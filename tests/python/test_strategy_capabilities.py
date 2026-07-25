@@ -17,6 +17,7 @@ def load_tool(name: str):
 capability_module = load_tool("verify_strategy_capabilities")
 find_violations = capability_module.find_violations
 find_authored_strategy_code = capability_module.find_authored_strategy_code
+find_untrusted_sdk_includes = capability_module.find_untrusted_sdk_includes
 default_strategy_sources = capability_module.default_strategy_sources
 find_cmake_violations = capability_module.find_cmake_violations
 find_symbol_violations = load_tool("verify_strategy_symbols").find_symbol_violations
@@ -45,12 +46,23 @@ def test_authored_strategy_code_is_never_a_packaging_input(tmp_path: Path) -> No
 
 def test_extra_sdk_source_is_not_trusted_by_directory_name(tmp_path: Path) -> None:
     source = tmp_path / "strategies/sdk/src/extra.cpp"
-    header = tmp_path / "strategies/sdk/include/hidden.h"
+    header = tmp_path / "strategies/sdk/include/hidden.inc"
     source.parent.mkdir(parents=True)
     header.parent.mkdir(parents=True)
     source.write_text("void hidden();\n", encoding="utf-8")
     header.write_text("void hidden_header();\n", encoding="utf-8")
     assert default_strategy_sources(tmp_path) == [header, source]
+
+
+def test_trusted_sdk_source_cannot_include_unlisted_local_input(tmp_path: Path) -> None:
+    path = write_source(
+        tmp_path,
+        '#include "hidden.inc"\n#define HIDDEN "hidden.inc"\n#include HIDDEN\n',
+    )
+    assert [item.capability for item in find_untrusted_sdk_includes([path])] == [
+        "untrusted-sdk-local-include",
+        "untrusted-sdk-local-include",
+    ]
 
 
 def test_strategy_cannot_import_core_runtime_or_host_authority(tmp_path: Path) -> None:
@@ -108,6 +120,7 @@ def test_low_level_host_api_bypasses_fail(tmp_path: Path) -> None:
                 "syscall(1); ::operator new(64); std::vector<int> values;",
                 "pthread_create(nullptr, nullptr, nullptr, nullptr);",
                 'dlopen("hidden", 0); dlsym(nullptr, "run");',
+                'fork(); execve("hidden", nullptr, nullptr);',
             ]
         ),
     )
@@ -120,6 +133,7 @@ def test_low_level_host_api_bypasses_fail(tmp_path: Path) -> None:
         "network",
         "unbounded-allocation",
         "dynamic-loading",
+        "host-process",
     }
 
 
@@ -175,6 +189,8 @@ def test_linked_forbidden_symbols_fail() -> None:
                  U pthread_create
                  U dlopen
                  U dlsym
+                 U fork
+                 U execve
                  U chronos::contracts::sha256(...)
 """
     capabilities = {item.capability for item in find_symbol_violations(output)}
@@ -186,4 +202,5 @@ def test_linked_forbidden_symbols_fail() -> None:
         "unbounded-allocation",
         "host-scheduling",
         "dynamic-loading",
+        "host-process",
     }

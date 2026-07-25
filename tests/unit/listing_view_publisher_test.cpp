@@ -520,7 +520,7 @@ TEST_CASE("selected event identity proves the applied state mutation") {
   CHECK(!publisher.accepted_view());
 }
 
-TEST_CASE("applied controls advance the exact run-control lineage") {
+TEST_CASE("applied controls require a consumer-accepted opaque outcome") {
   auto book = make_book();
   auto auxiliary = make_auxiliary(book);
   auto publisher =
@@ -528,16 +528,13 @@ TEST_CASE("applied controls advance the exact run-control lineage") {
   auto stale = cut_input_with_control();
   stale.lineage = lineage(1, cursor(8, 0));
   CHECK(publisher.accept_cut(stale, book, auxiliary).failure ==
-        market::ListingViewFailure::InvalidLineageTransition);
+        market::ListingViewFailure::InvalidSelectionEvidence);
 
-  const auto accepted =
+  const auto unproven =
       publisher.accept_cut(cut_input_with_control(), book, auxiliary);
-  CHECK(accepted.ok());
-  if (!accepted.bundle)
-    return;
-  CHECK(accepted.bundle->configuration_epoch == 2);
-  CHECK(accepted.bundle->effective_control_position == 1);
-  CHECK(accepted.bundle->run_control_cursor == cursor(12, 1));
+  CHECK(unproven.failure ==
+        market::ListingViewFailure::InvalidSelectionEvidence);
+  CHECK(!publisher.accepted_view());
 }
 
 TEST_CASE("book gap quality facts advance immutable cuts") {

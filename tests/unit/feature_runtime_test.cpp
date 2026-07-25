@@ -548,7 +548,8 @@ public:
 };
 
 dispatch::AcceptedControlOutcome accepted_activation_control(
-    const strategy_runtime::StrategyRuntimeConfig &config) {
+    const strategy_runtime::StrategyRuntimeConfig &config,
+    bool reserve_future_control = false) {
   ActivationPersistence persistence;
   ActivationRegistry registry;
   ActivationConsumer consumer;
@@ -572,6 +573,23 @@ dispatch::AcceptedControlOutcome accepted_activation_control(
   if (!dispatcher.reserve_control_boundary(reservation) ||
       !dispatcher.make_control_visible(reservation))
     std::abort();
+  if (reserve_future_control) {
+    const std::vector<std::byte> future_payload{std::byte{7}};
+    const dispatch::ControlBoundaryReservation future{
+        .run_id = id<contracts::RunId>(30),
+        .control_stream_id = id<contracts::StreamId>(15),
+        .control_stream_epoch = 1,
+        .control_outcome_id = id<contracts::EventId>(100),
+        .control_sequence = 2,
+        .effective_position = 3,
+        .prior_configuration_epoch = 2,
+        .new_configuration_epoch = 3,
+        .behavior_payload = future_payload,
+        .behavior_checksum = contracts::sha256(future_payload),
+    };
+    if (!dispatcher.reserve_control_boundary(future))
+      std::abort();
+  }
   dispatch::RunInputCandidate candidate{
       .event_id = id<contracts::EventId>(23),
       .event_type = "market.book.observation.snapshot",
@@ -617,12 +635,14 @@ sdk::AcceptedStrategyDefinition accepted_host_definition() {
 }
 
 features::FeatureRuntimeResult accepted_features_for_strategy(
-    const strategy_runtime::StrategyRuntimeConfig &config, TopSpec spec = {}) {
+    const strategy_runtime::StrategyRuntimeConfig &config, TopSpec spec = {},
+    bool reserve_future_control = false) {
   auto book = make_book(spec);
   auto auxiliary = make_auxiliary(book);
   auto publisher =
       market::ListingViewPublisher::create(publisher_config()).value();
-  const auto control = accepted_activation_control(config);
+  const auto control =
+      accepted_activation_control(config, reserve_future_control);
   const auto accepted =
       publisher.accept_cut(initial_cut_input(control), book, auxiliary);
   if (!accepted.ok())
@@ -635,15 +655,16 @@ features::FeatureRuntimeResult accepted_features_for_strategy(
 market::ListingViewPublisher publish_quality_state(
     market::ListingQualityInputKind kind, std::string event_type,
     std::int64_t logical_time,
-    const strategy_runtime::StrategyRuntimeConfig *strategy_config = nullptr) {
+    const strategy_runtime::StrategyRuntimeConfig *strategy_config = nullptr,
+    bool reserve_future_control = false) {
   auto book = make_book();
   auto auxiliary = make_auxiliary(book);
   auto publisher =
       market::ListingViewPublisher::create(publisher_config()).value();
-  const auto control =
-      strategy_config
-          ? std::optional(accepted_activation_control(*strategy_config))
-          : std::nullopt;
+  const auto control = strategy_config
+                           ? std::optional(accepted_activation_control(
+                                 *strategy_config, reserve_future_control))
+                           : std::nullopt;
   const auto first =
       publisher.accept_cut(initial_cut_input(control), book, auxiliary);
   if (!first.ok())
@@ -993,6 +1014,21 @@ TEST_CASE("strategy host admits only authority-issued immutable feature cuts") {
           .evaluate(*uncontrolled_publisher.accepted_feature_cut());
   const auto activated = activate_runtime(config);
   CHECK(!activated->admit(*uncontrolled.accepted_cut()));
+
+  const auto future_control = accepted_activation_control(config, true);
+  const auto future_features = accepted_features_for_strategy(config, {}, true);
+  const auto future_runtime =
+      strategy_runtime::StrategyRuntime::activate(config, future_control);
+  CHECK(future_runtime.has_value());
+  CHECK(future_runtime->admit(*future_features.accepted_cut()).has_value());
+  auto future_later_publisher = publish_quality_state(
+      market::ListingQualityInputKind::LogicalTimerAdvanced,
+      "run.timer.logical.advanced", 150, &config, true);
+  const auto future_later_features =
+      features::FeatureRuntime(runtime_config())
+          .evaluate(*future_later_publisher.accepted_feature_cut());
+  CHECK(
+      future_runtime->admit(*future_later_features.accepted_cut()).has_value());
   std::array<std::byte, sdk::kInterpreterWorkingBytes + 4> workspace;
   workspace.fill(std::byte{0x7f});
   std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
