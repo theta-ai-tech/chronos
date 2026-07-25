@@ -12,15 +12,18 @@
 
 The SDK is a capability boundary. `FeatureRuntime` issues an immutable
 `AcceptedFeatureEvaluationCut`; `StrategyHost` admits that authority token and
-maps only declared features into a non-constructible
-`AcceptedStrategyInvocation`. Concrete strategies therefore cannot substitute
-raw feature aggregates or import core runtime APIs.
+evaluates a data-only, loop-free `StrategyProgram`. No strategy callback or
+function pointer runs during evaluation, so a definition cannot reach network,
+filesystem, host clocks, environment/secrets, persistence, telemetry, or other
+ambient process capabilities.
 
-The host charges the descriptor's fixed deterministic operation cost before
-entering strategy code, checks the recorded logical deadline, zeroes and bounds
-the supplied workspace, bounds explanation storage, and validates exactly one
-terminal output against the descriptor. Strategy code cannot ignore these
-controls because it receives neither the fuel counter nor unbounded storage.
+The host consumes one deterministic fuel unit per validated instruction, rejects
+jumps and malformed opcode sequences, checks the recorded logical deadline,
+uses fixed-size interpreter state covered by the declared workspace bound, and
+constructs bounded explanation/terminal output itself. Definition packs cannot
+ignore these controls or forge explanation lineage because they provide only
+immutable descriptor/program data; accepted feature IDs are attached by the
+host.
 
 Logical deadlines are part of the recorded cut and are safe for semantic
 decisions. Host deadlines and cancellation remain external operational
@@ -28,7 +31,8 @@ enforcement and cannot be observed by strategy code. Explanation factors must
 be appended in deterministic rank order before exactly one terminal signal or
 abstention draft is written; no output allocation is required by the SDK.
 
-Native strategy targets must be created with `chronos_add_strategy`. The target
-links only the SDK/options surface and runs source plus linked-symbol capability
-checks that reject host clock, network, filesystem, environment/secret,
-nondeterministic randomness, process output, and direct core/host access.
+Native definition-pack targets must be created with `chronos_add_strategy`. The
+target links only the SDK/options surface and runs source plus linked-symbol
+defense-in-depth checks. CI also rejects unregistered strategy CMake targets;
+evaluation isolation does not depend on those denylists because no pack code is
+called by `StrategyHost`.

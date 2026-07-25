@@ -21,11 +21,17 @@ FORBIDDEN_SYMBOLS = {
     r"system_clock::now": "host-clock",
     r"std::__[^ ]*filesystem": "filesystem",
     r"\b(?:socket|connect|send|recv|getaddrinfo)\b": "network",
+    r"\b(?:sendto|recvfrom)\b": "network",
     r"\bcurl_[A-Za-z0-9_]+\b": "network",
     r"random_device": "nondeterministic-randomness",
     r"std::(?:basic_)?(?:i|o|f)fstream": "filesystem",
     r"\b(?:fopen|freopen)\b": "filesystem",
     r"std::(?:cout|cerr|clog)": "telemetry-or-process-output",
+    r"\b(?:printf|fprintf|puts|fputs)\b": "telemetry-or-process-output",
+    r"\b(?:sleep|usleep|nanosleep)\b": "host-scheduling",
+    r"\b(?:open|read|write|syscall)\b": "host-syscall",
+    r"\benviron\b": "environment-or-secret",
+    r"operator (?:new|delete)": "unbounded-allocation",
 }
 
 SYMBOL_PATTERNS = [(re.compile(pattern), name) for pattern, name in FORBIDDEN_SYMBOLS.items()]

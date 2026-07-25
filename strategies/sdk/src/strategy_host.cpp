@@ -2,10 +2,19 @@
 
 #include <algorithm>
 #include <utility>
-#include <vector>
 
 namespace chronos::strategies::sdk {
 namespace {
+
+struct InterpreterState final {
+  const core::features::FeatureEvaluation *feature{};
+  const core::features::ScaledRatio *ratio{};
+  const StrategyParameter *parameter{};
+  contracts::AmountUnits magnitude{};
+  bool emits_signal{};
+};
+
+static_assert(sizeof(InterpreterState) <= kInterpreterWorkingBytes);
 
 std::optional<StrategyFeatureKind>
 map_kind(core::features::FeatureKind kind) noexcept {
@@ -21,123 +30,50 @@ map_kind(core::features::FeatureKind kind) noexcept {
   return std::nullopt;
 }
 
-std::optional<StrategyFeatureUnavailableReason>
-map_reason(core::features::FeatureUnavailableReason reason) noexcept {
-  using Source = core::features::FeatureUnavailableReason;
-  using Target = StrategyFeatureUnavailableReason;
-  switch (reason) {
-  case Source::BookStarting:
-    return Target::BookStarting;
-  case Source::BookRecovering:
-    return Target::BookRecovering;
-  case Source::BookGapped:
-    return Target::BookGapped;
-  case Source::BookInvalid:
-    return Target::BookInvalid;
-  case Source::BookUnavailable:
-    return Target::BookUnavailable;
-  case Source::BookClosed:
-    return Target::BookClosed;
-  case Source::BookStale:
-    return Target::BookStale;
-  case Source::BookFreshnessUnknown:
-    return Target::BookFreshnessUnknown;
-  case Source::UnsupportedBookShape:
-    return Target::UnsupportedBookShape;
-  case Source::TopNotProven:
-    return Target::TopNotProven;
-  case Source::TopUnavailable:
-    return Target::TopUnavailable;
-  case Source::InvalidQuantity:
-    return Target::InvalidQuantity;
-  case Source::DefinitionMismatch:
-    return Target::DefinitionMismatch;
-  case Source::ArithmeticOverflow:
-    return Target::ArithmeticOverflow;
-  }
-  return std::nullopt;
-}
-
-bool matches_cut(const core::features::FeatureProvenance &provenance,
-                 const StrategyInvocationRequest &request) noexcept {
-  return provenance.run_id == request.run_id &&
-         provenance.listing_id == request.listing_id &&
-         provenance.canonical_instrument_id ==
-             request.canonical_instrument_id &&
-         provenance.run_input_sequence == request.cut.run_input_sequence &&
-         provenance.logical_time_nanoseconds ==
-             request.cut.logical_time_nanoseconds &&
-         provenance.configuration_epoch == request.cut.configuration_epoch &&
-         provenance.effective_control_position ==
-             request.cut.effective_control_position;
-}
-
-std::optional<StrategyFeature>
-map_feature(const core::features::FeatureEvaluation &evaluation,
-            const StrategyInvocationRequest &request) {
-  const auto kind = map_kind(evaluation.kind);
-  if (!kind)
-    return std::nullopt;
-
-  const core::features::FeatureProvenance *source_provenance = nullptr;
-  std::optional<StrategyFeatureValue> value;
-  std::optional<StrategyFeatureUnavailableReason> unavailable_reason;
-  StrategyFeatureDisposition disposition{};
-
+const core::features::FeatureProvenance *
+provenance(const core::features::FeatureEvaluation &evaluation) noexcept {
   if (evaluation.disposition ==
       core::features::FeatureDisposition::ValidObservation) {
     if (!evaluation.observation || evaluation.unavailable ||
         evaluation.observation->kind != evaluation.kind)
-      return std::nullopt;
-    source_provenance = &evaluation.observation->provenance;
-    disposition = StrategyFeatureDisposition::ValidObservation;
-    if (const auto *ratio = std::get_if<core::features::ScaledRatio>(
-            &evaluation.observation->value)) {
-      value = ScaledRatio{.units = ratio->units, .scale = ratio->scale};
-    } else {
-      value = std::get<contracts::Price>(evaluation.observation->value);
-    }
-  } else {
-    if (evaluation.observation || !evaluation.unavailable ||
-        evaluation.unavailable->kind != evaluation.kind)
-      return std::nullopt;
-    source_provenance = &evaluation.unavailable->provenance;
-    disposition = StrategyFeatureDisposition::Unavailable;
-    unavailable_reason = map_reason(evaluation.unavailable->reason);
-    if (!unavailable_reason)
-      return std::nullopt;
+      return nullptr;
+    return &evaluation.observation->provenance;
   }
+  if (evaluation.observation || !evaluation.unavailable ||
+      evaluation.unavailable->kind != evaluation.kind)
+    return nullptr;
+  return &evaluation.unavailable->provenance;
+}
 
-  if (!matches_cut(*source_provenance, request))
-    return std::nullopt;
+bool matches_cut(const core::features::FeatureProvenance &value,
+                 const StrategyInvocationRequest &request) noexcept {
+  return value.run_id == request.run_id &&
+         value.listing_id == request.listing_id &&
+         value.canonical_instrument_id == request.canonical_instrument_id &&
+         value.run_input_sequence == request.cut.run_input_sequence &&
+         value.logical_time_nanoseconds ==
+             request.cut.logical_time_nanoseconds &&
+         value.configuration_epoch == request.cut.configuration_epoch &&
+         value.effective_control_position ==
+             request.cut.effective_control_position;
+}
 
-  return StrategyFeature{
-      .evaluation_id = evaluation.evaluation_id,
-      .kind = *kind,
-      .disposition = disposition,
-      .provenance =
-          {
-              .run_id = source_provenance->run_id,
-              .listing_id = source_provenance->listing_id,
-              .canonical_instrument_id =
-                  source_provenance->canonical_instrument_id,
-              .run_input_sequence = source_provenance->run_input_sequence,
-              .logical_time_nanoseconds =
-                  source_provenance->logical_time_nanoseconds,
-              .configuration_epoch = source_provenance->configuration_epoch,
-              .effective_control_position =
-                  source_provenance->effective_control_position,
-              .feature_definition_version =
-                  source_provenance->feature_definition_version,
-              .input_view_semantic_checksum =
-                  source_provenance->input_view_semantic_checksum,
-              .input_bundle_semantic_checksum =
-                  source_provenance->input_bundle_semantic_checksum,
-          },
-      .value = std::move(value),
-      .unavailable_reason = unavailable_reason,
-      .semantic_checksum = evaluation.semantic_checksum,
-  };
+bool validate_feature_cut(const StrategyInvocationRequest &request) noexcept {
+  const auto &accepted = request.feature_cut.evaluations();
+  if (accepted.empty())
+    return false;
+  for (auto current = accepted.begin(); current != accepted.end(); ++current) {
+    const auto kind = map_kind(current->kind);
+    const auto *source_provenance = provenance(*current);
+    if (!kind || !source_provenance ||
+        !matches_cut(*source_provenance, request))
+      return false;
+    if (std::count_if(accepted.begin(), accepted.end(), [&](const auto &other) {
+          return map_kind(other.kind) == kind;
+        }) != 1)
+      return false;
+  }
+  return true;
 }
 
 bool validate_parameters(
@@ -145,140 +81,283 @@ bool validate_parameters(
     std::span<const StrategyParameter> parameters) noexcept {
   if (parameters.size() > descriptor.resource_limits.maximum_parameters)
     return false;
-  return std::all_of(
+  return std::none_of(
       parameters.begin(), parameters.end(), [&](const auto &value) {
-        return std::count_if(
-                   descriptor.parameter_schema.begin(),
-                   descriptor.parameter_schema.end(), [&](const auto &schema) {
-                     return value.parameter_id == schema.parameter_id &&
-                            value.definition_version ==
-                                schema.definition_version &&
-                            value.scale == schema.scale;
-                   }) == 1;
+        return std::count_if(parameters.begin(), parameters.end(),
+                             [&](const auto &candidate) {
+                               return candidate.parameter_id ==
+                                      value.parameter_id;
+                             }) != 1;
       });
 }
 
-bool validate_factors(const StrategyDescriptor &descriptor,
-                      const StrategyOutput &output,
-                      const TerminalDraft &terminal) noexcept {
-  const auto abstained = std::holds_alternative<AbstentionDraft>(terminal);
-  const auto direction = abstained ? std::optional<StrategyDirection>{}
-                                   : std::get<SignalDraft>(terminal).direction;
-  for (std::size_t index = 0; index < output.factor_count(); ++index) {
-    const auto &factor = output.factor(index);
-    if (factor.ranking_policy_version !=
-            descriptor.explanation_policy_version ||
-        (factor.source == ExplanationSource::Feature &&
-         !factor.causal_feature_evaluation_id) ||
-        (abstained && factor.role != ExplanationRole::ExplainsAbstention) ||
-        (!abstained && direction == StrategyDirection::Positive &&
-         factor.role == ExplanationRole::SupportsNegative) ||
-        (!abstained && direction == StrategyDirection::Negative &&
-         factor.role == ExplanationRole::SupportsPositive))
-      return false;
-  }
+const core::features::FeatureEvaluation *
+find_feature(const StrategyInvocationRequest &request,
+             StrategyFeatureKind kind) noexcept {
+  const auto &accepted = request.feature_cut.evaluations();
+  const auto found = std::find_if(
+      accepted.begin(), accepted.end(),
+      [&](const auto &candidate) { return map_kind(candidate.kind) == kind; });
+  return found == accepted.end() ? nullptr : &*found;
+}
+
+const StrategyParameter *
+find_parameter(const StrategyInvocationRequest &request,
+               const StrategyParameterSchema &schema) noexcept {
+  const auto found =
+      std::find_if(request.parameters.begin(), request.parameters.end(),
+                   [&](const auto &candidate) {
+                     return candidate.parameter_id == schema.parameter_id;
+                   });
+  return found == request.parameters.end() ? nullptr : &*found;
+}
+
+void clear_factors(
+    std::span<std::optional<ExplanationFactor>> factor_storage) noexcept {
+  for (auto &factor : factor_storage)
+    factor.reset();
+}
+
+StrategyHostResult
+failure(StrategyExecutionStatus status,
+        const DeterministicOperationBudget &budget,
+        std::span<std::optional<ExplanationFactor>> factor_storage) noexcept {
+  clear_factors(factor_storage);
+  return {.status = status, .charged_operations = budget.consumed_operations()};
+}
+
+bool append_factor(std::span<std::optional<ExplanationFactor>> factor_storage,
+                   std::size_t &factor_count,
+                   ExplanationFactor factor) noexcept {
+  if (factor_count == factor_storage.size())
+    return false;
+  factor.rank = static_cast<std::uint32_t>(factor_count + 1);
+  factor_storage[factor_count++].emplace(std::move(factor));
   return true;
 }
 
-StrategyHostResult failure(StrategyExecutionStatus status,
-                           std::uint64_t charged) noexcept {
-  return {.status = status, .charged_operations = charged};
+StrategyHostResult complete_abstention(
+    const StrategyDefinition &definition, StrategyAbstentionReason reason,
+    const InterpreterState &state, std::size_t diagnostic_factor_index,
+    const DeterministicOperationBudget &budget,
+    std::span<std::optional<ExplanationFactor>> factor_storage) noexcept {
+  const auto &factor_definition =
+      definition.program.factors[diagnostic_factor_index];
+  const auto feature_factor =
+      factor_definition.source == ExplanationSource::Feature;
+  const auto scale = feature_factor && state.ratio ? state.ratio->scale
+                     : !feature_factor && state.parameter
+                         ? state.parameter->scale
+                         : *contracts::DecimalScale::from_exponent(0);
+  const auto observed = feature_factor && state.ratio ? state.ratio->units
+                        : !feature_factor && state.parameter
+                            ? state.parameter->units
+                            : 0;
+  std::size_t factor_count{};
+  if (!append_factor(factor_storage, factor_count,
+                     {
+                         .factor_id = factor_definition.factor_id,
+                         .source = factor_definition.source,
+                         .role = ExplanationRole::ExplainsAbstention,
+                         .observed_units = observed,
+                         .observed_scale = scale,
+                         .signed_contribution_units = 0,
+                         .contribution_scale = scale,
+                         .causal_feature_evaluation_id =
+                             feature_factor && state.feature
+                                 ? std::optional{state.feature->evaluation_id}
+                                 : std::nullopt,
+                         .ranking_policy_version =
+                             definition.descriptor.explanation_policy_version,
+                     }))
+    return failure(StrategyExecutionStatus::OutputCapacityExceeded, budget,
+                   factor_storage);
+  return {
+      .status = StrategyExecutionStatus::Completed,
+      .charged_operations = budget.consumed_operations(),
+      .factor_count = factor_count,
+      .terminal = AbstentionDraft{.reason = reason},
+  };
 }
 
 } // namespace
 
 StrategyHostResult StrategyHost::evaluate(
-    const Strategy &strategy, const StrategyInvocationRequest &request,
+    const StrategyDefinition &definition,
+    const StrategyInvocationRequest &request,
     DeterministicOperationBudget &budget,
     std::span<std::byte> workspace_storage,
     std::span<std::optional<ExplanationFactor>> factor_storage) {
-  const auto &descriptor = strategy.descriptor();
-  if (!validate_descriptor(descriptor) ||
-      !validate_parameters(descriptor, request.parameters))
-    return failure(StrategyExecutionStatus::ContractViolation,
-                   budget.charged_operations());
-
+  clear_factors(factor_storage);
+  if (!validate_definition(definition) || !validate_feature_cut(request) ||
+      !validate_parameters(definition.descriptor, request.parameters))
+    return failure(StrategyExecutionStatus::ContractViolation, budget,
+                   factor_storage);
   if (logical_deadline_exceeded(request.cut))
-    return failure(StrategyExecutionStatus::LogicalDeadlineExceeded,
-                   budget.charged_operations());
-
-  if (!budget.charge(descriptor.resource_limits.operations_per_evaluation))
-    return failure(StrategyExecutionStatus::DeterministicBudgetExhausted,
-                   budget.charged_operations());
-
+    return failure(StrategyExecutionStatus::LogicalDeadlineExceeded, budget,
+                   factor_storage);
   if (workspace_storage.size() <
-      descriptor.resource_limits.maximum_working_bytes)
-    return failure(StrategyExecutionStatus::InsufficientWorkspace,
-                   budget.charged_operations());
+      definition.descriptor.resource_limits.maximum_working_bytes)
+    return failure(StrategyExecutionStatus::InsufficientWorkspace, budget,
+                   factor_storage);
   if (factor_storage.size() <
-      descriptor.resource_limits.maximum_explanation_factors)
-    return failure(StrategyExecutionStatus::OutputCapacityExceeded,
-                   budget.charged_operations());
-
-  std::vector<StrategyFeature> mapped_features;
-  mapped_features.reserve(request.feature_cut.evaluations().size());
-  for (const auto &source : request.feature_cut.evaluations()) {
-    auto mapped = map_feature(source, request);
-    if (!mapped)
-      return failure(StrategyExecutionStatus::ContractViolation,
-                     budget.charged_operations());
-    const auto duplicate = std::find_if(
-        mapped_features.begin(), mapped_features.end(),
-        [&](const auto &prior) { return prior.kind == mapped->kind; });
-    if (duplicate != mapped_features.end())
-      return failure(StrategyExecutionStatus::ContractViolation,
-                     budget.charged_operations());
-    mapped_features.push_back(std::move(*mapped));
-  }
-
-  std::vector<StrategyFeature> selected_features;
-  selected_features.reserve(descriptor.required_features.size());
-  for (const auto &dependency : descriptor.required_features) {
-    const auto source =
-        std::find_if(mapped_features.begin(), mapped_features.end(),
-                     [&](const auto &candidate) {
-                       return candidate.kind == dependency.kind;
-                     });
-    if (source == mapped_features.end())
-      continue;
-    selected_features.push_back(*source);
-  }
-
-  if (selected_features.size() > descriptor.resource_limits.maximum_features)
-    return failure(StrategyExecutionStatus::ContractViolation,
-                   budget.charged_operations());
+      definition.descriptor.resource_limits.maximum_explanation_factors)
+    return failure(StrategyExecutionStatus::OutputCapacityExceeded, budget,
+                   factor_storage);
 
   std::fill_n(workspace_storage.begin(),
-              descriptor.resource_limits.maximum_working_bytes, std::byte{});
-  StrategyWorkspace workspace(workspace_storage.first(
-      descriptor.resource_limits.maximum_working_bytes));
-  StrategyOutput output(factor_storage.first(
-      descriptor.resource_limits.maximum_explanation_factors));
-  AcceptedStrategyInvocation invocation(
-      request.run_id, request.strategy_instance_id, request.listing_id,
-      request.canonical_instrument_id, std::move(selected_features),
-      std::vector<StrategyParameter>(request.parameters.begin(),
-                                     request.parameters.end()),
-      request.cut);
+              definition.descriptor.resource_limits.maximum_working_bytes,
+              std::byte{});
+  InterpreterState state;
+  std::size_t factor_count{};
 
-  const auto status = strategy.evaluate(invocation, workspace, output);
-  if (status != StrategyExecutionStatus::Completed) {
-    if (output.terminal() || output.factor_count() != 0)
-      return failure(StrategyExecutionStatus::ContractViolation,
-                     budget.charged_operations());
-    return failure(status, budget.charged_operations());
+  for (const auto &instruction : definition.program.instructions) {
+    if (!budget.consume())
+      return failure(StrategyExecutionStatus::DeterministicBudgetExhausted,
+                     budget, factor_storage);
+
+    switch (instruction.opcode) {
+    case StrategyOpcode::LoadFeature: {
+      const auto &dependency =
+          definition.descriptor.required_features[instruction.operand];
+      state.feature = find_feature(request, dependency.kind);
+      if (!state.feature)
+        return complete_abstention(
+            definition, StrategyAbstentionReason::MissingDeclaredFeature, state,
+            0, budget, factor_storage);
+      break;
+    }
+    case StrategyOpcode::RequireValidScaledRatio: {
+      if (state.feature->disposition !=
+          core::features::FeatureDisposition::ValidObservation)
+        return complete_abstention(definition,
+                                   StrategyAbstentionReason::NonValidFeature,
+                                   state, 0, budget, factor_storage);
+      const auto &observation = *state.feature->observation;
+      state.ratio =
+          std::get_if<core::features::ScaledRatio>(&observation.value);
+      const auto &dependency =
+          definition.descriptor
+              .required_features[definition.program.instructions[0].operand];
+      if (!state.ratio ||
+          observation.provenance.feature_definition_version !=
+              dependency.definition_version ||
+          state.ratio->units < -state.ratio->scale.denominator() ||
+          state.ratio->units > state.ratio->scale.denominator())
+        return complete_abstention(
+            definition, StrategyAbstentionReason::IncompatibleFeature, state, 0,
+            budget, factor_storage);
+      break;
+    }
+    case StrategyOpcode::LoadParameter: {
+      const auto &schema =
+          definition.descriptor.parameter_schema[instruction.operand];
+      state.parameter = find_parameter(request, schema);
+      if (!state.parameter)
+        return complete_abstention(definition,
+                                   StrategyAbstentionReason::MissingParameter,
+                                   state, 1, budget, factor_storage);
+      break;
+    }
+    case StrategyOpcode::RequirePositiveParameter: {
+      const auto &schema =
+          definition.descriptor
+              .parameter_schema[definition.program.instructions[2].operand];
+      if (state.parameter->definition_version != schema.definition_version ||
+          state.parameter->scale != schema.scale ||
+          state.parameter->scale != state.ratio->scale ||
+          state.parameter->units <= 0 ||
+          state.parameter->units > state.parameter->scale.denominator())
+        return complete_abstention(definition,
+                                   StrategyAbstentionReason::InvalidParameter,
+                                   state, 1, budget, factor_storage);
+      break;
+    }
+    case StrategyOpcode::CompareAbsoluteFeatureAtLeastParameter:
+      state.magnitude =
+          state.ratio->units < 0 ? -state.ratio->units : state.ratio->units;
+      state.emits_signal = state.magnitude >= state.parameter->units;
+      break;
+    case StrategyOpcode::AppendFeatureFactor: {
+      const auto role =
+          !state.emits_signal      ? ExplanationRole::ExplainsAbstention
+          : state.ratio->units > 0 ? ExplanationRole::SupportsPositive
+                                   : ExplanationRole::SupportsNegative;
+      if (!append_factor(
+              factor_storage, factor_count,
+              {
+                  .factor_id =
+                      definition.program.factors[instruction.operand].factor_id,
+                  .source = ExplanationSource::Feature,
+                  .role = role,
+                  .observed_units = state.ratio->units,
+                  .observed_scale = state.ratio->scale,
+                  .signed_contribution_units = state.ratio->units,
+                  .contribution_scale = state.ratio->scale,
+                  .causal_feature_evaluation_id = state.feature->evaluation_id,
+                  .ranking_policy_version =
+                      definition.descriptor.explanation_policy_version,
+              }))
+        return failure(StrategyExecutionStatus::OutputCapacityExceeded, budget,
+                       factor_storage);
+      break;
+    }
+    case StrategyOpcode::AppendParameterFactor: {
+      const auto margin = state.magnitude - state.parameter->units;
+      const auto signed_margin =
+          state.emits_signal && state.ratio->units < 0 ? -margin : margin;
+      const auto role =
+          !state.emits_signal      ? ExplanationRole::ExplainsAbstention
+          : state.ratio->units > 0 ? ExplanationRole::SupportsPositive
+                                   : ExplanationRole::SupportsNegative;
+      if (!append_factor(
+              factor_storage, factor_count,
+              {
+                  .factor_id =
+                      definition.program.factors[instruction.operand].factor_id,
+                  .source = ExplanationSource::StrategyParameter,
+                  .role = role,
+                  .observed_units = state.parameter->units,
+                  .observed_scale = state.parameter->scale,
+                  .signed_contribution_units = signed_margin,
+                  .contribution_scale = state.parameter->scale,
+                  .ranking_policy_version =
+                      definition.descriptor.explanation_policy_version,
+              }))
+        return failure(StrategyExecutionStatus::OutputCapacityExceeded, budget,
+                       factor_storage);
+      break;
+    }
+    case StrategyOpcode::FinishDirectionalThreshold:
+      if (!state.emits_signal)
+        return {
+            .status = StrategyExecutionStatus::Completed,
+            .charged_operations = budget.consumed_operations(),
+            .factor_count = factor_count,
+            .terminal =
+                AbstentionDraft{
+                    .reason = StrategyAbstentionReason::NoDirectionalSignal},
+        };
+      return {
+          .status = StrategyExecutionStatus::Completed,
+          .charged_operations = budget.consumed_operations(),
+          .factor_count = factor_count,
+          .terminal =
+              SignalDraft{
+                  .direction = state.ratio->units > 0
+                                   ? StrategyDirection::Positive
+                                   : StrategyDirection::Negative,
+                  .strength = {.units = state.magnitude,
+                               .scale = state.ratio->scale},
+                  .horizon_nanoseconds =
+                      definition.program.signal_horizon_nanoseconds,
+              },
+      };
+    }
   }
-  if (!output.terminal() ||
-      !validate_factors(descriptor, output, *output.terminal()))
-    return failure(StrategyExecutionStatus::ContractViolation,
-                   budget.charged_operations());
 
-  return {
-      .status = StrategyExecutionStatus::Completed,
-      .charged_operations = budget.charged_operations(),
-      .factor_count = output.factor_count(),
-      .terminal = *output.terminal(),
-  };
+  return failure(StrategyExecutionStatus::ContractViolation, budget,
+                 factor_storage);
 }
 
 } // namespace chronos::strategies::sdk

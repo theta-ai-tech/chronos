@@ -21,3 +21,10 @@ target_link_libraries(chronos_strategy_sdk
   PRIVATE chronos_core chronos_warnings)
 
 add_dependencies(chronos_strategy_sdk chronos_strategy_capability_check)
+
+add_custom_command(TARGET chronos_strategy_sdk POST_BUILD
+  COMMAND ${Python3_EXECUTABLE}
+          ${PROJECT_SOURCE_DIR}/tools/development/verify_strategy_symbols.py
+          $<TARGET_FILE:chronos_strategy_sdk>
+  COMMENT "Checking strategy host linked capability boundary"
+  VERBATIM)

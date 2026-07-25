@@ -2,11 +2,10 @@
 
 #include "microtest.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
-#include <optional>
-#include <type_traits>
 
 namespace {
 namespace contracts = chronos::contracts;
@@ -23,31 +22,7 @@ contracts::VersionRef version(std::uint8_t seed, std::uint64_t number = 1) {
       .value();
 }
 
-sdk::ExplanationFactor factor(std::uint32_t rank) {
-  return {
-      .factor_id = id<contracts::DefinitionId>(10),
-      .rank = rank,
-      .source = sdk::ExplanationSource::Feature,
-      .role = sdk::ExplanationRole::SupportsPositive,
-      .observed_units = 500000,
-      .observed_scale = *contracts::DecimalScale::from_exponent(6),
-      .signed_contribution_units = 500000,
-      .contribution_scale = *contracts::DecimalScale::from_exponent(6),
-      .causal_feature_evaluation_id = id<contracts::FeatureEvaluationId>(11),
-      .ranking_policy_version = version(12),
-  };
-}
-
-sdk::SignalDraft signal() {
-  return {
-      .direction = sdk::StrategyDirection::Positive,
-      .strength = {.units = 500000,
-                   .scale = *contracts::DecimalScale::from_exponent(6)},
-      .horizon_nanoseconds = 1'000'000,
-  };
-}
-
-sdk::StrategyDescriptor descriptor() {
+sdk::StrategyDefinition definition() {
   static const std::array dependencies = {
       sdk::FeatureDependency{
           .kind = sdk::StrategyFeatureKind::OrderBookImbalance,
@@ -61,72 +36,115 @@ sdk::StrategyDescriptor descriptor() {
           .scale = *contracts::DecimalScale::from_exponent(6),
       },
   };
+  static const std::array instructions = {
+      sdk::StrategyInstruction{.opcode = sdk::StrategyOpcode::LoadFeature,
+                               .operand = 0},
+      sdk::StrategyInstruction{
+          .opcode = sdk::StrategyOpcode::RequireValidScaledRatio},
+      sdk::StrategyInstruction{.opcode = sdk::StrategyOpcode::LoadParameter,
+                               .operand = 0},
+      sdk::StrategyInstruction{
+          .opcode = sdk::StrategyOpcode::RequirePositiveParameter},
+      sdk::StrategyInstruction{
+          .opcode =
+              sdk::StrategyOpcode::CompareAbsoluteFeatureAtLeastParameter},
+      sdk::StrategyInstruction{
+          .opcode = sdk::StrategyOpcode::AppendFeatureFactor, .operand = 0},
+      sdk::StrategyInstruction{
+          .opcode = sdk::StrategyOpcode::AppendParameterFactor, .operand = 1},
+      sdk::StrategyInstruction{
+          .opcode = sdk::StrategyOpcode::FinishDirectionalThreshold},
+  };
+  static const std::array factors = {
+      sdk::ProgramFactorDefinition{
+          .factor_id = id<contracts::DefinitionId>(30),
+          .source = sdk::ExplanationSource::Feature,
+      },
+      sdk::ProgramFactorDefinition{
+          .factor_id = id<contracts::DefinitionId>(31),
+          .source = sdk::ExplanationSource::StrategyParameter,
+      },
+  };
   return {
-      .definition_version = version(23),
-      .implementation_version = version(24),
-      .scope = sdk::StrategyScope::SingleListing,
-      .family = sdk::StrategyFamily::OrderBookImbalance,
-      .required_features = dependencies,
-      .parameter_schema = parameters,
-      .arithmetic_version = version(25),
-      .explanation_policy_version = version(26),
-      .resource_limits =
+      .descriptor =
           {
-              .operations_per_evaluation = 16,
-              .maximum_features = 1,
-              .maximum_parameters = 1,
-              .maximum_explanation_factors = 2,
-              .maximum_working_bytes = 256,
+              .definition_version = version(23),
+              .implementation_version = version(24),
+              .scope = sdk::StrategyScope::SingleListing,
+              .family = sdk::StrategyFamily::OrderBookImbalance,
+              .required_features = dependencies,
+              .parameter_schema = parameters,
+              .arithmetic_version = version(25),
+              .explanation_policy_version = version(26),
+              .resource_limits =
+                  {
+                      .maximum_operations = instructions.size(),
+                      .maximum_features = 1,
+                      .maximum_parameters = 1,
+                      .maximum_explanation_factors = factors.size(),
+                      .maximum_working_bytes = sdk::kInterpreterWorkingBytes,
+                  },
+          },
+      .program =
+          {
+              .instructions = instructions,
+              .factors = factors,
+              .signal_horizon_nanoseconds = 1'000'000,
           },
   };
 }
 
-static_assert(
-    !std::is_default_constructible_v<sdk::AcceptedStrategyInvocation>);
-static_assert(!std::is_aggregate_v<sdk::AcceptedStrategyInvocation>);
-static_assert(!std::is_default_constructible_v<sdk::StrategyWorkspace>);
-
 } // namespace
 
-TEST_CASE("strategy descriptors pin dependencies and bounded resources") {
-  auto valid = descriptor();
-  CHECK(sdk::validate_descriptor(valid));
+TEST_CASE("strategy definitions pin one bounded loop-free program") {
+  const auto valid = definition();
+  CHECK(sdk::validate_descriptor(valid.descriptor));
+  CHECK(sdk::validate_definition(valid));
 
   auto no_fuel = valid;
-  no_fuel.resource_limits.operations_per_evaluation = 0;
-  CHECK(!sdk::validate_descriptor(no_fuel));
+  no_fuel.descriptor.resource_limits.maximum_operations = 0;
+  CHECK(!sdk::validate_definition(no_fuel));
 
-  auto too_many_features = valid;
-  too_many_features.resource_limits.maximum_features = 0;
-  CHECK(!sdk::validate_descriptor(too_many_features));
+  auto no_workspace = valid;
+  no_workspace.descriptor.resource_limits.maximum_working_bytes =
+      sdk::kInterpreterWorkingBytes - 1;
+  CHECK(!sdk::validate_definition(no_workspace));
 
-  const std::array duplicate_dependencies = {valid.required_features.front(),
-                                             valid.required_features.front()};
-  auto duplicate = valid;
-  duplicate.required_features = duplicate_dependencies;
-  duplicate.resource_limits.maximum_features = 2;
-  CHECK(!sdk::validate_descriptor(duplicate));
+  std::array<sdk::StrategyInstruction, 8> changed_instructions;
+  std::copy(valid.program.instructions.begin(),
+            valid.program.instructions.end(), changed_instructions.begin());
+  changed_instructions[7].opcode = sdk::StrategyOpcode::LoadFeature;
+  auto loop_or_malformed = valid;
+  loop_or_malformed.program.instructions = changed_instructions;
+  CHECK(!sdk::validate_definition(loop_or_malformed));
+
+  auto invalid_factor = valid;
+  std::array changed_factors = {valid.program.factors[0],
+                                valid.program.factors[1]};
+  changed_factors[0].source = sdk::ExplanationSource::StrategyParameter;
+  invalid_factor.program.factors = changed_factors;
+  CHECK(!sdk::validate_definition(invalid_factor));
 }
 
-TEST_CASE(
-    "deterministic operation fuel is exact and non-consuming on failure") {
+TEST_CASE("deterministic interpreter fuel is exact and overflow safe") {
   sdk::DeterministicOperationBudget budget(5);
-  CHECK(budget.charge(2));
-  CHECK(budget.charged_operations() == 2);
-  CHECK(!budget.charge(4));
-  CHECK(budget.charged_operations() == 2);
-  CHECK(budget.charge(3));
-  CHECK(!budget.charge(1));
+  CHECK(budget.consume(2));
+  CHECK(budget.consumed_operations() == 2);
+  CHECK(budget.remaining_operations() == 3);
+  CHECK(!budget.consume(4));
+  CHECK(budget.consumed_operations() == 2);
+  CHECK(budget.consume(3));
+  CHECK(!budget.consume());
 
   sdk::DeterministicOperationBudget maximum(
       std::numeric_limits<std::uint64_t>::max());
-  CHECK(maximum.charge(std::numeric_limits<std::uint64_t>::max()));
-  CHECK(!maximum.charge(1));
+  CHECK(maximum.consume(std::numeric_limits<std::uint64_t>::max()));
+  CHECK(!maximum.consume());
 }
 
 TEST_CASE("logical deadlines depend only on the recorded cut") {
   const auto timer =
-      contracts::StreamCursor::at_sequence(id<contracts::StreamId>(30), 1, 4);
+      contracts::StreamCursor::at_sequence(id<contracts::StreamId>(40), 1, 4);
   const auto cut = sdk::LogicalCut{
       .run_input_sequence = 9,
       .logical_time_nanoseconds = 100,
@@ -142,58 +160,4 @@ TEST_CASE("logical deadlines depend only on the recorded cut") {
   auto unbounded = late;
   unbounded.logical_deadline_nanoseconds.reset();
   CHECK(!sdk::logical_deadline_exceeded(unbounded));
-}
-
-TEST_CASE("bounded output enforces ranked factors before one terminal result") {
-  std::array<std::optional<sdk::ExplanationFactor>, 2> storage;
-  sdk::StrategyOutput output(storage);
-  CHECK(!output.append_factor(factor(2)));
-  CHECK(output.factor_count() == 0);
-  CHECK(output.append_factor(factor(1)));
-  CHECK(output.append_factor(factor(2)));
-  CHECK(!output.append_factor(factor(3)));
-  CHECK(output.factor_count() == 2);
-  CHECK(output.factor(0).rank == 1);
-  CHECK(output.factor(1).rank == 2);
-  CHECK(output.emit_signal(signal()));
-  CHECK(std::holds_alternative<sdk::SignalDraft>(*output.terminal()));
-  CHECK(!output.emit_signal(signal()));
-  CHECK(!output.abstain(
-      {.reason = sdk::StrategyAbstentionReason::NonValidFeature}));
-  CHECK(!output.append_factor(factor(3)));
-}
-
-TEST_CASE("abstention is terminal and cannot be encoded as a signal") {
-  std::array<std::optional<sdk::ExplanationFactor>, 1> storage;
-  sdk::StrategyOutput output(storage);
-  CHECK(output.append_factor({
-      .factor_id = id<contracts::DefinitionId>(40),
-      .rank = 1,
-      .source = sdk::ExplanationSource::DiagnosticStatus,
-      .role = sdk::ExplanationRole::ExplainsAbstention,
-      .observed_units = 1,
-      .observed_scale = *contracts::DecimalScale::from_exponent(0),
-      .signed_contribution_units = 0,
-      .contribution_scale = *contracts::DecimalScale::from_exponent(0),
-      .ranking_policy_version = version(41),
-  }));
-  CHECK(output.abstain(
-      {.reason = sdk::StrategyAbstentionReason::NonValidFeature}));
-  CHECK(std::holds_alternative<sdk::AbstentionDraft>(*output.terminal()));
-  CHECK(!output.emit_signal(signal()));
-
-  std::array<std::optional<sdk::ExplanationFactor>, 1> other_storage;
-  sdk::StrategyOutput invalid_signal(other_storage);
-  auto no_horizon = signal();
-  no_horizon.horizon_nanoseconds = 0;
-  CHECK(!invalid_signal.emit_signal(no_horizon));
-  CHECK(!invalid_signal.terminal());
-
-  auto no_strength = signal();
-  no_strength.strength.units = 0;
-  CHECK(!invalid_signal.emit_signal(no_strength));
-  auto excessive_strength = signal();
-  excessive_strength.strength.units =
-      excessive_strength.strength.scale.denominator() + 1;
-  CHECK(!invalid_signal.emit_signal(excessive_strength));
 }

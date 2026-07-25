@@ -343,88 +343,85 @@ evaluation(const features::FeatureRuntimeResult &result,
   return *found;
 }
 
-enum class HostBehavior : std::uint8_t {
-  Signal,
-  NoTerminal,
-  FailureAfterTerminal,
-  FailureWithoutOutput,
-};
+sdk::StrategyDefinition host_definition() {
+  static const std::array dependencies = {
+      sdk::FeatureDependency{
+          .kind = sdk::StrategyFeatureKind::OrderBookImbalance,
+          .definition_version = version(50),
+      },
+  };
+  static const std::array parameter_schema = {
+      sdk::StrategyParameterSchema{
+          .parameter_id = id<contracts::DefinitionId>(94),
+          .definition_version = version(95),
+          .scale = *contracts::DecimalScale::from_exponent(6),
+      },
+  };
+  static const std::array instructions = {
+      sdk::StrategyInstruction{.opcode = sdk::StrategyOpcode::LoadFeature},
+      sdk::StrategyInstruction{
+          .opcode = sdk::StrategyOpcode::RequireValidScaledRatio},
+      sdk::StrategyInstruction{.opcode = sdk::StrategyOpcode::LoadParameter},
+      sdk::StrategyInstruction{
+          .opcode = sdk::StrategyOpcode::RequirePositiveParameter},
+      sdk::StrategyInstruction{
+          .opcode =
+              sdk::StrategyOpcode::CompareAbsoluteFeatureAtLeastParameter},
+      sdk::StrategyInstruction{.opcode =
+                                   sdk::StrategyOpcode::AppendFeatureFactor},
+      sdk::StrategyInstruction{
+          .opcode = sdk::StrategyOpcode::AppendParameterFactor, .operand = 1},
+      sdk::StrategyInstruction{
+          .opcode = sdk::StrategyOpcode::FinishDirectionalThreshold},
+  };
+  static const std::array factors = {
+      sdk::ProgramFactorDefinition{
+          .factor_id = id<contracts::DefinitionId>(96),
+          .source = sdk::ExplanationSource::Feature,
+      },
+      sdk::ProgramFactorDefinition{
+          .factor_id = id<contracts::DefinitionId>(97),
+          .source = sdk::ExplanationSource::StrategyParameter,
+      },
+  };
+  return {
+      .descriptor =
+          {
+              .definition_version = version(90),
+              .implementation_version = version(91),
+              .required_features = dependencies,
+              .parameter_schema = parameter_schema,
+              .arithmetic_version = version(93),
+              .explanation_policy_version = version(92),
+              .resource_limits =
+                  {
+                      .maximum_operations = instructions.size(),
+                      .maximum_features = 1,
+                      .maximum_parameters = 1,
+                      .maximum_explanation_factors = factors.size(),
+                      .maximum_working_bytes = sdk::kInterpreterWorkingBytes,
+                  },
+          },
+      .program =
+          {
+              .instructions = instructions,
+              .factors = factors,
+              .signal_horizon_nanoseconds = 1'000'000,
+          },
+  };
+}
 
-class HostTestStrategy final : public sdk::Strategy {
-public:
-  explicit HostTestStrategy(HostBehavior behavior) : behavior_(behavior) {}
-
-  [[nodiscard]] const sdk::StrategyDescriptor &
-  descriptor() const noexcept override {
-    static const std::array dependencies = {
-        sdk::FeatureDependency{
-            .kind = sdk::StrategyFeatureKind::OrderBookImbalance,
-            .definition_version = version(50),
-        },
-    };
-    static const sdk::StrategyDescriptor value{
-        .definition_version = version(90),
-        .implementation_version = version(91),
-        .required_features = dependencies,
-        .arithmetic_version = version(93),
-        .explanation_policy_version = version(92),
-        .resource_limits =
-            {
-                .operations_per_evaluation = 5,
-                .maximum_features = 1,
-                .maximum_parameters = 0,
-                .maximum_explanation_factors = 1,
-                .maximum_working_bytes = 8,
-            },
-    };
-    return value;
-  }
-
-  [[nodiscard]] sdk::StrategyExecutionStatus
-  evaluate(const sdk::AcceptedStrategyInvocation &invocation,
-           sdk::StrategyWorkspace &workspace,
-           sdk::StrategyOutput &output) const noexcept override {
-    ++invocation_count;
-    saw_one_accepted_feature =
-        invocation.features().size() == 1 && workspace.bytes().size() == 8 &&
-        std::all_of(workspace.bytes().begin(), workspace.bytes().end(),
-                    [](auto byte) { return byte == std::byte{}; });
-    if (behavior_ == HostBehavior::NoTerminal)
-      return sdk::StrategyExecutionStatus::Completed;
-    if (behavior_ == HostBehavior::FailureWithoutOutput)
-      return sdk::StrategyExecutionStatus::OutputCapacityExceeded;
-
-    const auto &feature = invocation.features().front();
-    if (!output.append_factor({
-            .factor_id = id<contracts::DefinitionId>(94),
-            .rank = 1,
-            .source = sdk::ExplanationSource::Feature,
-            .role = sdk::ExplanationRole::SupportsPositive,
-            .observed_units = 500000,
-            .observed_scale = *contracts::DecimalScale::from_exponent(6),
-            .signed_contribution_units = 500000,
-            .contribution_scale = *contracts::DecimalScale::from_exponent(6),
-            .causal_feature_evaluation_id = feature.evaluation_id,
-            .ranking_policy_version = version(92),
-        }) ||
-        !output.emit_signal({
-            .direction = sdk::StrategyDirection::Positive,
-            .strength = {.units = 500000,
-                         .scale = *contracts::DecimalScale::from_exponent(6)},
-            .horizon_nanoseconds = 1'000'000,
-        }))
-      return sdk::StrategyExecutionStatus::ContractViolation;
-    if (behavior_ == HostBehavior::FailureAfterTerminal)
-      return sdk::StrategyExecutionStatus::OutputCapacityExceeded;
-    return sdk::StrategyExecutionStatus::Completed;
-  }
-
-  mutable std::uint64_t invocation_count{};
-  mutable bool saw_one_accepted_feature{};
-
-private:
-  HostBehavior behavior_;
-};
+std::span<const sdk::StrategyParameter> threshold_parameters() {
+  static const std::array parameters = {
+      sdk::StrategyParameter{
+          .parameter_id = id<contracts::DefinitionId>(94),
+          .definition_version = version(95),
+          .units = 250000,
+          .scale = *contracts::DecimalScale::from_exponent(6),
+      },
+  };
+  return parameters;
+}
 
 sdk::StrategyInvocationRequest
 host_request(const features::AcceptedFeatureEvaluationCut &accepted,
@@ -439,7 +436,7 @@ host_request(const features::AcceptedFeatureEvaluationCut &accepted,
       .listing_id = provenance.listing_id,
       .canonical_instrument_id = provenance.canonical_instrument_id,
       .feature_cut = accepted,
-      .parameters = {},
+      .parameters = threshold_parameters(),
       .cut =
           {
               .run_input_sequence = provenance.run_input_sequence,
@@ -790,95 +787,92 @@ TEST_CASE("strategy host admits only authority-issued immutable feature cuts") {
   CHECK(result.ok());
   CHECK(result.accepted_cut() != nullptr);
 
-  HostTestStrategy strategy(HostBehavior::Signal);
+  const auto definition = host_definition();
   auto request = host_request(*result.accepted_cut());
-  sdk::DeterministicOperationBudget budget(5);
-  std::array<std::byte, 8> workspace;
+  sdk::DeterministicOperationBudget budget(8);
+  std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;
   workspace.fill(std::byte{0x7f});
-  std::array<std::optional<sdk::ExplanationFactor>, 1> factors;
+  std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
   const auto host_result = sdk::StrategyHost::evaluate(
-      strategy, request, budget, workspace, factors);
+      definition, request, budget, workspace, factors);
 
   CHECK(host_result.completed());
-  CHECK(host_result.charged_operations == 5);
-  CHECK(host_result.factor_count == 1);
-  CHECK(strategy.invocation_count == 1);
-  CHECK(strategy.saw_one_accepted_feature);
+  CHECK(host_result.charged_operations == 8);
+  CHECK(host_result.factor_count == 2);
   CHECK(std::holds_alternative<sdk::SignalDraft>(*host_result.terminal));
+  CHECK(factors[0]->causal_feature_evaluation_id ==
+        evaluation(result, features::FeatureKind::OrderBookImbalance)
+            .evaluation_id);
+  CHECK(!factors[1]->causal_feature_evaluation_id);
+  CHECK(std::all_of(workspace.begin(), workspace.end(),
+                    [](auto byte) { return byte == std::byte{}; }));
 }
 
 TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
   auto publisher = publish_initial();
   const features::FeatureRuntime runtime(runtime_config());
   const auto result = runtime.evaluate(*publisher.accepted_feature_cut());
-  HostTestStrategy strategy(HostBehavior::Signal);
-  std::array<std::byte, 8> workspace;
-  std::array<std::optional<sdk::ExplanationFactor>, 1> factors;
+  const auto definition = host_definition();
+  std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;
+  std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
 
   auto request = host_request(*result.accepted_cut());
   sdk::DeterministicOperationBudget no_fuel(4);
-  CHECK(sdk::StrategyHost::evaluate(strategy, request, no_fuel, workspace,
+  CHECK(sdk::StrategyHost::evaluate(definition, request, no_fuel, workspace,
                                     factors)
             .status ==
         sdk::StrategyExecutionStatus::DeterministicBudgetExhausted);
-  CHECK(strategy.invocation_count == 0);
+  CHECK(no_fuel.consumed_operations() == 4);
+  CHECK(std::none_of(factors.begin(), factors.end(),
+                     [](const auto &factor) { return factor.has_value(); }));
 
   auto wrong_authority = request;
   wrong_authority.run_id = id<contracts::RunId>(96);
-  sdk::DeterministicOperationBudget wrong_authority_budget(5);
-  CHECK(sdk::StrategyHost::evaluate(strategy, wrong_authority,
+  sdk::DeterministicOperationBudget wrong_authority_budget(8);
+  CHECK(sdk::StrategyHost::evaluate(definition, wrong_authority,
                                     wrong_authority_budget, workspace, factors)
             .status == sdk::StrategyExecutionStatus::ContractViolation);
-  CHECK(strategy.invocation_count == 0);
+  CHECK(wrong_authority_budget.consumed_operations() == 0);
 
   auto late_request = host_request(*result.accepted_cut(),
                                    request.cut.logical_time_nanoseconds - 1);
-  sdk::DeterministicOperationBudget late_budget(5);
-  CHECK(sdk::StrategyHost::evaluate(strategy, late_request, late_budget,
+  sdk::DeterministicOperationBudget late_budget(8);
+  CHECK(sdk::StrategyHost::evaluate(definition, late_request, late_budget,
                                     workspace, factors)
             .status == sdk::StrategyExecutionStatus::LogicalDeadlineExceeded);
-  CHECK(late_budget.charged_operations() == 0);
+  CHECK(late_budget.consumed_operations() == 0);
 
-  sdk::DeterministicOperationBudget short_workspace_budget(5);
-  CHECK(sdk::StrategyHost::evaluate(strategy, request, short_workspace_budget,
-                                    std::span<std::byte>(workspace).first(7),
+  sdk::DeterministicOperationBudget short_workspace_budget(8);
+  CHECK(sdk::StrategyHost::evaluate(definition, request, short_workspace_budget,
+                                    std::span<std::byte>(workspace).first(
+                                        sdk::kInterpreterWorkingBytes - 1),
                                     factors)
             .status == sdk::StrategyExecutionStatus::InsufficientWorkspace);
-  CHECK(short_workspace_budget.charged_operations() == 5);
+  CHECK(short_workspace_budget.consumed_operations() == 0);
 
-  sdk::DeterministicOperationBudget no_output_budget(5);
+  sdk::DeterministicOperationBudget no_output_budget(8);
   CHECK(sdk::StrategyHost::evaluate(
-            strategy, request, no_output_budget, workspace,
+            definition, request, no_output_budget, workspace,
             std::span<std::optional<sdk::ExplanationFactor>>{})
             .status == sdk::StrategyExecutionStatus::OutputCapacityExceeded);
-  CHECK(strategy.invocation_count == 0);
+  CHECK(no_output_budget.consumed_operations() == 0);
 }
 
-TEST_CASE("strategy host rejects invalid status and terminal combinations") {
+TEST_CASE("strategy host emits typed abstentions without native callbacks") {
   auto publisher = publish_initial();
   const features::FeatureRuntime runtime(runtime_config());
   const auto result = runtime.evaluate(*publisher.accepted_feature_cut());
   auto request = host_request(*result.accepted_cut());
-  std::array<std::byte, 8> workspace;
-  std::array<std::optional<sdk::ExplanationFactor>, 1> factors;
-
-  HostTestStrategy no_terminal(HostBehavior::NoTerminal);
-  sdk::DeterministicOperationBudget first_budget(5);
-  CHECK(sdk::StrategyHost::evaluate(no_terminal, request, first_budget,
-                                    workspace, factors)
-            .status == sdk::StrategyExecutionStatus::ContractViolation);
-
-  HostTestStrategy partial_failure(HostBehavior::FailureAfterTerminal);
-  sdk::DeterministicOperationBudget second_budget(5);
-  CHECK(sdk::StrategyHost::evaluate(partial_failure, request, second_budget,
-                                    workspace, factors)
-            .status == sdk::StrategyExecutionStatus::ContractViolation);
-
-  HostTestStrategy clean_failure(HostBehavior::FailureWithoutOutput);
-  sdk::DeterministicOperationBudget third_budget(5);
-  const auto clean_result = sdk::StrategyHost::evaluate(
-      clean_failure, request, third_budget, workspace, factors);
-  CHECK(clean_result.status ==
-        sdk::StrategyExecutionStatus::OutputCapacityExceeded);
-  CHECK(!clean_result.terminal);
+  request.parameters = {};
+  std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;
+  std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
+  sdk::DeterministicOperationBudget budget(8);
+  const auto missing = sdk::StrategyHost::evaluate(host_definition(), request,
+                                                   budget, workspace, factors);
+  CHECK(missing.completed());
+  CHECK(budget.consumed_operations() == 3);
+  CHECK(std::get<sdk::AbstentionDraft>(*missing.terminal).reason ==
+        sdk::StrategyAbstentionReason::MissingParameter);
+  CHECK(missing.factor_count == 1);
+  CHECK(!factors[0]->causal_feature_evaluation_id);
 }

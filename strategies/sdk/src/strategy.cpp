@@ -1,45 +1,13 @@
 #include "chronos/strategies/sdk/strategy.hpp"
 
 #include <algorithm>
-#include <utility>
 
 namespace chronos::strategies::sdk {
 
-bool DeterministicOperationBudget::charge(std::uint64_t operations) noexcept {
-  if (operations > available_operations_ - charged_operations_)
+bool DeterministicOperationBudget::consume(std::uint64_t operations) noexcept {
+  if (operations > remaining_operations())
     return false;
-  charged_operations_ += operations;
-  return true;
-}
-
-StrategyOutput::StrategyOutput(
-    std::span<std::optional<ExplanationFactor>> factor_storage) noexcept
-    : factor_storage_(factor_storage) {
-  for (auto &factor : factor_storage_)
-    factor.reset();
-}
-
-bool StrategyOutput::append_factor(ExplanationFactor factor) noexcept {
-  if (terminal_ || factor_count_ == factor_storage_.size() ||
-      factor.rank != factor_count_ + 1)
-    return false;
-  factor_storage_[factor_count_++].emplace(std::move(factor));
-  return true;
-}
-
-bool StrategyOutput::emit_signal(SignalDraft signal) noexcept {
-  if (terminal_ || signal.horizon_nanoseconds <= 0 ||
-      signal.strength.units <= 0 ||
-      signal.strength.units > signal.strength.scale.denominator())
-    return false;
-  terminal_ = std::move(signal);
-  return true;
-}
-
-bool StrategyOutput::abstain(AbstentionDraft abstention) noexcept {
-  if (terminal_)
-    return false;
-  terminal_ = abstention;
+  consumed_operations_ += operations;
   return true;
 }
 
@@ -48,9 +16,9 @@ bool validate_descriptor(const StrategyDescriptor &descriptor) noexcept {
   if (descriptor.required_features.empty() ||
       descriptor.required_features.size() > limits.maximum_features ||
       descriptor.parameter_schema.size() > limits.maximum_parameters ||
-      limits.operations_per_evaluation == 0 || limits.maximum_features == 0 ||
+      limits.maximum_operations == 0 || limits.maximum_features == 0 ||
       limits.maximum_explanation_factors == 0 ||
-      limits.maximum_working_bytes == 0)
+      limits.maximum_working_bytes < kInterpreterWorkingBytes)
     return false;
 
   const auto duplicate_feature = std::any_of(
@@ -75,6 +43,47 @@ bool validate_descriptor(const StrategyDescriptor &descriptor) noexcept {
                                       current.parameter_id;
                              }) != 1;
       });
+}
+
+bool validate_definition(const StrategyDefinition &definition) noexcept {
+  if (!validate_descriptor(definition.descriptor) ||
+      definition.program.instructions.size() != 8 ||
+      definition.program.instructions.size() > kMaximumProgramInstructions ||
+      definition.program.factors.size() != 2 ||
+      definition.program.factors.size() > kMaximumProgramFactors ||
+      definition.program.signal_horizon_nanoseconds <= 0 ||
+      definition.descriptor.resource_limits.maximum_operations <
+          definition.program.instructions.size() ||
+      definition.descriptor.resource_limits.maximum_explanation_factors < 2)
+    return false;
+
+  constexpr StrategyOpcode expected[] = {
+      StrategyOpcode::LoadFeature,
+      StrategyOpcode::RequireValidScaledRatio,
+      StrategyOpcode::LoadParameter,
+      StrategyOpcode::RequirePositiveParameter,
+      StrategyOpcode::CompareAbsoluteFeatureAtLeastParameter,
+      StrategyOpcode::AppendFeatureFactor,
+      StrategyOpcode::AppendParameterFactor,
+      StrategyOpcode::FinishDirectionalThreshold,
+  };
+  for (std::size_t index = 0; index < definition.program.instructions.size();
+       ++index) {
+    if (definition.program.instructions[index].opcode != expected[index])
+      return false;
+  }
+
+  const auto &instructions = definition.program.instructions;
+  return instructions[0].operand <
+             definition.descriptor.required_features.size() &&
+         instructions[2].operand <
+             definition.descriptor.parameter_schema.size() &&
+         instructions[5].operand < definition.program.factors.size() &&
+         instructions[6].operand < definition.program.factors.size() &&
+         definition.program.factors[instructions[5].operand].source ==
+             ExplanationSource::Feature &&
+         definition.program.factors[instructions[6].operand].source ==
+             ExplanationSource::StrategyParameter;
 }
 
 bool logical_deadline_exceeded(const LogicalCut &cut) noexcept {
