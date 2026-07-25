@@ -1,5 +1,6 @@
 #pragma once
 
+#include "chronos/contracts/recommendation_policy.hpp"
 #include "chronos/core/dispatch/run_input_dispatcher.hpp"
 #include "chronos/strategies/sdk/strategy_host.hpp"
 
@@ -15,6 +16,7 @@ struct StrategyRuntimeConfig final {
   contracts::CanonicalInstrumentId canonical_instrument_id;
   chronos::strategies::sdk::AcceptedStrategyDefinition definition;
   std::optional<chronos::strategies::sdk::StrategyParameter> parameter;
+  contracts::RecommendationPolicy recommendation_policy;
   contracts::StreamId run_control_stream_id;
   std::uint64_t run_control_stream_epoch{};
   contracts::StreamId run_timer_stream_id;

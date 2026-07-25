@@ -1,4 +1,5 @@
 #include "chronos/core/features/feature_runtime.hpp"
+#include "chronos/core/recommendation/recommendation.hpp"
 #include "chronos/runtime/strategies/strategy_evaluation.hpp"
 #include "chronos/runtime/strategies/strategy_runtime.hpp"
 #include "chronos/strategies/generated/chronos_reference_strategies.hpp"
@@ -19,6 +20,7 @@ namespace {
 namespace contracts = chronos::contracts;
 namespace dispatch = chronos::core::dispatch;
 namespace features = chronos::core::features;
+namespace recommendation = chronos::core::recommendation;
 namespace market = chronos::core::market_state;
 namespace strategy_runtime = chronos::runtime::strategies;
 namespace generated = chronos::strategies::generated;
@@ -45,6 +47,20 @@ contracts::DefinitionId parsed_definition(std::string_view value) {
 
 contracts::VersionRef named_version(std::string_view value) {
   return contracts::VersionRef::from(parsed_definition(value), 1).value();
+}
+
+recommendation::RecommendationPolicy recommendation_policy(
+    contracts::AmountUnits minimum_actionable_strength,
+    contracts::AmountUnits maximum_indicative_exposure = 750000) {
+  return {
+      .policy_version = named_version("0f520000-0000-0000-0000-000000000001"),
+      .schema_version = named_version("0f520000-0000-0000-0000-000000000002"),
+      .authority_version =
+          named_version("0f520000-0000-0000-0000-000000000003"),
+      .minimum_actionable_strength = minimum_actionable_strength,
+      .maximum_indicative_exposure = maximum_indicative_exposure,
+      .scale = *contracts::DecimalScale::from_exponent(6),
+  };
 }
 
 contracts::StreamCursor origin(std::uint8_t seed) {
@@ -463,12 +479,14 @@ strategy_runtime::StrategyRuntimeConfig host_runtime_config_base(
     std::optional<sdk::StrategyParameter> parameter,
     std::optional<std::int64_t> deadline_offset = std::nullopt,
     std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations) {
+  const auto policy = recommendation_policy(300000);
   return {
       .strategy_instance_id = id<contracts::StrategyInstanceId>(95),
       .listing_id = id<contracts::ListingId>(1),
       .canonical_instrument_id = id<contracts::CanonicalInstrumentId>(42),
       .definition = accepted_host_definition(),
       .parameter = parameter,
+      .recommendation_policy = policy,
       .run_control_stream_id = id<contracts::StreamId>(12),
       .run_control_stream_epoch = 1,
       .run_timer_stream_id = id<contracts::StreamId>(13),
@@ -678,12 +696,14 @@ strategy_runtime::StrategyRuntimeConfig reference_strategy_config(
     std::optional<sdk::StrategyParameter> parameter,
     std::optional<std::int64_t> deadline_offset = std::nullopt,
     std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations) {
+  const auto policy = recommendation_policy(300000);
   return {
       .strategy_instance_id = id<contracts::StrategyInstanceId>(98),
       .listing_id = id<contracts::ListingId>(1),
       .canonical_instrument_id = id<contracts::CanonicalInstrumentId>(42),
       .definition = accepted_reference_definition(),
       .parameter = parameter,
+      .recommendation_policy = policy,
       .run_control_stream_id = id<contracts::StreamId>(12),
       .run_control_stream_epoch = 1,
       .run_timer_stream_id = id<contracts::StreamId>(13),
@@ -1169,6 +1189,33 @@ TEST_CASE("strategy host admits only authority-issued immutable feature cuts") {
                     [](auto byte) { return byte == std::byte{0x7f}; }));
 }
 
+TEST_CASE("strategy activation rejects unusable recommendation policies") {
+  auto malformed = host_runtime_config_base(threshold_parameters()[0]);
+  malformed.recommendation_policy.minimum_actionable_strength = 0;
+  CHECK(!activate_runtime(malformed));
+
+  auto incompatible = host_runtime_config_base(threshold_parameters()[0]);
+  incompatible.recommendation_policy.minimum_actionable_strength = 30000;
+  incompatible.recommendation_policy.maximum_indicative_exposure = 75000;
+  incompatible.recommendation_policy.scale =
+      *contracts::DecimalScale::from_exponent(5);
+  CHECK(contracts::valid_recommendation_policy(
+      incompatible.recommendation_policy));
+  CHECK(!activate_runtime(incompatible));
+
+  const auto accepted = host_runtime_config_base(threshold_parameters()[0]);
+  const auto runtime = activate_runtime(accepted);
+  CHECK(runtime.has_value());
+  const auto features = accepted_features_for_strategy(accepted);
+  const auto invocation = runtime->admit(*features.accepted_cut());
+  CHECK(invocation.has_value());
+  CHECK(invocation->recommendation_policy_version() ==
+        accepted.recommendation_policy.policy_version);
+  CHECK(invocation->recommendation_policy_checksum() ==
+        contracts::recommendation_policy_checksum(
+            accepted.recommendation_policy));
+}
+
 TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
   const auto base_config = host_runtime_config_base(threshold_parameters()[0]);
   const auto result = accepted_features_for_strategy(base_config);
@@ -1652,4 +1699,86 @@ TEST_CASE("strategy evaluation does not invent outcomes for host failures") {
   CHECK(rejected.accepted_evaluation_key.has_value());
   CHECK(rejected.accepted_evaluation_id.has_value());
   CHECK(!rejected.evaluation);
+}
+
+TEST_CASE(
+    "recommendation authority emits one deterministic actionable result") {
+  const auto evaluated = evaluate_reference(
+      reference_threshold(), {.bid_quantity = 3, .ask_quantity = 1});
+  CHECK(evaluated.result.completed());
+  const auto policy = recommendation_policy(300000);
+  const auto first = recommendation::RecommendationAuthority::recommend(
+      *evaluated.result.evaluation, policy);
+  const auto repeated = recommendation::RecommendationAuthority::recommend(
+      *evaluated.result.evaluation, policy);
+
+  CHECK(first.completed());
+  CHECK(repeated.completed());
+  CHECK(first.recommendation == repeated.recommendation);
+  const auto &value = *first.recommendation;
+  const auto &signal = std::get<strategy_runtime::StrategySignal>(
+      evaluated.result.evaluation->terminal());
+  CHECK(value.signal_id() == signal.signal_id());
+  CHECK(value.evaluation_id() == evaluated.result.evaluation->evaluation_id());
+  CHECK(value.actionable());
+  CHECK(!value.hold());
+  CHECK(value.downstream_target_eligible());
+  CHECK(std::get<recommendation::ActionableRecommendation>(value.outcome())
+            .indicative_exposure_units == 500000);
+  CHECK(value.direction() == sdk::StrategyDirection::Positive);
+  CHECK(std::equal(value.factors().begin(), value.factors().end(),
+                   evaluated.result.evaluation->factors().begin(),
+                   evaluated.result.evaluation->factors().end()));
+}
+
+TEST_CASE("recommendation hold is explicit zero and stops before target") {
+  const auto evaluated = evaluate_reference(
+      reference_threshold(), {.bid_quantity = 5, .ask_quantity = 3});
+  CHECK(evaluated.result.completed());
+  const auto result = recommendation::RecommendationAuthority::recommend(
+      *evaluated.result.evaluation, recommendation_policy(300000));
+
+  CHECK(result.completed());
+  const auto &value = *result.recommendation;
+  CHECK(value.hold());
+  CHECK(!value.actionable());
+  CHECK(!value.downstream_target_eligible());
+  const auto &hold =
+      std::get<recommendation::HoldRecommendation>(value.outcome());
+  CHECK(hold.reason ==
+        recommendation::RecommendationHoldReason::BelowActionThreshold);
+  CHECK(hold.indicative_exposure_units == 0);
+  CHECK(std::equal(value.factors().begin(), value.factors().end(),
+                   evaluated.result.evaluation->factors().begin(),
+                   evaluated.result.evaluation->factors().end()));
+}
+
+TEST_CASE("recommendations reject abstentions and invalid policies") {
+  const auto abstained = evaluate_reference(
+      reference_threshold(), {.bid_quantity = 1, .ask_quantity = 1});
+  CHECK(abstained.result.completed());
+  const auto no_signal = recommendation::RecommendationAuthority::recommend(
+      *abstained.result.evaluation, recommendation_policy(300000));
+  CHECK(no_signal.failure ==
+        recommendation::RecommendationFailure::AbstainedEvaluation);
+  CHECK(!no_signal.recommendation);
+
+  const auto signaled = evaluate_reference(
+      reference_threshold(), {.bid_quantity = 3, .ask_quantity = 1});
+  auto invalid = recommendation_policy(0);
+  const auto rejected = recommendation::RecommendationAuthority::recommend(
+      *signaled.result.evaluation, invalid);
+  CHECK(rejected.failure ==
+        recommendation::RecommendationFailure::InvalidPolicy);
+  CHECK(!rejected.recommendation);
+
+  invalid = recommendation_policy(800000, 750000);
+  CHECK(recommendation::RecommendationAuthority::recommend(
+            *signaled.result.evaluation, invalid)
+            .failure == recommendation::RecommendationFailure::InvalidPolicy);
+
+  const auto alternate = recommendation_policy(400000);
+  CHECK(recommendation::RecommendationAuthority::recommend(
+            *signaled.result.evaluation, alternate)
+            .failure == recommendation::RecommendationFailure::InvalidPolicy);
 }

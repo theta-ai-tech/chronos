@@ -43,6 +43,14 @@ public:
   explanation_policy_version() const noexcept {
     return explanation_policy_version_;
   }
+  [[nodiscard]] contracts::VersionRef
+  recommendation_policy_version() const noexcept {
+    return recommendation_policy_version_;
+  }
+  [[nodiscard]] contracts::Sha256Digest
+  recommendation_policy_checksum() const noexcept {
+    return recommendation_policy_checksum_;
+  }
   [[nodiscard]] contracts::Sha256Digest definition_digest() const noexcept {
     return definition_digest_;
   }
@@ -83,6 +91,8 @@ private:
       contracts::VersionRef strategy_implementation_version,
       contracts::VersionRef arithmetic_version,
       contracts::VersionRef explanation_policy_version,
+      contracts::VersionRef recommendation_policy_version,
+      contracts::Sha256Digest recommendation_policy_checksum,
       contracts::Sha256Digest definition_digest,
       contracts::EventId activation_control_outcome_id,
       contracts::Sha256Digest activation_checksum,
@@ -98,6 +108,8 @@ private:
         strategy_implementation_version_(strategy_implementation_version),
         arithmetic_version_(arithmetic_version),
         explanation_policy_version_(explanation_policy_version),
+        recommendation_policy_version_(recommendation_policy_version),
+        recommendation_policy_checksum_(recommendation_policy_checksum),
         definition_digest_(definition_digest),
         activation_control_outcome_id_(activation_control_outcome_id),
         activation_checksum_(activation_checksum),
@@ -115,6 +127,8 @@ private:
   contracts::VersionRef strategy_implementation_version_;
   contracts::VersionRef arithmetic_version_;
   contracts::VersionRef explanation_policy_version_;
+  contracts::VersionRef recommendation_policy_version_;
+  contracts::Sha256Digest recommendation_policy_checksum_;
   contracts::Sha256Digest definition_digest_;
   contracts::EventId activation_control_outcome_id_;
   contracts::Sha256Digest activation_checksum_;

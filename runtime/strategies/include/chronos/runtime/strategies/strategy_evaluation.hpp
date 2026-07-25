@@ -85,6 +85,14 @@ public:
   [[nodiscard]] contracts::Sha256Digest activation_checksum() const noexcept {
     return activation_checksum_;
   }
+  [[nodiscard]] contracts::VersionRef
+  recommendation_policy_version() const noexcept {
+    return recommendation_policy_version_;
+  }
+  [[nodiscard]] contracts::Sha256Digest
+  recommendation_policy_checksum() const noexcept {
+    return recommendation_policy_checksum_;
+  }
   [[nodiscard]] std::uint64_t run_input_sequence() const noexcept {
     return run_input_sequence_;
   }
@@ -120,6 +128,8 @@ private:
       contracts::CanonicalInstrumentId canonical_instrument_id,
       contracts::Sha256Digest definition_digest,
       contracts::Sha256Digest activation_checksum,
+      contracts::VersionRef recommendation_policy_version,
+      contracts::Sha256Digest recommendation_policy_checksum,
       std::uint64_t run_input_sequence, std::int64_t logical_time_nanoseconds,
       std::vector<contracts::FeatureEvaluationId> feature_evaluation_ids,
       StrategyEvaluationTerminal terminal,
@@ -130,6 +140,8 @@ private:
         canonical_instrument_id_(canonical_instrument_id),
         definition_digest_(definition_digest),
         activation_checksum_(activation_checksum),
+        recommendation_policy_version_(recommendation_policy_version),
+        recommendation_policy_checksum_(recommendation_policy_checksum),
         run_input_sequence_(run_input_sequence),
         logical_time_nanoseconds_(logical_time_nanoseconds),
         feature_evaluation_ids_(std::move(feature_evaluation_ids)),
@@ -143,6 +155,8 @@ private:
   contracts::CanonicalInstrumentId canonical_instrument_id_;
   contracts::Sha256Digest definition_digest_;
   contracts::Sha256Digest activation_checksum_;
+  contracts::VersionRef recommendation_policy_version_;
+  contracts::Sha256Digest recommendation_policy_checksum_;
   std::uint64_t run_input_sequence_{};
   std::int64_t logical_time_nanoseconds_{};
   std::vector<contracts::FeatureEvaluationId> feature_evaluation_ids_;

@@ -60,6 +60,9 @@ canonical_activation_config(const StrategyRuntimeConfig &config) {
     canonical.append_integer(config.parameter->units);
     canonical.append_integer(config.parameter->scale.exponent());
   }
+  canonical.append_version(config.recommendation_policy.policy_version);
+  canonical.append_digest(
+      contracts::recommendation_policy_checksum(config.recommendation_policy));
   canonical.append_id(config.run_control_stream_id);
   canonical.append_integer(config.run_control_stream_epoch);
   canonical.append_id(config.run_timer_stream_id);
@@ -151,8 +154,13 @@ std::optional<StrategyRuntime> StrategyRuntime::activate(
     StrategyRuntimeConfig config,
     const core::dispatch::AcceptedControlOutcome &control) noexcept {
   const auto limits = config.definition.descriptor().resource_limits;
+  const auto signal_scale =
+      config.definition.descriptor().parameter_schema.front().scale;
   const auto &reservation = control.reservation();
-  if (!valid_parameter(config) || config.run_control_stream_epoch == 0 ||
+  if (!valid_parameter(config) ||
+      !contracts::valid_recommendation_policy(config.recommendation_policy) ||
+      config.recommendation_policy.scale != signal_scale ||
+      config.run_control_stream_epoch == 0 ||
       config.run_timer_stream_epoch == 0 || config.maximum_operations == 0 ||
       config.maximum_operations > limits.maximum_operations ||
       config.run_control_stream_id == config.run_timer_stream_id ||
@@ -228,6 +236,8 @@ StrategyRuntime::admit(const core::features::AcceptedFeatureEvaluationCut
       config_.canonical_instrument_id, descriptor.definition_version,
       descriptor.implementation_version, descriptor.arithmetic_version,
       descriptor.explanation_policy_version,
+      config_.recommendation_policy.policy_version,
+      contracts::recommendation_policy_checksum(config_.recommendation_policy),
       config_.definition.definition_digest(), reservation.control_outcome_id,
       activation_checksum_, first->run_control_cursor,
       first->selection_semantic_checksum, config_.maximum_operations,
