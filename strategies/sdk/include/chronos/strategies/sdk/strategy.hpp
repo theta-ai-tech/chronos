@@ -15,10 +15,15 @@ namespace chronos::strategies::sdk {
 inline constexpr std::size_t kThresholdProgramInstructions = 8;
 inline constexpr std::size_t kThresholdProgramFactors = 2;
 inline constexpr std::size_t kMaximumAcceptedFeatureEvaluations = 8;
+inline constexpr std::size_t kMaximumAcceptedLineageCursors = 16;
 inline constexpr std::size_t kInterpreterWorkingBytes = 128;
-inline constexpr std::uint64_t kAdmissionOperations = 8;
+inline constexpr std::uint64_t kAdmissionOperations =
+    kMaximumAcceptedFeatureEvaluations *
+    (kMaximumAcceptedLineageCursors + kMaximumAcceptedFeatureEvaluations + 1);
 inline constexpr std::uint64_t kMaximumEvaluationOperations =
     kAdmissionOperations + kThresholdProgramInstructions;
+inline constexpr std::int64_t kMaximumSignalHorizonNanoseconds =
+    86'400'000'000'000;
 
 enum class StrategyScope : std::uint8_t { SingleListing };
 

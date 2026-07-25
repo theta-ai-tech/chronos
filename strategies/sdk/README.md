@@ -11,15 +11,21 @@
 - **Accepted dependencies:** inherits `strategies/` rules (see parent README).
 
 The SDK is a capability boundary. `FeatureRuntime` issues an immutable
-`AcceptedFeatureEvaluationCut`; `StrategyHost` admits that authority token and
-evaluates a data-only, loop-free `StrategyProgram`. No strategy callback or
-function pointer runs during evaluation, so a definition cannot reach network,
-filesystem, host clocks, environment/secrets, persistence, telemetry, or other
-ambient process capabilities.
+`AcceptedFeatureEvaluationCut`; a configured `StrategyInvocationAuthority`
+matches it to one owned instance/parameter/timer/control/deadline context and
+issues an immutable `AcceptedStrategyInvocation`; `StrategyHost` accepts only
+that token and evaluates a data-only, loop-free `StrategyProgram`. No strategy
+callback or function pointer runs during evaluation, so a definition cannot
+reach network, filesystem, host clocks, environment/secrets, persistence,
+telemetry, or other ambient process capabilities.
 
-Admission copies a valid definition into fixed owning storage and rejects any
-shape except the V1 one-feature, one-parameter, eight-instruction threshold
-program. The host charges a fixed admission budget before bounded validation,
+Definition admission copies a valid definition into fixed owning storage and
+rejects any shape or semantic identity except the V1 single-listing,
+order-book-imbalance, one-feature, one-parameter, eight-instruction threshold
+program with distinct factors and a bounded horizon. Invocation admission owns
+the resolved parameter and validates the full bounded feature lineage, including
+the recorded timer cursor. The host charges a fixed admission budget before
+revalidating that token,
 then one deterministic fuel unit per instruction; rejects jumps and malformed
 opcodes or operands; checks the recorded logical deadline; clears only fixed
 workspace/output prefixes; and constructs bounded explanation/terminal output

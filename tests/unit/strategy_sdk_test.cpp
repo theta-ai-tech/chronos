@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 #include <utility>
 
 namespace {
@@ -173,6 +174,42 @@ TEST_CASE("strategy admission enforces one dependency and one parameter") {
   CHECK(!sdk::validate_descriptor(oversized_limit.descriptor));
 }
 
+TEST_CASE("strategy admission rejects false semantic identities") {
+  const auto valid = definition();
+
+  auto invalid_scope = valid;
+  invalid_scope.descriptor.scope = static_cast<sdk::StrategyScope>(255);
+  CHECK(!sdk::AcceptedStrategyDefinition::accept(invalid_scope));
+
+  auto wrong_family = valid;
+  wrong_family.descriptor.family = sdk::StrategyFamily::ShortHorizonMomentum;
+  CHECK(!sdk::AcceptedStrategyDefinition::accept(wrong_family));
+
+  std::array dependencies = {valid.descriptor.required_features[0]};
+  dependencies[0].kind = sdk::StrategyFeatureKind::Microprice;
+  auto wrong_dependency = valid;
+  wrong_dependency.descriptor.required_features = dependencies;
+  CHECK(!sdk::AcceptedStrategyDefinition::accept(wrong_dependency));
+
+  std::array duplicate_factors = {valid.program.factors[0],
+                                  valid.program.factors[1]};
+  duplicate_factors[1].factor_id = duplicate_factors[0].factor_id;
+  auto duplicate_factor_ids = valid;
+  duplicate_factor_ids.program.factors = duplicate_factors;
+  CHECK(!sdk::AcceptedStrategyDefinition::accept(duplicate_factor_ids));
+
+  auto excessive_horizon = valid;
+  excessive_horizon.program.signal_horizon_nanoseconds =
+      sdk::kMaximumSignalHorizonNanoseconds + 1;
+  CHECK(!sdk::AcceptedStrategyDefinition::accept(excessive_horizon));
+
+  auto invalid_parameter_scale = valid;
+  std::array parameters = {valid.descriptor.parameter_schema[0]};
+  parameters[0].scale = *contracts::DecimalScale::from_exponent(5);
+  invalid_parameter_scale.descriptor.parameter_schema = parameters;
+  CHECK(!sdk::AcceptedStrategyDefinition::accept(invalid_parameter_scale));
+}
+
 TEST_CASE("accepted strategy definitions own immutable fixed storage") {
   const auto valid = definition();
   std::array dependencies = {valid.descriptor.required_features[0]};
@@ -208,10 +245,13 @@ TEST_CASE("accepted strategy definitions own immutable fixed storage") {
 
 static_assert(noexcept(sdk::StrategyHost::evaluate(
     std::declval<const sdk::AcceptedStrategyDefinition &>(),
-    std::declval<const sdk::StrategyInvocationRequest &>(),
-    std::declval<sdk::DeterministicOperationBudget &>(),
+    std::declval<const sdk::AcceptedStrategyInvocation &>(),
     std::declval<std::span<std::byte>>(),
     std::declval<std::span<std::optional<sdk::ExplanationFactor>>>())));
+
+static_assert(!std::is_aggregate_v<sdk::AcceptedStrategyInvocation>);
+static_assert(
+    !std::is_default_constructible_v<sdk::AcceptedStrategyInvocation>);
 
 TEST_CASE("deterministic interpreter fuel is exact and overflow safe") {
   sdk::DeterministicOperationBudget budget(5);

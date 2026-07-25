@@ -16,6 +16,57 @@ struct InterpreterState final {
 
 static_assert(sizeof(InterpreterState) <= kInterpreterWorkingBytes);
 
+struct InvocationView final {
+  contracts::RunId run_id;
+  contracts::ListingId listing_id;
+  contracts::CanonicalInstrumentId canonical_instrument_id;
+  contracts::VersionRef strategy_definition_version;
+  contracts::VersionRef strategy_implementation_version;
+  contracts::VersionRef arithmetic_version;
+  contracts::VersionRef explanation_policy_version;
+  std::uint64_t maximum_operations{};
+  const core::features::AcceptedFeatureEvaluationCut &feature_cut;
+  std::span<const StrategyParameter> parameters;
+  const LogicalCut &cut;
+};
+
+InvocationView
+view(const StrategyInvocationAuthorityConfig &config,
+     const core::features::AcceptedFeatureEvaluationCut &feature_cut) noexcept {
+  return {
+      .run_id = config.run_id,
+      .listing_id = config.listing_id,
+      .canonical_instrument_id = config.canonical_instrument_id,
+      .strategy_definition_version = config.strategy_definition_version,
+      .strategy_implementation_version = config.strategy_implementation_version,
+      .arithmetic_version = config.arithmetic_version,
+      .explanation_policy_version = config.explanation_policy_version,
+      .maximum_operations = config.maximum_operations,
+      .feature_cut = feature_cut,
+      .parameters = config.parameter ? std::span<const StrategyParameter>(
+                                           &*config.parameter, 1)
+                                     : std::span<const StrategyParameter>{},
+      .cut = config.cut,
+  };
+}
+
+InvocationView view(const AcceptedStrategyInvocation &invocation) noexcept {
+  return {
+      .run_id = invocation.run_id(),
+      .listing_id = invocation.listing_id(),
+      .canonical_instrument_id = invocation.canonical_instrument_id(),
+      .strategy_definition_version = invocation.strategy_definition_version(),
+      .strategy_implementation_version =
+          invocation.strategy_implementation_version(),
+      .arithmetic_version = invocation.arithmetic_version(),
+      .explanation_policy_version = invocation.explanation_policy_version(),
+      .maximum_operations = invocation.maximum_operations(),
+      .feature_cut = invocation.feature_cut(),
+      .parameters = invocation.parameters(),
+      .cut = invocation.cut(),
+  };
+}
+
 std::optional<StrategyFeatureKind>
 map_kind(core::features::FeatureKind kind) noexcept {
   using Source = core::features::FeatureKind;
@@ -46,28 +97,39 @@ provenance(const core::features::FeatureEvaluation &evaluation) noexcept {
 }
 
 bool matches_cut(const core::features::FeatureProvenance &value,
-                 const StrategyInvocationRequest &request) noexcept {
-  return value.run_id == request.run_id &&
-         value.listing_id == request.listing_id &&
-         value.canonical_instrument_id == request.canonical_instrument_id &&
-         value.run_input_sequence == request.cut.run_input_sequence &&
+                 const InvocationView &invocation) noexcept {
+  const auto cursors = value.lineage.cursors();
+  if (cursors.size() > kMaximumAcceptedLineageCursors ||
+      std::find(cursors.begin(), cursors.end(),
+                invocation.cut.run_timer_cursor) == cursors.end())
+    return false;
+  return value.lineage.run_id() == value.run_id &&
+         value.lineage.run_input_sequence() == value.run_input_sequence &&
+         value.run_id == invocation.run_id &&
+         value.listing_id == invocation.listing_id &&
+         value.canonical_instrument_id == invocation.canonical_instrument_id &&
+         value.run_input_sequence == invocation.cut.run_input_sequence &&
          value.logical_time_nanoseconds ==
-             request.cut.logical_time_nanoseconds &&
-         value.configuration_epoch == request.cut.configuration_epoch &&
+             invocation.cut.logical_time_nanoseconds &&
+         value.configuration_epoch == invocation.cut.configuration_epoch &&
          value.effective_control_position ==
-             request.cut.effective_control_position;
+             invocation.cut.effective_control_position;
 }
 
-bool validate_feature_cut(const StrategyInvocationRequest &request) noexcept {
-  const auto &accepted = request.feature_cut.evaluations();
+bool validate_feature_cut(const InvocationView &invocation) noexcept {
+  const auto &accepted = invocation.feature_cut.evaluations();
   if (accepted.empty() || accepted.size() > kMaximumAcceptedFeatureEvaluations)
     return false;
+  const core::features::FeatureProvenance *first_provenance{};
   for (auto current = accepted.begin(); current != accepted.end(); ++current) {
     const auto kind = map_kind(current->kind);
     const auto *source_provenance = provenance(*current);
     if (!kind || !source_provenance ||
-        !matches_cut(*source_provenance, request))
+        !matches_cut(*source_provenance, invocation) ||
+        (first_provenance &&
+         source_provenance->lineage != first_provenance->lineage))
       return false;
+    first_provenance = source_provenance;
     if (std::count_if(accepted.begin(), accepted.end(), [&](const auto &other) {
           return map_kind(other.kind) == kind;
         }) != 1)
@@ -81,10 +143,23 @@ bool validate_parameters(
   return parameters.size() <= 1;
 }
 
+bool matches_definition(const StrategyDescriptor &descriptor,
+                        const InvocationView &invocation) noexcept {
+  return invocation.strategy_definition_version ==
+             descriptor.definition_version &&
+         invocation.strategy_implementation_version ==
+             descriptor.implementation_version &&
+         invocation.arithmetic_version == descriptor.arithmetic_version &&
+         invocation.explanation_policy_version ==
+             descriptor.explanation_policy_version &&
+         invocation.maximum_operations <=
+             descriptor.resource_limits.maximum_operations;
+}
+
 const core::features::FeatureEvaluation *
-find_feature(const StrategyInvocationRequest &request,
+find_feature(const InvocationView &invocation,
              StrategyFeatureKind kind) noexcept {
-  const auto &accepted = request.feature_cut.evaluations();
+  const auto &accepted = invocation.feature_cut.evaluations();
   const auto found = std::find_if(
       accepted.begin(), accepted.end(),
       [&](const auto &candidate) { return map_kind(candidate.kind) == kind; });
@@ -92,14 +167,14 @@ find_feature(const StrategyInvocationRequest &request,
 }
 
 const StrategyParameter *
-find_parameter(const StrategyInvocationRequest &request,
+find_parameter(const InvocationView &invocation,
                const StrategyParameterSchema &schema) noexcept {
   const auto found =
-      std::find_if(request.parameters.begin(), request.parameters.end(),
+      std::find_if(invocation.parameters.begin(), invocation.parameters.end(),
                    [&](const auto &candidate) {
                      return candidate.parameter_id == schema.parameter_id;
                    });
-  return found == request.parameters.end() ? nullptr : &*found;
+  return found == invocation.parameters.end() ? nullptr : &*found;
 }
 
 void clear_factors(
@@ -174,22 +249,35 @@ StrategyHostResult complete_abstention(
 
 } // namespace
 
+std::optional<AcceptedStrategyInvocation> StrategyInvocationAuthority::accept(
+    const AcceptedStrategyDefinition &definition,
+    const core::features::AcceptedFeatureEvaluationCut &feature_cut)
+    const noexcept {
+  const auto invocation = view(config_, feature_cut);
+  if (!matches_definition(definition.descriptor(), invocation) ||
+      !validate_feature_cut(invocation))
+    return std::nullopt;
+  return AcceptedStrategyInvocation(config_, feature_cut);
+}
+
 StrategyHostResult StrategyHost::evaluate(
     const AcceptedStrategyDefinition &definition,
-    const StrategyInvocationRequest &request,
-    DeterministicOperationBudget &budget,
+    const AcceptedStrategyInvocation &accepted_invocation,
     std::span<std::byte> workspace_storage,
     std::span<std::optional<ExplanationFactor>> factor_storage) noexcept {
   const auto descriptor = definition.descriptor();
   const auto program = definition.program();
+  const auto invocation = view(accepted_invocation);
+  DeterministicOperationBudget budget(invocation.maximum_operations);
   auto bounded_factors = factor_storage.first(
       std::min(factor_storage.size(), kThresholdProgramFactors));
   clear_factors(bounded_factors);
 
-  if (request.feature_cut.evaluations().empty() ||
-      request.feature_cut.evaluations().size() >
+  if (!matches_definition(descriptor, invocation) ||
+      invocation.feature_cut.evaluations().empty() ||
+      invocation.feature_cut.evaluations().size() >
           kMaximumAcceptedFeatureEvaluations ||
-      request.parameters.size() > 1)
+      invocation.parameters.size() > 1)
     return failure(StrategyExecutionStatus::ContractViolation, budget,
                    bounded_factors);
   if (workspace_storage.size() < kInterpreterWorkingBytes)
@@ -201,11 +289,11 @@ StrategyHostResult StrategyHost::evaluate(
   if (!budget.consume(kAdmissionOperations))
     return failure(StrategyExecutionStatus::DeterministicBudgetExhausted,
                    budget, bounded_factors);
-  if (!validate_feature_cut(request) ||
-      !validate_parameters(request.parameters))
+  if (!validate_feature_cut(invocation) ||
+      !validate_parameters(invocation.parameters))
     return failure(StrategyExecutionStatus::ContractViolation, budget,
                    bounded_factors);
-  if (logical_deadline_exceeded(request.cut))
+  if (logical_deadline_exceeded(invocation.cut))
     return failure(StrategyExecutionStatus::LogicalDeadlineExceeded, budget,
                    bounded_factors);
 
@@ -222,7 +310,7 @@ StrategyHostResult StrategyHost::evaluate(
     case StrategyOpcode::LoadFeature: {
       const auto &dependency =
           descriptor.required_features[instruction.operand];
-      state.feature = find_feature(request, dependency.kind);
+      state.feature = find_feature(invocation, dependency.kind);
       if (!state.feature)
         return complete_abstention(
             definition, StrategyAbstentionReason::MissingDeclaredFeature, state,
@@ -252,7 +340,7 @@ StrategyHostResult StrategyHost::evaluate(
     }
     case StrategyOpcode::LoadParameter: {
       const auto &schema = descriptor.parameter_schema[instruction.operand];
-      state.parameter = find_parameter(request, schema);
+      state.parameter = find_parameter(invocation, schema);
       if (!state.parameter)
         return complete_abstention(definition,
                                    StrategyAbstentionReason::MissingParameter,

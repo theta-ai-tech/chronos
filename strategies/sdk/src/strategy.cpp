@@ -11,8 +11,13 @@ bool DeterministicOperationBudget::consume(std::uint64_t operations) noexcept {
 
 bool validate_descriptor(const StrategyDescriptor &descriptor) noexcept {
   const auto &limits = descriptor.resource_limits;
-  return descriptor.required_features.size() == 1 &&
+  return descriptor.scope == StrategyScope::SingleListing &&
+         descriptor.family == StrategyFamily::OrderBookImbalance &&
+         descriptor.required_features.size() == 1 &&
+         descriptor.required_features[0].kind ==
+             StrategyFeatureKind::OrderBookImbalance &&
          descriptor.parameter_schema.size() == 1 &&
+         descriptor.parameter_schema[0].scale.denominator() == 1'000'000 &&
          limits.maximum_operations == kMaximumEvaluationOperations &&
          limits.maximum_features == 1 && limits.maximum_parameters == 1 &&
          limits.maximum_explanation_factors == kThresholdProgramFactors &&
@@ -23,6 +28,8 @@ bool validate_definition(const StrategyDefinition &definition) noexcept {
   if (definition.program.instructions.size() != kThresholdProgramInstructions ||
       definition.program.factors.size() != kThresholdProgramFactors ||
       definition.program.signal_horizon_nanoseconds <= 0 ||
+      definition.program.signal_horizon_nanoseconds >
+          kMaximumSignalHorizonNanoseconds ||
       !validate_descriptor(definition.descriptor))
     return false;
 
@@ -45,7 +52,9 @@ bool validate_definition(const StrategyDefinition &definition) noexcept {
       return false;
   }
 
-  return definition.program.factors[0].source == ExplanationSource::Feature &&
+  return definition.program.factors[0].factor_id !=
+             definition.program.factors[1].factor_id &&
+         definition.program.factors[0].source == ExplanationSource::Feature &&
          definition.program.factors[1].source ==
              ExplanationSource::StrategyParameter;
 }
