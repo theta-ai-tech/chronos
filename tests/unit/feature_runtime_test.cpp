@@ -1782,3 +1782,112 @@ TEST_CASE("recommendations reject abstentions and invalid policies") {
             *signaled.result.evaluation, alternate)
             .failure == recommendation::RecommendationFailure::InvalidPolicy);
 }
+
+TEST_CASE("M5 invariants preserve terminal and recommendation cardinality") {
+  const auto policy = recommendation_policy(300000);
+  std::size_t signal_count{};
+  std::size_t abstention_count{};
+  std::size_t actionable_count{};
+  std::size_t hold_count{};
+  for (contracts::AmountUnits bid = 1; bid <= 8; ++bid) {
+    for (contracts::AmountUnits ask = 1; ask <= 8; ++ask) {
+      const auto evaluated = evaluate_reference(
+          reference_threshold(), {.bid_quantity = bid, .ask_quantity = ask});
+      CHECK(evaluated.result.completed());
+      const auto &value = *evaluated.result.evaluation;
+      CHECK(value.signal_emitted() != value.abstained());
+
+      const auto recommended =
+          recommendation::RecommendationAuthority::recommend(value, policy);
+      if (value.signal_emitted()) {
+        ++signal_count;
+        const auto &signal =
+            std::get<strategy_runtime::StrategySignal>(value.terminal());
+        CHECK(signal.evaluation_id() == value.evaluation_id());
+        CHECK(signal.draft().strength.units > 0);
+        CHECK(signal.draft().horizon_nanoseconds > 0);
+        CHECK(!value.feature_evaluation_ids().empty());
+        CHECK(!value.factors().empty());
+        for (std::size_t index = 0; index < value.factors().size(); ++index)
+          CHECK(value.factors()[index].rank ==
+                static_cast<std::uint32_t>(index + 1));
+
+        CHECK(recommended.completed());
+        CHECK(recommended.recommendation->signal_id() == signal.signal_id());
+        CHECK(recommended.recommendation->actionable() !=
+              recommended.recommendation->hold());
+        if (recommended.recommendation->actionable()) {
+          ++actionable_count;
+          CHECK(std::get<recommendation::ActionableRecommendation>(
+                    recommended.recommendation->outcome())
+                    .indicative_exposure_units > 0);
+          CHECK(recommended.recommendation->downstream_target_eligible());
+        } else {
+          ++hold_count;
+          const auto &hold = std::get<recommendation::HoldRecommendation>(
+              recommended.recommendation->outcome());
+          CHECK(hold.indicative_exposure_units == 0);
+          CHECK(hold.reason ==
+                recommendation::RecommendationHoldReason::BelowActionThreshold);
+          CHECK(!recommended.recommendation->downstream_target_eligible());
+        }
+      } else {
+        ++abstention_count;
+        CHECK(recommended.failure ==
+              recommendation::RecommendationFailure::AbstainedEvaluation);
+        CHECK(!recommended.recommendation);
+      }
+    }
+  }
+  CHECK(signal_count > 0);
+  CHECK(abstention_count > 0);
+  CHECK(actionable_count > 0);
+  CHECK(hold_count > 0);
+}
+
+TEST_CASE("M5 invalid and non-consumable features terminate at abstention") {
+  auto config = reference_strategy_config(reference_threshold());
+  auto incompatible_feature_config = reference_runtime_config();
+  incompatible_feature_config.imbalance_definition_version = version(201);
+  const auto incompatible = accepted_features_for_strategy(
+      config, {}, false, &incompatible_feature_config);
+  const auto runtime = activate_runtime(config);
+  const auto invocation = runtime->admit(*incompatible.accepted_cut());
+  CHECK(invocation.has_value());
+  const auto evaluated =
+      strategy_runtime::StrategyEvaluationAuthority::evaluate(config.definition,
+                                                              *invocation);
+  CHECK(evaluated.completed());
+  CHECK(evaluated.evaluation->abstained());
+  CHECK(std::get<strategy_runtime::StrategyAbstention>(
+            evaluated.evaluation->terminal())
+            .reason == sdk::StrategyAbstentionReason::IncompatibleFeature);
+  const auto recommended = recommendation::RecommendationAuthority::recommend(
+      *evaluated.evaluation, recommendation_policy(300000));
+  CHECK(recommended.failure ==
+        recommendation::RecommendationFailure::AbstainedEvaluation);
+  CHECK(!recommended.recommendation);
+
+  const features::FeatureRuntime feature_runtime(reference_runtime_config());
+  auto stale_publisher = publish_quality_state(
+      market::ListingQualityInputKind::LogicalTimerAdvanced,
+      "run.timer.logical.advanced", 111, &config);
+  auto gapped_publisher =
+      publish_quality_state(market::ListingQualityInputKind::BookGapDetected,
+                            "market.book.quality.gap_detected", 101, &config);
+  const std::array non_consumable = {
+      feature_runtime.evaluate(*stale_publisher.accepted_feature_cut()),
+      feature_runtime.evaluate(*gapped_publisher.accepted_feature_cut()),
+  };
+  for (const auto &features : non_consumable) {
+    const auto admitted = runtime->admit(*features.accepted_cut());
+    CHECK(admitted.has_value());
+    const auto result = strategy_runtime::StrategyEvaluationAuthority::evaluate(
+        config.definition, *admitted);
+    CHECK(result.completed());
+    CHECK(result.evaluation->abstained());
+    CHECK(!recommendation::RecommendationAuthority::recommend(
+               *result.evaluation, recommendation_policy(300000))
+               .recommendation);
+  }
+}

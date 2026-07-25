@@ -1,6 +1,6 @@
 # tests/contract/
 
-> **Submodule owner stub (M0.1).** Scaffold only — no logic yet.
+> **Submodule owner stub (M0.1).** Implemented beginning in M5.6.
 
 - **Parent:** `tests/`
 - **Owner:** Inherits `tests/` ownership.

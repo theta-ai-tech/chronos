@@ -1,5 +1,6 @@
 # tests/ — C++ test targets (M0.2 adds the first unit-test executable).
 add_executable(chronos_unit_tests
+  contract/strategy_invariants_test.cpp
   unit/adapter_sdk_test.cpp
   unit/bybit_websocket_test.cpp
   unit/source_capture_test.cpp
