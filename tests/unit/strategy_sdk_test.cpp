@@ -1,4 +1,4 @@
-#include "chronos/strategies/sdk/strategy.hpp"
+#include "chronos/strategies/sdk/strategy_host.hpp"
 
 #include "microtest.hpp"
 
@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <utility>
 
 namespace {
 namespace contracts = chronos::contracts;
@@ -78,7 +79,7 @@ sdk::StrategyDefinition definition() {
               .explanation_policy_version = version(26),
               .resource_limits =
                   {
-                      .maximum_operations = instructions.size(),
+                      .maximum_operations = sdk::kMaximumEvaluationOperations,
                       .maximum_features = 1,
                       .maximum_parameters = 1,
                       .maximum_explanation_factors = factors.size(),
@@ -100,6 +101,7 @@ TEST_CASE("strategy definitions pin one bounded loop-free program") {
   const auto valid = definition();
   CHECK(sdk::validate_descriptor(valid.descriptor));
   CHECK(sdk::validate_definition(valid));
+  CHECK(sdk::AcceptedStrategyDefinition::accept(valid).has_value());
 
   auto no_fuel = valid;
   no_fuel.descriptor.resource_limits.maximum_operations = 0;
@@ -124,7 +126,92 @@ TEST_CASE("strategy definitions pin one bounded loop-free program") {
   changed_factors[0].source = sdk::ExplanationSource::StrategyParameter;
   invalid_factor.program.factors = changed_factors;
   CHECK(!sdk::validate_definition(invalid_factor));
+
+  auto malformed_operand = valid;
+  std::array<sdk::StrategyInstruction, sdk::kThresholdProgramInstructions>
+      malformed_operand_instructions;
+  std::copy(valid.program.instructions.begin(),
+            valid.program.instructions.end(),
+            malformed_operand_instructions.begin());
+  malformed_operand_instructions[0].operand = 1;
+  malformed_operand.program.instructions = malformed_operand_instructions;
+  CHECK(!sdk::AcceptedStrategyDefinition::accept(malformed_operand));
+
+  auto malformed_opcode = valid;
+  std::array<sdk::StrategyInstruction, sdk::kThresholdProgramInstructions>
+      malformed_opcode_instructions;
+  std::copy(valid.program.instructions.begin(),
+            valid.program.instructions.end(),
+            malformed_opcode_instructions.begin());
+  malformed_opcode_instructions[3].opcode =
+      static_cast<sdk::StrategyOpcode>(255);
+  malformed_opcode.program.instructions = malformed_opcode_instructions;
+  CHECK(!sdk::AcceptedStrategyDefinition::accept(malformed_opcode));
 }
+
+TEST_CASE("strategy admission enforces one dependency and one parameter") {
+  const auto valid = definition();
+  const std::array dependencies = {valid.descriptor.required_features[0],
+                                   valid.descriptor.required_features[0]};
+  auto extra_dependency = valid;
+  extra_dependency.descriptor.required_features = dependencies;
+  extra_dependency.descriptor.resource_limits.maximum_features = 2;
+  CHECK(!sdk::validate_descriptor(extra_dependency.descriptor));
+  CHECK(!sdk::AcceptedStrategyDefinition::accept(extra_dependency));
+
+  const std::array parameters = {valid.descriptor.parameter_schema[0],
+                                 valid.descriptor.parameter_schema[0]};
+  auto extra_parameter = valid;
+  extra_parameter.descriptor.parameter_schema = parameters;
+  extra_parameter.descriptor.resource_limits.maximum_parameters = 2;
+  CHECK(!sdk::validate_descriptor(extra_parameter.descriptor));
+  CHECK(!sdk::AcceptedStrategyDefinition::accept(extra_parameter));
+
+  auto oversized_limit = valid;
+  oversized_limit.descriptor.resource_limits.maximum_working_bytes =
+      sdk::kInterpreterWorkingBytes + 1;
+  CHECK(!sdk::validate_descriptor(oversized_limit.descriptor));
+}
+
+TEST_CASE("accepted strategy definitions own immutable fixed storage") {
+  const auto valid = definition();
+  std::array dependencies = {valid.descriptor.required_features[0]};
+  std::array parameters = {valid.descriptor.parameter_schema[0]};
+  std::array<sdk::StrategyInstruction, sdk::kThresholdProgramInstructions>
+      instructions;
+  std::copy(valid.program.instructions.begin(),
+            valid.program.instructions.end(), instructions.begin());
+  std::array factors = {valid.program.factors[0], valid.program.factors[1]};
+
+  auto candidate = valid;
+  candidate.descriptor.required_features = dependencies;
+  candidate.descriptor.parameter_schema = parameters;
+  candidate.program.instructions = instructions;
+  candidate.program.factors = factors;
+  const auto accepted = sdk::AcceptedStrategyDefinition::accept(candidate);
+  CHECK(accepted.has_value());
+
+  const auto accepted_dependency = accepted->descriptor().required_features[0];
+  const auto accepted_parameter = accepted->descriptor().parameter_schema[0];
+  const auto accepted_instruction = accepted->program().instructions[0];
+  const auto accepted_factor = accepted->program().factors[0];
+  dependencies[0].definition_version = version(70);
+  parameters[0].definition_version = version(71);
+  instructions[0].operand = 1;
+  factors[0].source = sdk::ExplanationSource::DiagnosticStatus;
+
+  CHECK(accepted->descriptor().required_features[0] == accepted_dependency);
+  CHECK(accepted->descriptor().parameter_schema[0] == accepted_parameter);
+  CHECK(accepted->program().instructions[0] == accepted_instruction);
+  CHECK(accepted->program().factors[0] == accepted_factor);
+}
+
+static_assert(noexcept(sdk::StrategyHost::evaluate(
+    std::declval<const sdk::AcceptedStrategyDefinition &>(),
+    std::declval<const sdk::StrategyInvocationRequest &>(),
+    std::declval<sdk::DeterministicOperationBudget &>(),
+    std::declval<std::span<std::byte>>(),
+    std::declval<std::span<std::optional<sdk::ExplanationFactor>>>())));
 
 TEST_CASE("deterministic interpreter fuel is exact and overflow safe") {
   sdk::DeterministicOperationBudget budget(5);

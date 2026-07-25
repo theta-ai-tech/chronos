@@ -395,7 +395,7 @@ sdk::StrategyDefinition host_definition() {
               .explanation_policy_version = version(92),
               .resource_limits =
                   {
-                      .maximum_operations = instructions.size(),
+                      .maximum_operations = sdk::kMaximumEvaluationOperations,
                       .maximum_features = 1,
                       .maximum_parameters = 1,
                       .maximum_explanation_factors = factors.size(),
@@ -448,6 +448,14 @@ host_request(const features::AcceptedFeatureEvaluationCut &accepted,
               .logical_deadline_nanoseconds = deadline,
           },
   };
+}
+
+sdk::AcceptedStrategyDefinition accepted_host_definition() {
+  const auto accepted =
+      sdk::AcceptedStrategyDefinition::accept(host_definition());
+  if (!accepted)
+    std::abort();
+  return *accepted;
 }
 
 market::ListingViewPublisher
@@ -787,62 +795,70 @@ TEST_CASE("strategy host admits only authority-issued immutable feature cuts") {
   CHECK(result.ok());
   CHECK(result.accepted_cut() != nullptr);
 
-  const auto definition = host_definition();
+  const auto definition = accepted_host_definition();
   auto request = host_request(*result.accepted_cut());
-  sdk::DeterministicOperationBudget budget(8);
-  std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;
+  sdk::DeterministicOperationBudget budget(sdk::kMaximumEvaluationOperations);
+  std::array<std::byte, sdk::kInterpreterWorkingBytes + 4> workspace;
   workspace.fill(std::byte{0x7f});
   std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
   const auto host_result = sdk::StrategyHost::evaluate(
       definition, request, budget, workspace, factors);
 
   CHECK(host_result.completed());
-  CHECK(host_result.charged_operations == 8);
+  CHECK(host_result.charged_operations == sdk::kMaximumEvaluationOperations);
   CHECK(host_result.factor_count == 2);
   CHECK(std::holds_alternative<sdk::SignalDraft>(*host_result.terminal));
   CHECK(factors[0]->causal_feature_evaluation_id ==
         evaluation(result, features::FeatureKind::OrderBookImbalance)
             .evaluation_id);
   CHECK(!factors[1]->causal_feature_evaluation_id);
-  CHECK(std::all_of(workspace.begin(), workspace.end(),
+  CHECK(std::all_of(workspace.begin(),
+                    workspace.begin() + sdk::kInterpreterWorkingBytes,
                     [](auto byte) { return byte == std::byte{}; }));
+  CHECK(std::all_of(workspace.begin() + sdk::kInterpreterWorkingBytes,
+                    workspace.end(),
+                    [](auto byte) { return byte == std::byte{0x7f}; }));
 }
 
 TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
   auto publisher = publish_initial();
   const features::FeatureRuntime runtime(runtime_config());
   const auto result = runtime.evaluate(*publisher.accepted_feature_cut());
-  const auto definition = host_definition();
+  const auto definition = accepted_host_definition();
   std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;
   std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
 
   auto request = host_request(*result.accepted_cut());
-  sdk::DeterministicOperationBudget no_fuel(4);
+  sdk::DeterministicOperationBudget no_fuel(12);
   CHECK(sdk::StrategyHost::evaluate(definition, request, no_fuel, workspace,
                                     factors)
             .status ==
         sdk::StrategyExecutionStatus::DeterministicBudgetExhausted);
-  CHECK(no_fuel.consumed_operations() == 4);
+  CHECK(no_fuel.consumed_operations() == 12);
   CHECK(std::none_of(factors.begin(), factors.end(),
                      [](const auto &factor) { return factor.has_value(); }));
 
   auto wrong_authority = request;
   wrong_authority.run_id = id<contracts::RunId>(96);
-  sdk::DeterministicOperationBudget wrong_authority_budget(8);
+  sdk::DeterministicOperationBudget wrong_authority_budget(
+      sdk::kMaximumEvaluationOperations);
   CHECK(sdk::StrategyHost::evaluate(definition, wrong_authority,
                                     wrong_authority_budget, workspace, factors)
             .status == sdk::StrategyExecutionStatus::ContractViolation);
-  CHECK(wrong_authority_budget.consumed_operations() == 0);
+  CHECK(wrong_authority_budget.consumed_operations() ==
+        sdk::kAdmissionOperations);
 
   auto late_request = host_request(*result.accepted_cut(),
                                    request.cut.logical_time_nanoseconds - 1);
-  sdk::DeterministicOperationBudget late_budget(8);
+  sdk::DeterministicOperationBudget late_budget(
+      sdk::kMaximumEvaluationOperations);
   CHECK(sdk::StrategyHost::evaluate(definition, late_request, late_budget,
                                     workspace, factors)
             .status == sdk::StrategyExecutionStatus::LogicalDeadlineExceeded);
-  CHECK(late_budget.consumed_operations() == 0);
+  CHECK(late_budget.consumed_operations() == sdk::kAdmissionOperations);
 
-  sdk::DeterministicOperationBudget short_workspace_budget(8);
+  sdk::DeterministicOperationBudget short_workspace_budget(
+      sdk::kMaximumEvaluationOperations);
   CHECK(sdk::StrategyHost::evaluate(definition, request, short_workspace_budget,
                                     std::span<std::byte>(workspace).first(
                                         sdk::kInterpreterWorkingBytes - 1),
@@ -850,12 +866,42 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
             .status == sdk::StrategyExecutionStatus::InsufficientWorkspace);
   CHECK(short_workspace_budget.consumed_operations() == 0);
 
-  sdk::DeterministicOperationBudget no_output_budget(8);
+  sdk::DeterministicOperationBudget no_output_budget(
+      sdk::kMaximumEvaluationOperations);
   CHECK(sdk::StrategyHost::evaluate(
             definition, request, no_output_budget, workspace,
             std::span<std::optional<sdk::ExplanationFactor>>{})
             .status == sdk::StrategyExecutionStatus::OutputCapacityExceeded);
   CHECK(no_output_budget.consumed_operations() == 0);
+
+  const std::array duplicate_parameters = {threshold_parameters()[0],
+                                           threshold_parameters()[0]};
+  auto oversized_request = request;
+  oversized_request.parameters = duplicate_parameters;
+  sdk::DeterministicOperationBudget oversized_budget(
+      sdk::kMaximumEvaluationOperations);
+  CHECK(sdk::StrategyHost::evaluate(definition, oversized_request,
+                                    oversized_budget, workspace, factors)
+            .status == sdk::StrategyExecutionStatus::ContractViolation);
+  CHECK(oversized_budget.consumed_operations() == 0);
+
+  std::array<std::optional<sdk::ExplanationFactor>, 4> oversized_factors;
+  sdk::DeterministicOperationBudget seed_budget(
+      sdk::kMaximumEvaluationOperations);
+  CHECK(sdk::StrategyHost::evaluate(definition, request, seed_budget, workspace,
+                                    oversized_factors)
+            .completed());
+  oversized_factors[2] = oversized_factors[0];
+  oversized_factors[3] = oversized_factors[1];
+  sdk::DeterministicOperationBudget empty_budget(0);
+  CHECK(sdk::StrategyHost::evaluate(definition, request, empty_budget,
+                                    workspace, oversized_factors)
+            .status ==
+        sdk::StrategyExecutionStatus::DeterministicBudgetExhausted);
+  CHECK(!oversized_factors[0]);
+  CHECK(!oversized_factors[1]);
+  CHECK(oversized_factors[2]);
+  CHECK(oversized_factors[3]);
 }
 
 TEST_CASE("strategy host emits typed abstentions without native callbacks") {
@@ -866,13 +912,88 @@ TEST_CASE("strategy host emits typed abstentions without native callbacks") {
   request.parameters = {};
   std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;
   std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
-  sdk::DeterministicOperationBudget budget(8);
-  const auto missing = sdk::StrategyHost::evaluate(host_definition(), request,
-                                                   budget, workspace, factors);
+  sdk::DeterministicOperationBudget budget(sdk::kMaximumEvaluationOperations);
+  const auto missing = sdk::StrategyHost::evaluate(
+      accepted_host_definition(), request, budget, workspace, factors);
   CHECK(missing.completed());
-  CHECK(budget.consumed_operations() == 3);
+  CHECK(budget.consumed_operations() == sdk::kAdmissionOperations + 3);
   CHECK(std::get<sdk::AbstentionDraft>(*missing.terminal).reason ==
         sdk::StrategyAbstentionReason::MissingParameter);
   CHECK(missing.factor_count == 1);
   CHECK(!factors[0]->causal_feature_evaluation_id);
+}
+
+TEST_CASE(
+    "strategy host turns stale and gapped feature cuts into abstentions") {
+  const features::FeatureRuntime runtime(runtime_config());
+  auto stale_publisher = publish_quality_state(
+      market::ListingQualityInputKind::LogicalTimerAdvanced,
+      "run.timer.logical.advanced", 111);
+  auto gapped_publisher =
+      publish_quality_state(market::ListingQualityInputKind::BookGapDetected,
+                            "market.book.quality.gap_detected", 101);
+  const std::array results = {
+      runtime.evaluate(*stale_publisher.accepted_feature_cut()),
+      runtime.evaluate(*gapped_publisher.accepted_feature_cut()),
+  };
+  const auto definition = accepted_host_definition();
+
+  for (const auto &result : results) {
+    CHECK(result.ok());
+    auto request = host_request(*result.accepted_cut());
+    sdk::DeterministicOperationBudget budget(sdk::kMaximumEvaluationOperations);
+    std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;
+    std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
+    const auto host_result = sdk::StrategyHost::evaluate(
+        definition, request, budget, workspace, factors);
+    CHECK(host_result.completed());
+    CHECK(std::get<sdk::AbstentionDraft>(*host_result.terminal).reason ==
+          sdk::StrategyAbstentionReason::NonValidFeature);
+    CHECK(host_result.factor_count == 1);
+    CHECK(factors[0]->causal_feature_evaluation_id ==
+          evaluation(result, features::FeatureKind::OrderBookImbalance)
+              .evaluation_id);
+    CHECK(budget.consumed_operations() == sdk::kAdmissionOperations + 2);
+  }
+}
+
+TEST_CASE("strategy host preserves exact threshold and ratio boundaries") {
+  const features::FeatureRuntime runtime(runtime_config());
+  const auto definition = accepted_host_definition();
+  struct Case final {
+    TopSpec top;
+    sdk::StrategyDirection direction;
+    contracts::AmountUnits expected_strength;
+  };
+  const std::array cases = {
+      Case{.top = {.bid_quantity = 5, .ask_quantity = 3},
+           .direction = sdk::StrategyDirection::Positive,
+           .expected_strength = 250000},
+      Case{.top = {.bid_quantity = 3, .ask_quantity = 5},
+           .direction = sdk::StrategyDirection::Negative,
+           .expected_strength = 250000},
+      Case{.top = {.bid_quantity = 1'000'000'000'000, .ask_quantity = 1},
+           .direction = sdk::StrategyDirection::Positive,
+           .expected_strength = 1'000'000},
+      Case{.top = {.bid_quantity = 1, .ask_quantity = 1'000'000'000'000},
+           .direction = sdk::StrategyDirection::Negative,
+           .expected_strength = 1'000'000},
+  };
+
+  for (const auto &test_case : cases) {
+    auto publisher = publish_initial(test_case.top);
+    const auto result = runtime.evaluate(*publisher.accepted_feature_cut());
+    CHECK(result.ok());
+    auto request = host_request(*result.accepted_cut());
+    sdk::DeterministicOperationBudget budget(sdk::kMaximumEvaluationOperations);
+    std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;
+    std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
+    const auto host_result = sdk::StrategyHost::evaluate(
+        definition, request, budget, workspace, factors);
+    CHECK(host_result.completed());
+    const auto &signal = std::get<sdk::SignalDraft>(*host_result.terminal);
+    CHECK(signal.direction == test_case.direction);
+    CHECK(signal.strength.units == test_case.expected_strength);
+    CHECK(signal.strength.scale.denominator() == 1'000'000);
+  }
 }

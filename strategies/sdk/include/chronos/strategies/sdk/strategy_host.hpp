@@ -33,11 +33,11 @@ struct StrategyHostResult final {
 class StrategyHost final {
 public:
   [[nodiscard]] static StrategyHostResult
-  evaluate(const StrategyDefinition &definition,
+  evaluate(const AcceptedStrategyDefinition &definition,
            const StrategyInvocationRequest &request,
            DeterministicOperationBudget &budget,
            std::span<std::byte> workspace_storage,
-           std::span<std::optional<ExplanationFactor>> factor_storage);
+           std::span<std::optional<ExplanationFactor>> factor_storage) noexcept;
 };
 
 } // namespace chronos::strategies::sdk

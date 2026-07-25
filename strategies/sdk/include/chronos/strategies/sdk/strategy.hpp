@@ -3,6 +3,7 @@
 #include "chronos/contracts/digest.hpp"
 #include "chronos/contracts/fixed_point.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -11,9 +12,13 @@
 
 namespace chronos::strategies::sdk {
 
-inline constexpr std::size_t kMaximumProgramInstructions = 32;
-inline constexpr std::size_t kMaximumProgramFactors = 8;
+inline constexpr std::size_t kThresholdProgramInstructions = 8;
+inline constexpr std::size_t kThresholdProgramFactors = 2;
+inline constexpr std::size_t kMaximumAcceptedFeatureEvaluations = 8;
 inline constexpr std::size_t kInterpreterWorkingBytes = 128;
+inline constexpr std::uint64_t kAdmissionOperations = 8;
+inline constexpr std::uint64_t kMaximumEvaluationOperations =
+    kAdmissionOperations + kThresholdProgramInstructions;
 
 enum class StrategyScope : std::uint8_t { SingleListing };
 
@@ -198,6 +203,72 @@ struct StrategyProgram final {
 struct StrategyDefinition final {
   StrategyDescriptor descriptor;
   StrategyProgram program;
+};
+
+class AcceptedStrategyDefinition final {
+public:
+  AcceptedStrategyDefinition(const AcceptedStrategyDefinition &) = default;
+  AcceptedStrategyDefinition(AcceptedStrategyDefinition &&) = default;
+  AcceptedStrategyDefinition &
+  operator=(const AcceptedStrategyDefinition &) = default;
+  AcceptedStrategyDefinition &
+  operator=(AcceptedStrategyDefinition &&) = default;
+
+  [[nodiscard]] static std::optional<AcceptedStrategyDefinition>
+  accept(const StrategyDefinition &candidate) noexcept;
+
+  [[nodiscard]] StrategyDescriptor descriptor() const noexcept {
+    return {
+        .definition_version = definition_version_,
+        .implementation_version = implementation_version_,
+        .scope = scope_,
+        .family = family_,
+        .required_features = required_features_,
+        .parameter_schema = parameter_schema_,
+        .arithmetic_version = arithmetic_version_,
+        .explanation_policy_version = explanation_policy_version_,
+        .resource_limits = resource_limits_,
+    };
+  }
+  [[nodiscard]] StrategyProgram program() const noexcept {
+    return {
+        .instructions = instructions_,
+        .factors = factors_,
+        .signal_horizon_nanoseconds = signal_horizon_nanoseconds_,
+    };
+  }
+
+private:
+  AcceptedStrategyDefinition(
+      const StrategyDescriptor &descriptor, FeatureDependency required_feature,
+      StrategyParameterSchema parameter_schema,
+      std::array<StrategyInstruction, kThresholdProgramInstructions>
+          instructions,
+      std::array<ProgramFactorDefinition, kThresholdProgramFactors> factors,
+      std::int64_t signal_horizon_nanoseconds)
+      : definition_version_(descriptor.definition_version),
+        implementation_version_(descriptor.implementation_version),
+        scope_(descriptor.scope), family_(descriptor.family),
+        required_features_{required_feature},
+        parameter_schema_{parameter_schema},
+        arithmetic_version_(descriptor.arithmetic_version),
+        explanation_policy_version_(descriptor.explanation_policy_version),
+        resource_limits_(descriptor.resource_limits),
+        instructions_(instructions), factors_(factors),
+        signal_horizon_nanoseconds_(signal_horizon_nanoseconds) {}
+
+  contracts::VersionRef definition_version_;
+  contracts::VersionRef implementation_version_;
+  StrategyScope scope_;
+  StrategyFamily family_;
+  std::array<FeatureDependency, 1> required_features_;
+  std::array<StrategyParameterSchema, 1> parameter_schema_;
+  contracts::VersionRef arithmetic_version_;
+  contracts::VersionRef explanation_policy_version_;
+  StrategyResourceLimits resource_limits_;
+  std::array<StrategyInstruction, kThresholdProgramInstructions> instructions_;
+  std::array<ProgramFactorDefinition, kThresholdProgramFactors> factors_;
+  std::int64_t signal_horizon_nanoseconds_{};
 };
 
 class DeterministicOperationBudget final {

@@ -17,13 +17,14 @@ function pointer runs during evaluation, so a definition cannot reach network,
 filesystem, host clocks, environment/secrets, persistence, telemetry, or other
 ambient process capabilities.
 
-The host consumes one deterministic fuel unit per validated instruction, rejects
-jumps and malformed opcode sequences, checks the recorded logical deadline,
-uses fixed-size interpreter state covered by the declared workspace bound, and
-constructs bounded explanation/terminal output itself. Definition packs cannot
-ignore these controls or forge explanation lineage because they provide only
-immutable descriptor/program data; accepted feature IDs are attached by the
-host.
+Admission copies a valid definition into fixed owning storage and rejects any
+shape except the V1 one-feature, one-parameter, eight-instruction threshold
+program. The host charges a fixed admission budget before bounded validation,
+then one deterministic fuel unit per instruction; rejects jumps and malformed
+opcodes or operands; checks the recorded logical deadline; clears only fixed
+workspace/output prefixes; and constructs bounded explanation/terminal output
+itself. Definition packs cannot mutate accepted spans, ignore controls, or forge
+explanation lineage because accepted feature IDs are attached by the host.
 
 Logical deadlines are part of the recorded cut and are safe for semantic
 decisions. Host deadlines and cancellation remain external operational

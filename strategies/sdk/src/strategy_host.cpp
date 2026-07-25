@@ -60,7 +60,7 @@ bool matches_cut(const core::features::FeatureProvenance &value,
 
 bool validate_feature_cut(const StrategyInvocationRequest &request) noexcept {
   const auto &accepted = request.feature_cut.evaluations();
-  if (accepted.empty())
+  if (accepted.empty() || accepted.size() > kMaximumAcceptedFeatureEvaluations)
     return false;
   for (auto current = accepted.begin(); current != accepted.end(); ++current) {
     const auto kind = map_kind(current->kind);
@@ -77,18 +77,8 @@ bool validate_feature_cut(const StrategyInvocationRequest &request) noexcept {
 }
 
 bool validate_parameters(
-    const StrategyDescriptor &descriptor,
     std::span<const StrategyParameter> parameters) noexcept {
-  if (parameters.size() > descriptor.resource_limits.maximum_parameters)
-    return false;
-  return std::none_of(
-      parameters.begin(), parameters.end(), [&](const auto &value) {
-        return std::count_if(parameters.begin(), parameters.end(),
-                             [&](const auto &candidate) {
-                               return candidate.parameter_id ==
-                                      value.parameter_id;
-                             }) != 1;
-      });
+  return parameters.size() <= 1;
 }
 
 const core::features::FeatureEvaluation *
@@ -137,12 +127,14 @@ bool append_factor(std::span<std::optional<ExplanationFactor>> factor_storage,
 }
 
 StrategyHostResult complete_abstention(
-    const StrategyDefinition &definition, StrategyAbstentionReason reason,
-    const InterpreterState &state, std::size_t diagnostic_factor_index,
+    const AcceptedStrategyDefinition &definition,
+    StrategyAbstentionReason reason, const InterpreterState &state,
+    std::size_t diagnostic_factor_index,
     const DeterministicOperationBudget &budget,
     std::span<std::optional<ExplanationFactor>> factor_storage) noexcept {
-  const auto &factor_definition =
-      definition.program.factors[diagnostic_factor_index];
+  const auto descriptor = definition.descriptor();
+  const auto program = definition.program();
+  const auto &factor_definition = program.factors[diagnostic_factor_index];
   const auto feature_factor =
       factor_definition.source == ExplanationSource::Feature;
   const auto scale = feature_factor && state.ratio ? state.ratio->scale
@@ -154,22 +146,22 @@ StrategyHostResult complete_abstention(
                             ? state.parameter->units
                             : 0;
   std::size_t factor_count{};
-  if (!append_factor(factor_storage, factor_count,
-                     {
-                         .factor_id = factor_definition.factor_id,
-                         .source = factor_definition.source,
-                         .role = ExplanationRole::ExplainsAbstention,
-                         .observed_units = observed,
-                         .observed_scale = scale,
-                         .signed_contribution_units = 0,
-                         .contribution_scale = scale,
-                         .causal_feature_evaluation_id =
-                             feature_factor && state.feature
-                                 ? std::optional{state.feature->evaluation_id}
-                                 : std::nullopt,
-                         .ranking_policy_version =
-                             definition.descriptor.explanation_policy_version,
-                     }))
+  if (!append_factor(
+          factor_storage, factor_count,
+          {
+              .factor_id = factor_definition.factor_id,
+              .source = factor_definition.source,
+              .role = ExplanationRole::ExplainsAbstention,
+              .observed_units = observed,
+              .observed_scale = scale,
+              .signed_contribution_units = 0,
+              .contribution_scale = scale,
+              .causal_feature_evaluation_id =
+                  feature_factor && state.feature
+                      ? std::optional{state.feature->evaluation_id}
+                      : std::nullopt,
+              .ranking_policy_version = descriptor.explanation_policy_version,
+          }))
     return failure(StrategyExecutionStatus::OutputCapacityExceeded, budget,
                    factor_storage);
   return {
@@ -183,48 +175,58 @@ StrategyHostResult complete_abstention(
 } // namespace
 
 StrategyHostResult StrategyHost::evaluate(
-    const StrategyDefinition &definition,
+    const AcceptedStrategyDefinition &definition,
     const StrategyInvocationRequest &request,
     DeterministicOperationBudget &budget,
     std::span<std::byte> workspace_storage,
-    std::span<std::optional<ExplanationFactor>> factor_storage) {
-  clear_factors(factor_storage);
-  if (!validate_definition(definition) || !validate_feature_cut(request) ||
-      !validate_parameters(definition.descriptor, request.parameters))
+    std::span<std::optional<ExplanationFactor>> factor_storage) noexcept {
+  const auto descriptor = definition.descriptor();
+  const auto program = definition.program();
+  auto bounded_factors = factor_storage.first(
+      std::min(factor_storage.size(), kThresholdProgramFactors));
+  clear_factors(bounded_factors);
+
+  if (request.feature_cut.evaluations().empty() ||
+      request.feature_cut.evaluations().size() >
+          kMaximumAcceptedFeatureEvaluations ||
+      request.parameters.size() > 1)
     return failure(StrategyExecutionStatus::ContractViolation, budget,
-                   factor_storage);
+                   bounded_factors);
+  if (workspace_storage.size() < kInterpreterWorkingBytes)
+    return failure(StrategyExecutionStatus::InsufficientWorkspace, budget,
+                   bounded_factors);
+  if (factor_storage.size() < kThresholdProgramFactors)
+    return failure(StrategyExecutionStatus::OutputCapacityExceeded, budget,
+                   bounded_factors);
+  if (!budget.consume(kAdmissionOperations))
+    return failure(StrategyExecutionStatus::DeterministicBudgetExhausted,
+                   budget, bounded_factors);
+  if (!validate_feature_cut(request) ||
+      !validate_parameters(request.parameters))
+    return failure(StrategyExecutionStatus::ContractViolation, budget,
+                   bounded_factors);
   if (logical_deadline_exceeded(request.cut))
     return failure(StrategyExecutionStatus::LogicalDeadlineExceeded, budget,
-                   factor_storage);
-  if (workspace_storage.size() <
-      definition.descriptor.resource_limits.maximum_working_bytes)
-    return failure(StrategyExecutionStatus::InsufficientWorkspace, budget,
-                   factor_storage);
-  if (factor_storage.size() <
-      definition.descriptor.resource_limits.maximum_explanation_factors)
-    return failure(StrategyExecutionStatus::OutputCapacityExceeded, budget,
-                   factor_storage);
+                   bounded_factors);
 
-  std::fill_n(workspace_storage.begin(),
-              definition.descriptor.resource_limits.maximum_working_bytes,
-              std::byte{});
+  std::fill_n(workspace_storage.begin(), kInterpreterWorkingBytes, std::byte{});
   InterpreterState state;
   std::size_t factor_count{};
 
-  for (const auto &instruction : definition.program.instructions) {
+  for (const auto &instruction : program.instructions) {
     if (!budget.consume())
       return failure(StrategyExecutionStatus::DeterministicBudgetExhausted,
-                     budget, factor_storage);
+                     budget, bounded_factors);
 
     switch (instruction.opcode) {
     case StrategyOpcode::LoadFeature: {
       const auto &dependency =
-          definition.descriptor.required_features[instruction.operand];
+          descriptor.required_features[instruction.operand];
       state.feature = find_feature(request, dependency.kind);
       if (!state.feature)
         return complete_abstention(
             definition, StrategyAbstentionReason::MissingDeclaredFeature, state,
-            0, budget, factor_storage);
+            0, budget, bounded_factors);
       break;
     }
     case StrategyOpcode::RequireValidScaledRatio: {
@@ -232,13 +234,12 @@ StrategyHostResult StrategyHost::evaluate(
           core::features::FeatureDisposition::ValidObservation)
         return complete_abstention(definition,
                                    StrategyAbstentionReason::NonValidFeature,
-                                   state, 0, budget, factor_storage);
+                                   state, 0, budget, bounded_factors);
       const auto &observation = *state.feature->observation;
       state.ratio =
           std::get_if<core::features::ScaledRatio>(&observation.value);
       const auto &dependency =
-          definition.descriptor
-              .required_features[definition.program.instructions[0].operand];
+          descriptor.required_features[program.instructions[0].operand];
       if (!state.ratio ||
           observation.provenance.feature_definition_version !=
               dependency.definition_version ||
@@ -246,23 +247,21 @@ StrategyHostResult StrategyHost::evaluate(
           state.ratio->units > state.ratio->scale.denominator())
         return complete_abstention(
             definition, StrategyAbstentionReason::IncompatibleFeature, state, 0,
-            budget, factor_storage);
+            budget, bounded_factors);
       break;
     }
     case StrategyOpcode::LoadParameter: {
-      const auto &schema =
-          definition.descriptor.parameter_schema[instruction.operand];
+      const auto &schema = descriptor.parameter_schema[instruction.operand];
       state.parameter = find_parameter(request, schema);
       if (!state.parameter)
         return complete_abstention(definition,
                                    StrategyAbstentionReason::MissingParameter,
-                                   state, 1, budget, factor_storage);
+                                   state, 1, budget, bounded_factors);
       break;
     }
     case StrategyOpcode::RequirePositiveParameter: {
       const auto &schema =
-          definition.descriptor
-              .parameter_schema[definition.program.instructions[2].operand];
+          descriptor.parameter_schema[program.instructions[2].operand];
       if (state.parameter->definition_version != schema.definition_version ||
           state.parameter->scale != schema.scale ||
           state.parameter->scale != state.ratio->scale ||
@@ -270,7 +269,7 @@ StrategyHostResult StrategyHost::evaluate(
           state.parameter->units > state.parameter->scale.denominator())
         return complete_abstention(definition,
                                    StrategyAbstentionReason::InvalidParameter,
-                                   state, 1, budget, factor_storage);
+                                   state, 1, budget, bounded_factors);
       break;
     }
     case StrategyOpcode::CompareAbsoluteFeatureAtLeastParameter:
@@ -284,10 +283,9 @@ StrategyHostResult StrategyHost::evaluate(
           : state.ratio->units > 0 ? ExplanationRole::SupportsPositive
                                    : ExplanationRole::SupportsNegative;
       if (!append_factor(
-              factor_storage, factor_count,
+              bounded_factors, factor_count,
               {
-                  .factor_id =
-                      definition.program.factors[instruction.operand].factor_id,
+                  .factor_id = program.factors[instruction.operand].factor_id,
                   .source = ExplanationSource::Feature,
                   .role = role,
                   .observed_units = state.ratio->units,
@@ -296,10 +294,10 @@ StrategyHostResult StrategyHost::evaluate(
                   .contribution_scale = state.ratio->scale,
                   .causal_feature_evaluation_id = state.feature->evaluation_id,
                   .ranking_policy_version =
-                      definition.descriptor.explanation_policy_version,
+                      descriptor.explanation_policy_version,
               }))
         return failure(StrategyExecutionStatus::OutputCapacityExceeded, budget,
-                       factor_storage);
+                       bounded_factors);
       break;
     }
     case StrategyOpcode::AppendParameterFactor: {
@@ -311,10 +309,9 @@ StrategyHostResult StrategyHost::evaluate(
           : state.ratio->units > 0 ? ExplanationRole::SupportsPositive
                                    : ExplanationRole::SupportsNegative;
       if (!append_factor(
-              factor_storage, factor_count,
+              bounded_factors, factor_count,
               {
-                  .factor_id =
-                      definition.program.factors[instruction.operand].factor_id,
+                  .factor_id = program.factors[instruction.operand].factor_id,
                   .source = ExplanationSource::StrategyParameter,
                   .role = role,
                   .observed_units = state.parameter->units,
@@ -322,10 +319,10 @@ StrategyHostResult StrategyHost::evaluate(
                   .signed_contribution_units = signed_margin,
                   .contribution_scale = state.parameter->scale,
                   .ranking_policy_version =
-                      definition.descriptor.explanation_policy_version,
+                      descriptor.explanation_policy_version,
               }))
         return failure(StrategyExecutionStatus::OutputCapacityExceeded, budget,
-                       factor_storage);
+                       bounded_factors);
       break;
     }
     case StrategyOpcode::FinishDirectionalThreshold:
@@ -349,15 +346,14 @@ StrategyHostResult StrategyHost::evaluate(
                                    : StrategyDirection::Negative,
                   .strength = {.units = state.magnitude,
                                .scale = state.ratio->scale},
-                  .horizon_nanoseconds =
-                      definition.program.signal_horizon_nanoseconds,
+                  .horizon_nanoseconds = program.signal_horizon_nanoseconds,
               },
       };
     }
   }
 
   return failure(StrategyExecutionStatus::ContractViolation, budget,
-                 factor_storage);
+                 bounded_factors);
 }
 
 } // namespace chronos::strategies::sdk
