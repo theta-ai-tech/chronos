@@ -41,7 +41,8 @@ be appended in deterministic rank order before exactly one terminal signal or
 abstention draft is written; no output allocation is required by the SDK.
 
 Native definition-pack targets must be created with `chronos_add_strategy`. The
-target links only the SDK/options surface and runs source plus linked-symbol
-defense-in-depth checks. CI also rejects unregistered strategy CMake targets;
-evaluation isolation does not depend on those denylists because no pack code is
-called by `StrategyHost`.
+target accepts exactly one strict data manifest and compiles only trusted
+generated code against the SDK/options surface. CI rejects authored strategy
+C++ and non-registration CMake commands; a linked-symbol check remains defense
+in depth. Evaluation isolation does not depend on a source denylist because no
+pack-authored code exists or is called by `StrategyHost`.

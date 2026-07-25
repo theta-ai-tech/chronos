@@ -16,6 +16,7 @@ def load_tool(name: str):
 
 capability_module = load_tool("verify_strategy_capabilities")
 find_violations = capability_module.find_violations
+find_authored_strategy_code = capability_module.find_authored_strategy_code
 find_cmake_violations = capability_module.find_cmake_violations
 find_symbol_violations = load_tool("verify_strategy_symbols").find_symbol_violations
 
@@ -32,6 +33,13 @@ def test_deterministic_strategy_surface_passes(tmp_path: Path) -> None:
         '#include "chronos/strategies/sdk/strategy.hpp"\n#include <array>\n',
     )
     assert find_violations([path]) == []
+
+
+def test_authored_strategy_code_is_never_a_packaging_input(tmp_path: Path) -> None:
+    path = write_source(tmp_path, "#include <pthread.h>\n")
+    assert [item.capability for item in find_authored_strategy_code([path])] == [
+        "authored-strategy-code"
+    ]
 
 
 def test_strategy_cannot_import_core_runtime_or_host_authority(tmp_path: Path) -> None:
@@ -111,6 +119,18 @@ def test_unregistered_strategy_cmake_target_fails(tmp_path: Path) -> None:
     )
     capabilities = {item.capability for item in find_cmake_violations(tmp_path)}
     assert capabilities == {"unregistered-strategy-target", "unregistered-strategy-link"}
+
+
+def test_strategy_pack_cmake_may_only_register_one_manifest(tmp_path: Path) -> None:
+    pack = tmp_path / "strategies/pack"
+    pack.mkdir(parents=True)
+    (pack / "CMakeLists.txt").write_text(
+        "execute_process(COMMAND hidden-compiler strategy.cpp)\n",
+        encoding="utf-8",
+    )
+    assert [item.capability for item in find_cmake_violations(tmp_path)] == [
+        "unregistered-strategy-build-command"
+    ]
 
 
 def test_linked_forbidden_symbols_fail() -> None:

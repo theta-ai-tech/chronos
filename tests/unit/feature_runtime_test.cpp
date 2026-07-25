@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -35,6 +36,8 @@ contracts::VersionRef version(std::uint8_t seed, std::uint64_t number = 1) {
       .value();
 }
 
+std::vector<std::byte> strategy_activation_payload();
+
 contracts::StreamCursor origin(std::uint8_t seed) {
   return contracts::StreamCursor::at_origin(id<contracts::StreamId>(seed), 1)
       .value();
@@ -57,8 +60,10 @@ contracts::StateLineage
 lineage(std::uint64_t run_sequence, contracts::StreamCursor book_cursor,
         contracts::StreamCursor timer_cursor = origin(13)) {
   const auto required = required_streams();
-  const std::array cursors = {origin(4),  origin(7),  book_cursor, origin(10),
-                              origin(11), origin(12), timer_cursor};
+  const std::array cursors = {
+      origin(4),   origin(7),  book_cursor,
+      origin(10),  origin(11), run_sequence == 0 ? origin(12) : cursor(12, 1),
+      timer_cursor};
   return contracts::StateLineage::from(id<contracts::RunId>(30), run_sequence,
                                        required, cursors)
       .value();
@@ -235,13 +240,28 @@ market::ListingViewCutInput make_cut_input(
                                     ? origin(14)
                                     : cursor(14, run_sequence - 1)},
       .post_selection_cursors = {cursor(14, run_sequence)},
-      .control_cursor = origin(15),
+      .control_cursor = cursor(15, 1),
       .consumer_boundary_id = id<contracts::ConsumerBoundaryId>(38),
-      .active_configuration_epoch = 1,
+      .active_configuration_epoch = 2,
       .merge_policy_version = version(37),
       .registry_snapshot_version = version(39),
       .input_semantic_checksum = candidate.semantic_checksum,
   };
+  if (run_sequence == 1) {
+    auto behavior_payload = strategy_activation_payload();
+    selection.applied_controls.push_back({
+        .run_id = id<contracts::RunId>(30),
+        .control_stream_id = id<contracts::StreamId>(15),
+        .control_stream_epoch = 1,
+        .control_outcome_id = id<contracts::EventId>(99),
+        .control_sequence = 1,
+        .effective_position = 1,
+        .prior_configuration_epoch = 1,
+        .new_configuration_epoch = 2,
+        .behavior_payload = behavior_payload,
+        .behavior_checksum = contracts::sha256(behavior_payload),
+    });
+  }
   selection.selection_semantic_checksum =
       dispatch::derive_run_input_selection_checksum(
           publisher_config().dispatcher_config, selection, candidate);
@@ -257,7 +277,8 @@ market::ListingViewCutInput make_cut_input(
       .input_semantic_checksum = candidate.semantic_checksum,
       .selection_semantic_checksum = selection.selection_semantic_checksum,
       .merge_policy_version = version(37),
-      .configuration_epoch = 1,
+      .configuration_epoch = 2,
+      .effective_control_position = 1,
       .canonical_instrument_id = id<contracts::CanonicalInstrumentId>(42),
       .reference_snapshot_version = version(43),
       .listing_definition_version = version(44),
@@ -266,11 +287,28 @@ market::ListingViewCutInput make_cut_input(
   };
 }
 
-market::ListingViewCutInput initial_cut_input() {
-  return make_cut_input(
+market::ListingViewCutInput initial_cut_input(
+    std::optional<std::vector<std::byte>> activation_payload = std::nullopt) {
+  auto input = make_cut_input(
       1, id<contracts::EventId>(23), "market.book.observation.snapshot",
       contracts::EventPosition::from(id<contracts::StreamId>(8), 1, 0).value(),
       kInitialPayload, lineage(1, cursor(8, 0)));
+  if (activation_payload) {
+    auto &control = input.dispatch_selection.applied_controls.front();
+    control.behavior_payload = std::move(*activation_payload);
+    control.behavior_checksum = contracts::sha256(control.behavior_payload);
+    input.dispatch_selection.selection_semantic_checksum =
+        dispatch::derive_run_input_selection_checksum(
+            publisher_config().dispatcher_config, input.dispatch_selection,
+            input.dispatch_candidate);
+    input.dispatch_selection.selection_id =
+        dispatch::derive_run_input_selection_id(
+            input.dispatch_selection.selection_semantic_checksum);
+    input.selection_id = input.dispatch_selection.selection_id;
+    input.selection_semantic_checksum =
+        input.dispatch_selection.selection_semantic_checksum;
+  }
+  return input;
 }
 
 market::ViewPublicationTransition
@@ -432,53 +470,158 @@ std::span<const sdk::StrategyParameter> threshold_parameters() {
 
 sdk::AcceptedStrategyDefinition accepted_host_definition();
 
-strategy_runtime::StrategyRuntimeConfig host_runtime_config(
-    const features::AcceptedFeatureEvaluationCut &accepted,
+strategy_runtime::StrategyRuntimeConfig host_runtime_config_base(
     std::optional<sdk::StrategyParameter> parameter,
-    std::optional<std::int64_t> deadline = std::nullopt,
+    std::optional<std::int64_t> deadline_offset = std::nullopt,
     std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations) {
-  const auto &feature = accepted.evaluations().front();
-  const auto &provenance = feature.observation
-                               ? feature.observation->provenance
-                               : feature.unavailable->provenance;
   return {
-      .run_id = provenance.run_id,
       .strategy_instance_id = id<contracts::StrategyInstanceId>(95),
-      .listing_id = provenance.listing_id,
-      .canonical_instrument_id = provenance.canonical_instrument_id,
+      .listing_id = id<contracts::ListingId>(1),
+      .canonical_instrument_id = id<contracts::CanonicalInstrumentId>(42),
       .definition = accepted_host_definition(),
       .parameter = parameter,
-      .activation_control_outcome_id = id<contracts::EventId>(99),
-      .active_configuration_epoch = provenance.configuration_epoch,
-      .effective_control_position = provenance.effective_control_position,
       .run_control_stream_id = id<contracts::StreamId>(12),
       .run_control_stream_epoch = 1,
       .run_timer_stream_id = id<contracts::StreamId>(13),
       .run_timer_stream_epoch = 1,
       .maximum_operations = maximum_operations,
-      .logical_deadline_nanoseconds = deadline,
+      .logical_deadline_offset_nanoseconds = deadline_offset,
   };
+}
+
+strategy_runtime::StrategyRuntimeConfig host_runtime_config(
+    const features::AcceptedFeatureEvaluationCut &,
+    std::optional<sdk::StrategyParameter> parameter,
+    std::optional<std::int64_t> deadline_offset = std::nullopt,
+    std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations) {
+  return host_runtime_config_base(parameter, deadline_offset,
+                                  maximum_operations);
+}
+
+class ActivationPersistence final
+    : public dispatch::RunInputSelectionPersistence {
+public:
+  dispatch::RunInputRecoveryLoad load_recovery_state(
+      const dispatch::RunInputDispatcherConfig &config) override {
+    state = dispatch::RunInputRecoveryState{
+        .input_cursor = origin(14),
+        .control_cursor = origin(15),
+        .configuration_epoch = config.initial_configuration_epoch,
+    };
+    return {.success = true, .state = state};
+  }
+  bool commit_control_reservation(
+      const dispatch::ControlBoundaryReservation &reservation) override {
+    state->control_cursor = cursor(15, reservation.control_sequence);
+    state->pending_controls.push_back({.reservation = reservation});
+    return true;
+  }
+  bool commit_control_visibility(
+      const dispatch::ControlBoundaryReservation &reservation) override {
+    state->pending_controls.front().visible =
+        state->pending_controls.front().reservation == reservation;
+    return state->pending_controls.front().visible;
+  }
+  bool commit_selection(const dispatch::RunInputSelectionRecord &selection,
+                        const dispatch::RunInputCandidate &candidate) override {
+    state->input_cursor = selection.post_selection_cursors.front();
+    state->control_cursor = selection.control_cursor;
+    state->run_input_sequence = selection.run_input_sequence;
+    state->configuration_epoch = selection.active_configuration_epoch;
+    state->pending_controls.clear();
+    state->pending_publication = dispatch::RecoverablePublication{
+        .selection = selection, .candidate = candidate};
+    return true;
+  }
+  bool commit_publication_transition(
+      const dispatch::PublicationTransition &transition) override {
+    if (!state->pending_publication ||
+        state->pending_publication->state != transition.from)
+      return false;
+    state->pending_publication->state = transition.to;
+    state->pending_publication->attempt_number = transition.attempt_number;
+    state->pending_publication->attempt_id = transition.attempt_id;
+    return true;
+  }
+  std::optional<dispatch::RunInputRecoveryState> state;
+};
+
+class ActivationRegistry final : public dispatch::RunInputEligibilityRegistry {
+public:
+  bool is_run_input_eligible(
+      std::string_view event_type,
+      contracts::VersionRef registry_snapshot_version) const override {
+    return event_type == "market.book.observation.snapshot" &&
+           registry_snapshot_version == version(39);
+  }
+};
+
+class ActivationConsumer final : public dispatch::RunInputConsumer {
+public:
+  contracts::ConsumerBoundaryId boundary_id() const noexcept override {
+    return id<contracts::ConsumerBoundaryId>(38);
+  }
+  dispatch::ConsumerDisposition
+  accept(const dispatch::RunInputSelectionRecord &,
+         const dispatch::RunInputCandidate &,
+         contracts::PublicationAttemptId) override {
+    return dispatch::ConsumerDisposition::Accepted;
+  }
+};
+
+dispatch::AcceptedControlOutcome accepted_activation_control(
+    const strategy_runtime::StrategyRuntimeConfig &config) {
+  ActivationPersistence persistence;
+  ActivationRegistry registry;
+  ActivationConsumer consumer;
+  auto dispatcher =
+      dispatch::RunInputDispatcher::create(publisher_config().dispatcher_config,
+                                           persistence, registry)
+          .value();
+  auto payload = strategy_runtime::encode_strategy_activation_control(config);
+  const dispatch::ControlBoundaryReservation reservation{
+      .run_id = id<contracts::RunId>(30),
+      .control_stream_id = id<contracts::StreamId>(15),
+      .control_stream_epoch = 1,
+      .control_outcome_id = id<contracts::EventId>(99),
+      .control_sequence = 1,
+      .effective_position = 1,
+      .prior_configuration_epoch = 1,
+      .new_configuration_epoch = 2,
+      .behavior_payload = payload,
+      .behavior_checksum = contracts::sha256(payload),
+  };
+  if (!dispatcher.reserve_control_boundary(reservation) ||
+      !dispatcher.make_control_visible(reservation))
+    std::abort();
+  dispatch::RunInputCandidate candidate{
+      .event_id = id<contracts::EventId>(23),
+      .event_type = "market.book.observation.snapshot",
+      .event_position =
+          contracts::EventPosition::from(id<contracts::StreamId>(14), 1, 1)
+              .value(),
+      .semantic_payload = kInitialPayload,
+      .semantic_checksum = contracts::sha256(kInitialPayload),
+  };
+  auto result = dispatcher.dispatch(std::move(candidate), consumer);
+  if (!result.ok() || result.accepted_control_outcomes.size() != 1)
+    std::abort();
+  return result.accepted_control_outcomes.front();
+}
+
+std::optional<strategy_runtime::StrategyRuntime>
+activate_runtime(strategy_runtime::StrategyRuntimeConfig config) {
+  const auto control = accepted_activation_control(config);
+  return strategy_runtime::StrategyRuntime::activate(std::move(config),
+                                                     control);
 }
 
 sdk::AcceptedStrategyInvocation accepted_host_invocation(
     const features::AcceptedFeatureEvaluationCut &accepted,
     std::optional<std::int64_t> deadline = std::nullopt,
     std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations) {
-  const auto runtime =
-      strategy_runtime::StrategyRuntime::activate(host_runtime_config(
-          accepted, threshold_parameters()[0], deadline, maximum_operations));
-  if (!runtime)
-    std::abort();
-  const auto invocation = runtime->admit(accepted);
-  if (!invocation)
-    std::abort();
-  return *invocation;
-}
-
-sdk::AcceptedStrategyInvocation accepted_host_invocation_without_parameter(
-    const features::AcceptedFeatureEvaluationCut &accepted) {
-  const auto runtime = strategy_runtime::StrategyRuntime::activate(
-      host_runtime_config(accepted, std::nullopt));
+  const auto runtime = activate_runtime(host_runtime_config(
+      accepted, threshold_parameters()[0], deadline, maximum_operations));
   if (!runtime)
     std::abort();
   const auto invocation = runtime->admit(accepted);
@@ -495,14 +638,43 @@ sdk::AcceptedStrategyDefinition accepted_host_definition() {
   return *accepted;
 }
 
-market::ListingViewPublisher
-publish_quality_state(market::ListingQualityInputKind kind,
-                      std::string event_type, std::int64_t logical_time) {
+std::vector<std::byte> strategy_activation_payload() {
+  return strategy_runtime::encode_strategy_activation_control(
+      host_runtime_config_base(threshold_parameters()[0]));
+}
+
+features::FeatureRuntimeResult accepted_features_for_strategy(
+    const strategy_runtime::StrategyRuntimeConfig &config) {
   auto book = make_book();
   auto auxiliary = make_auxiliary(book);
   auto publisher =
       market::ListingViewPublisher::create(publisher_config()).value();
-  const auto first = publisher.accept_cut(initial_cut_input(), book, auxiliary);
+  const auto accepted = publisher.accept_cut(
+      initial_cut_input(
+          strategy_runtime::encode_strategy_activation_control(config)),
+      book, auxiliary);
+  if (!accepted.ok())
+    std::abort();
+  acknowledge(publisher, accepted);
+  return features::FeatureRuntime(runtime_config())
+      .evaluate(*publisher.accepted_feature_cut());
+}
+
+market::ListingViewPublisher publish_quality_state(
+    market::ListingQualityInputKind kind, std::string event_type,
+    std::int64_t logical_time,
+    const strategy_runtime::StrategyRuntimeConfig *strategy_config = nullptr) {
+  auto book = make_book();
+  auto auxiliary = make_auxiliary(book);
+  auto publisher =
+      market::ListingViewPublisher::create(publisher_config()).value();
+  const auto first = publisher.accept_cut(
+      strategy_config
+          ? initial_cut_input(
+                strategy_runtime::encode_strategy_activation_control(
+                    *strategy_config))
+          : initial_cut_input(),
+      book, auxiliary);
   if (!first.ok())
     std::abort();
   acknowledge(publisher, first);
@@ -850,7 +1022,7 @@ TEST_CASE("strategy host admits only authority-issued immutable feature cuts") {
   CHECK(!factors[1]->causal_feature_evaluation_id);
   CHECK(factors[1]->causal_parameter_id == id<contracts::DefinitionId>(94));
   CHECK(factors[1]->causal_parameter_definition_version == version(95));
-  CHECK(factors[1]->causal_configuration_epoch == 1);
+  CHECK(factors[1]->causal_configuration_epoch == 2);
   CHECK(factors[1]->causal_control_outcome_id == id<contracts::EventId>(99));
   CHECK(factors[1]->causal_activation_checksum ==
         invocation.activation_checksum());
@@ -871,8 +1043,14 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
   std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
 
   const auto invocation = accepted_host_invocation(*result.accepted_cut());
-  const auto low_fuel_invocation = accepted_host_invocation(
-      *result.accepted_cut(), std::nullopt, sdk::kAdmissionOperations + 4);
+  auto low_fuel_config =
+      host_runtime_config(*result.accepted_cut(), threshold_parameters()[0],
+                          std::nullopt, sdk::kAdmissionOperations + 4);
+  const auto low_fuel_features =
+      accepted_features_for_strategy(low_fuel_config);
+  const auto low_fuel_runtime = activate_runtime(low_fuel_config);
+  const auto low_fuel_invocation =
+      low_fuel_runtime->admit(*low_fuel_features.accepted_cut()).value();
   const auto no_fuel = sdk::StrategyHost::evaluate(
       definition, low_fuel_invocation, workspace, factors);
   CHECK(no_fuel.status ==
@@ -881,36 +1059,41 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
   CHECK(std::none_of(factors.begin(), factors.end(),
                      [](const auto &factor) { return factor.has_value(); }));
 
-  auto wrong_run =
-      host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
-  wrong_run.run_id = id<contracts::RunId>(96);
-  const auto wrong_run_runtime =
-      strategy_runtime::StrategyRuntime::activate(wrong_run);
-  CHECK(wrong_run_runtime.has_value());
-  CHECK(!wrong_run_runtime->admit(*result.accepted_cut()));
-
   auto wrong_timer =
       host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
   wrong_timer.run_timer_stream_id = id<contracts::StreamId>(99);
-  const auto wrong_timer_runtime =
-      strategy_runtime::StrategyRuntime::activate(wrong_timer);
+  const auto wrong_timer_runtime = activate_runtime(wrong_timer);
   CHECK(wrong_timer_runtime.has_value());
   CHECK(!wrong_timer_runtime->admit(*result.accepted_cut()));
 
-  auto wrong_control =
+  auto controlled_config =
       host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
-  ++wrong_control.active_configuration_epoch;
+  const auto accepted_control = accepted_activation_control(controlled_config);
+  controlled_config.maximum_operations = sdk::kAdmissionOperations + 4;
   const auto wrong_control_runtime =
-      strategy_runtime::StrategyRuntime::activate(wrong_control);
-  CHECK(wrong_control_runtime.has_value());
-  CHECK(!wrong_control_runtime->admit(*result.accepted_cut()));
+      strategy_runtime::StrategyRuntime::activate(controlled_config,
+                                                  accepted_control);
+  CHECK(!wrong_control_runtime.has_value());
 
-  const auto late_invocation = accepted_host_invocation(
-      *result.accepted_cut(), invocation.cut().logical_time_nanoseconds - 1);
-  const auto late = sdk::StrategyHost::evaluate(definition, late_invocation,
-                                                workspace, factors);
-  CHECK(late.status == sdk::StrategyExecutionStatus::LogicalDeadlineExceeded);
-  CHECK(late.charged_operations == sdk::kAdmissionOperations);
+  auto scheduled_config = host_runtime_config(*result.accepted_cut(),
+                                              threshold_parameters()[0], 10);
+  const auto scheduled_features =
+      accepted_features_for_strategy(scheduled_config);
+  const auto scheduled_runtime = activate_runtime(scheduled_config);
+  const auto scheduled_invocation =
+      scheduled_runtime->admit(*scheduled_features.accepted_cut()).value();
+  CHECK(scheduled_invocation.cut().logical_deadline_nanoseconds ==
+        invocation.cut().logical_time_nanoseconds + 10);
+  auto later_publisher = publish_quality_state(
+      market::ListingQualityInputKind::LogicalTimerAdvanced,
+      "run.timer.logical.advanced", 150, &scheduled_config);
+  const auto later_features =
+      features::FeatureRuntime(runtime_config())
+          .evaluate(*later_publisher.accepted_feature_cut());
+  const auto later_invocation =
+      scheduled_runtime->admit(*later_features.accepted_cut());
+  CHECK(later_invocation.has_value());
+  CHECK(later_invocation->cut().logical_deadline_nanoseconds == 160);
 
   const auto short_workspace = sdk::StrategyHost::evaluate(
       definition, invocation,
@@ -929,10 +1112,9 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
 
   auto mutable_config =
       host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
-  auto owning_runtime =
-      strategy_runtime::StrategyRuntime::activate(mutable_config);
+  auto owning_runtime = activate_runtime(mutable_config);
   mutable_config.parameter->units = 900000;
-  mutable_config.logical_deadline_nanoseconds = 0;
+  mutable_config.logical_deadline_offset_nanoseconds = 0;
   mutable_config.strategy_instance_id = id<contracts::StrategyInstanceId>(97);
   mutable_config.maximum_operations = 0;
   const auto owned_invocation = owning_runtime->admit(*result.accepted_cut());
@@ -958,14 +1140,11 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
   auto alternate_activation =
       host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
   alternate_activation.parameter->units = 500000;
-  const auto alternate_runtime =
-      strategy_runtime::StrategyRuntime::activate(alternate_activation);
+  const auto alternate_runtime = activate_runtime(alternate_activation);
   CHECK(alternate_runtime.has_value());
   CHECK(alternate_runtime->activation_checksum() !=
         owning_runtime->activation_checksum());
-  CHECK(
-      alternate_runtime->admit(*result.accepted_cut())->activation_checksum() ==
-      alternate_runtime->activation_checksum());
+  CHECK(!alternate_runtime->admit(*result.accepted_cut()));
 
   auto alternate_instance =
       host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
@@ -976,14 +1155,10 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
   alternate_fuel.maximum_operations = sdk::kAdmissionOperations + 4;
   auto alternate_deadline =
       host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
-  alternate_deadline.logical_deadline_nanoseconds =
-      invocation.cut().logical_time_nanoseconds;
-  const auto instance_runtime =
-      strategy_runtime::StrategyRuntime::activate(alternate_instance);
-  const auto fuel_runtime =
-      strategy_runtime::StrategyRuntime::activate(alternate_fuel);
-  const auto deadline_runtime =
-      strategy_runtime::StrategyRuntime::activate(alternate_deadline);
+  alternate_deadline.logical_deadline_offset_nanoseconds = 10;
+  const auto instance_runtime = activate_runtime(alternate_instance);
+  const auto fuel_runtime = activate_runtime(alternate_fuel);
+  const auto deadline_runtime = activate_runtime(alternate_deadline);
   CHECK(instance_runtime.has_value());
   CHECK(fuel_runtime.has_value());
   CHECK(deadline_runtime.has_value());
@@ -1000,8 +1175,13 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
             .completed());
   oversized_factors[2] = oversized_factors[0];
   oversized_factors[3] = oversized_factors[1];
+  auto one_fuel_config = host_runtime_config(
+      *result.accepted_cut(), threshold_parameters()[0], std::nullopt, 1);
+  const auto one_fuel_features =
+      accepted_features_for_strategy(one_fuel_config);
+  const auto one_fuel_runtime = activate_runtime(one_fuel_config);
   const auto one_fuel_invocation =
-      accepted_host_invocation(*result.accepted_cut(), std::nullopt, 1);
+      one_fuel_runtime->admit(*one_fuel_features.accepted_cut()).value();
   CHECK(sdk::StrategyHost::evaluate(definition, one_fuel_invocation, workspace,
                                     oversized_factors)
             .status ==
@@ -1013,11 +1193,10 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
 }
 
 TEST_CASE("strategy host emits typed abstentions without native callbacks") {
-  auto publisher = publish_initial();
-  const features::FeatureRuntime runtime(runtime_config());
-  const auto result = runtime.evaluate(*publisher.accepted_feature_cut());
-  const auto invocation =
-      accepted_host_invocation_without_parameter(*result.accepted_cut());
+  auto config = host_runtime_config_base(std::nullopt);
+  const auto result = accepted_features_for_strategy(config);
+  const auto runtime = activate_runtime(config);
+  const auto invocation = runtime->admit(*result.accepted_cut()).value();
   std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;
   std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
   const auto missing = sdk::StrategyHost::evaluate(
@@ -1030,7 +1209,7 @@ TEST_CASE("strategy host emits typed abstentions without native callbacks") {
   CHECK(!factors[0]->causal_feature_evaluation_id);
   CHECK(factors[0]->causal_parameter_id == id<contracts::DefinitionId>(94));
   CHECK(factors[0]->causal_parameter_definition_version == version(95));
-  CHECK(factors[0]->causal_configuration_epoch == 1);
+  CHECK(factors[0]->causal_configuration_epoch == 2);
   CHECK(factors[0]->causal_control_outcome_id == id<contracts::EventId>(99));
   CHECK(factors[0]->causal_activation_checksum ==
         invocation.activation_checksum());

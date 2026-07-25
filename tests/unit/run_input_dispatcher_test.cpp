@@ -311,11 +311,25 @@ TEST_CASE("control reservation blocks and applies at its exact boundary") {
         dispatch::DispatchFailure::ControlBarrierBlocked);
   CHECK(dispatcher.current_run_input_sequence() == 1);
   CHECK(dispatcher.make_control_visible(reserved));
-  const auto selected = dispatcher.dispatch(candidate(11, 2), consumer);
+  consumer.next_disposition = dispatch::ConsumerDisposition::RetryableFailure;
+  const auto pending = dispatcher.dispatch(candidate(11, 2), consumer);
+  CHECK(!pending.ok());
+  CHECK(pending.accepted_control_outcomes.empty());
+  consumer.next_disposition = dispatch::ConsumerDisposition::Accepted;
+  const auto selected = dispatcher.retry_pending(consumer);
   CHECK(selected.ok());
   if (!selected.selection.has_value())
     return;
   CHECK(selected.selection->active_configuration_epoch == 2);
+  CHECK(selected.accepted_control_outcomes.size() == 1);
+  if (selected.accepted_control_outcomes.empty())
+    return;
+  CHECK(selected.accepted_control_outcomes.front().reservation() == reserved);
+  CHECK(selected.accepted_control_outcomes.front().selection_id() ==
+        selected.selection->selection_id);
+  CHECK(selected.accepted_control_outcomes.front()
+            .selection_semantic_checksum() ==
+        selected.selection->selection_semantic_checksum);
   CHECK(selected.selection->applied_controls ==
         std::vector<dispatch::ControlBoundaryReservation>{reserved});
   CHECK(dispatcher.active_configuration_epoch() == 2);

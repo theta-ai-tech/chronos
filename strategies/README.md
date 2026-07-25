@@ -13,10 +13,10 @@
 - **Reconstruction source:** declared feature outcomes, immutable parameters,
   logical cut, and deterministic operation budget.
 
-Concrete native definition packs are registered with the CMake
-`chronos_add_strategy` function. They supply immutable descriptor/program data;
-the SDK host, not pack code, performs evaluation. The restricted target also
-applies source and linked-symbol defense-in-depth checks on every build.
+Concrete native definition packs are strict JSON manifests registered with the
+CMake `chronos_add_strategy` function. A trusted generator emits their fixed
+descriptor/program code; authored strategy C++ is never compiled. The SDK host
+performs evaluation, and a linked-symbol check remains defense in depth.
 
 See `planning/01-architecture/architecture.md` (Repository and module structure,
 Dependency direction) and `planning/01-architecture/domain-model.md` for the

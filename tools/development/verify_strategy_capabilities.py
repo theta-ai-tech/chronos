@@ -67,6 +67,10 @@ INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]')
 TOKEN_PATTERNS = [(re.compile(pattern), name) for pattern, name in FORBIDDEN_TOKENS.items()]
 CMAKE_ADD_LIBRARY_PATTERN = re.compile(r"\badd_library\s*\(\s*([^\s)]+)")
 CMAKE_LINK_PATTERN = re.compile(r"\btarget_link_libraries\s*\(\s*([^\s)]+)")
+REGISTERED_PACK_PATTERN = re.compile(
+    r"\s*chronos_add_strategy\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s+"
+    r"DEFINITION\s+\$\{CMAKE_CURRENT_SOURCE_DIR\}/definition\.json\s*\)\s*"
+)
 
 
 def find_violations(paths: list[Path]) -> list[Violation]:
@@ -90,6 +94,10 @@ def find_violations(paths: list[Path]) -> list[Violation]:
     return violations
 
 
+def find_authored_strategy_code(paths: list[Path]) -> list[Violation]:
+    return [Violation(path, 1, "authored-strategy-code") for path in paths]
+
+
 def default_strategy_sources(root: Path) -> list[Path]:
     source_root = root / "strategies"
     return sorted(
@@ -102,6 +110,10 @@ def default_strategy_sources(root: Path) -> list[Path]:
 def find_cmake_violations(root: Path) -> list[Violation]:
     violations: list[Violation] = []
     for path in sorted((root / "strategies").rglob("CMakeLists.txt")):
+        if path.parent != root / "strategies" and not REGISTERED_PACK_PATTERN.fullmatch(
+            path.read_text(encoding="utf-8")
+        ):
+            violations.append(Violation(path, 1, "unregistered-strategy-build-command"))
         for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             library = CMAKE_ADD_LIBRARY_PATTERN.search(line)
             if library and library.group(1) != "chronos_strategy_sdk":
@@ -118,7 +130,7 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path.cwd())
     args = parser.parse_args()
     paths = args.paths or default_strategy_sources(args.root)
-    violations = find_violations(paths) + find_cmake_violations(args.root)
+    violations = find_authored_strategy_code(paths) + find_cmake_violations(args.root)
     for violation in violations:
         print(f"{violation.path}:{violation.line}: forbidden {violation.capability} capability")
     if violations:
