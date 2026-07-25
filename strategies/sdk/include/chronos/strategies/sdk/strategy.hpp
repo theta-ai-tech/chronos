@@ -151,6 +151,11 @@ struct ExplanationFactor final {
   contracts::AmountUnits signed_contribution_units{};
   contracts::DecimalScale contribution_scale;
   std::optional<contracts::FeatureEvaluationId> causal_feature_evaluation_id;
+  std::optional<contracts::DefinitionId> causal_parameter_id;
+  std::optional<contracts::VersionRef> causal_parameter_definition_version;
+  std::optional<std::uint64_t> causal_configuration_epoch;
+  std::optional<contracts::EventId> causal_control_outcome_id;
+  std::optional<contracts::Sha256Digest> causal_activation_checksum;
   contracts::VersionRef ranking_policy_version;
 
   bool operator==(const ExplanationFactor &) const = default;
@@ -222,6 +227,10 @@ public:
   [[nodiscard]] static std::optional<AcceptedStrategyDefinition>
   accept(const StrategyDefinition &candidate) noexcept;
 
+  [[nodiscard]] contracts::Sha256Digest definition_digest() const noexcept {
+    return definition_digest_;
+  }
+
   [[nodiscard]] StrategyDescriptor descriptor() const noexcept {
     return {
         .definition_version = definition_version_,
@@ -245,7 +254,9 @@ public:
 
 private:
   AcceptedStrategyDefinition(
-      const StrategyDescriptor &descriptor, FeatureDependency required_feature,
+      const StrategyDescriptor &descriptor,
+      contracts::Sha256Digest definition_digest,
+      FeatureDependency required_feature,
       StrategyParameterSchema parameter_schema,
       std::array<StrategyInstruction, kThresholdProgramInstructions>
           instructions,
@@ -259,7 +270,8 @@ private:
         arithmetic_version_(descriptor.arithmetic_version),
         explanation_policy_version_(descriptor.explanation_policy_version),
         resource_limits_(descriptor.resource_limits),
-        instructions_(instructions), factors_(factors),
+        definition_digest_(definition_digest), instructions_(instructions),
+        factors_(factors),
         signal_horizon_nanoseconds_(signal_horizon_nanoseconds) {}
 
   contracts::VersionRef definition_version_;
@@ -271,6 +283,7 @@ private:
   contracts::VersionRef arithmetic_version_;
   contracts::VersionRef explanation_policy_version_;
   StrategyResourceLimits resource_limits_;
+  contracts::Sha256Digest definition_digest_;
   std::array<StrategyInstruction, kThresholdProgramInstructions> instructions_;
   std::array<ProgramFactorDefinition, kThresholdProgramFactors> factors_;
   std::int64_t signal_horizon_nanoseconds_{};

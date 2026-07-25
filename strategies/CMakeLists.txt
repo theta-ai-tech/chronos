@@ -28,3 +28,5 @@ add_custom_command(TARGET chronos_strategy_sdk POST_BUILD
           $<TARGET_FILE:chronos_strategy_sdk>
   COMMENT "Checking strategy host linked capability boundary"
   VERBATIM)
+
+add_subdirectory(conformance)

@@ -1,3 +1,4 @@
+#include "chronos/strategies/conformance/threshold_pack.hpp"
 #include "chronos/strategies/sdk/strategy_host.hpp"
 
 #include "microtest.hpp"
@@ -11,6 +12,7 @@
 
 namespace {
 namespace contracts = chronos::contracts;
+namespace conformance = chronos::strategies::conformance;
 namespace sdk = chronos::strategies::sdk;
 
 template <typename Id> Id id(std::uint8_t seed) {
@@ -287,4 +289,12 @@ TEST_CASE("logical deadlines depend only on the recorded cut") {
   auto unbounded = late;
   unbounded.logical_deadline_nanoseconds.reset();
   CHECK(!sdk::logical_deadline_exceeded(unbounded));
+}
+
+TEST_CASE("restricted conformance pack produces an accepted definition") {
+  const auto accepted = conformance::accepted_threshold_definition();
+  CHECK(accepted.has_value());
+  CHECK(accepted->program().instructions.size() ==
+        sdk::kThresholdProgramInstructions);
+  CHECK(accepted->program().factors.size() == sdk::kThresholdProgramFactors);
 }

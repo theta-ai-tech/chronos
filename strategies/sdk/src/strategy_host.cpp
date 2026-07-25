@@ -24,31 +24,16 @@ struct InvocationView final {
   contracts::VersionRef strategy_implementation_version;
   contracts::VersionRef arithmetic_version;
   contracts::VersionRef explanation_policy_version;
+  contracts::Sha256Digest definition_digest;
+  contracts::EventId activation_control_outcome_id;
+  contracts::Sha256Digest activation_checksum;
+  contracts::StreamCursor run_control_cursor;
+  contracts::Sha256Digest selection_semantic_checksum;
   std::uint64_t maximum_operations{};
   const core::features::AcceptedFeatureEvaluationCut &feature_cut;
   std::span<const StrategyParameter> parameters;
   const LogicalCut &cut;
 };
-
-InvocationView
-view(const StrategyInvocationAuthorityConfig &config,
-     const core::features::AcceptedFeatureEvaluationCut &feature_cut) noexcept {
-  return {
-      .run_id = config.run_id,
-      .listing_id = config.listing_id,
-      .canonical_instrument_id = config.canonical_instrument_id,
-      .strategy_definition_version = config.strategy_definition_version,
-      .strategy_implementation_version = config.strategy_implementation_version,
-      .arithmetic_version = config.arithmetic_version,
-      .explanation_policy_version = config.explanation_policy_version,
-      .maximum_operations = config.maximum_operations,
-      .feature_cut = feature_cut,
-      .parameters = config.parameter ? std::span<const StrategyParameter>(
-                                           &*config.parameter, 1)
-                                     : std::span<const StrategyParameter>{},
-      .cut = config.cut,
-  };
-}
 
 InvocationView view(const AcceptedStrategyInvocation &invocation) noexcept {
   return {
@@ -60,6 +45,12 @@ InvocationView view(const AcceptedStrategyInvocation &invocation) noexcept {
           invocation.strategy_implementation_version(),
       .arithmetic_version = invocation.arithmetic_version(),
       .explanation_policy_version = invocation.explanation_policy_version(),
+      .definition_digest = invocation.definition_digest(),
+      .activation_control_outcome_id =
+          invocation.activation_control_outcome_id(),
+      .activation_checksum = invocation.activation_checksum(),
+      .run_control_cursor = invocation.run_control_cursor(),
+      .selection_semantic_checksum = invocation.selection_semantic_checksum(),
       .maximum_operations = invocation.maximum_operations(),
       .feature_cut = invocation.feature_cut(),
       .parameters = invocation.parameters(),
@@ -101,7 +92,9 @@ bool matches_cut(const core::features::FeatureProvenance &value,
   const auto cursors = value.lineage.cursors();
   if (cursors.size() > kMaximumAcceptedLineageCursors ||
       std::find(cursors.begin(), cursors.end(),
-                invocation.cut.run_timer_cursor) == cursors.end())
+                invocation.cut.run_timer_cursor) == cursors.end() ||
+      std::find(cursors.begin(), cursors.end(),
+                invocation.run_control_cursor) == cursors.end())
     return false;
   return value.lineage.run_id() == value.run_id &&
          value.lineage.run_input_sequence() == value.run_input_sequence &&
@@ -113,7 +106,11 @@ bool matches_cut(const core::features::FeatureProvenance &value,
              invocation.cut.logical_time_nanoseconds &&
          value.configuration_epoch == invocation.cut.configuration_epoch &&
          value.effective_control_position ==
-             invocation.cut.effective_control_position;
+             invocation.cut.effective_control_position &&
+         value.run_control_cursor == invocation.run_control_cursor &&
+         value.run_timer_cursor == invocation.cut.run_timer_cursor &&
+         value.selection_semantic_checksum ==
+             invocation.selection_semantic_checksum;
 }
 
 bool validate_feature_cut(const InvocationView &invocation) noexcept {
@@ -143,8 +140,9 @@ bool validate_parameters(
   return parameters.size() <= 1;
 }
 
-bool matches_definition(const StrategyDescriptor &descriptor,
+bool matches_definition(const AcceptedStrategyDefinition &definition,
                         const InvocationView &invocation) noexcept {
+  const auto descriptor = definition.descriptor();
   return invocation.strategy_definition_version ==
              descriptor.definition_version &&
          invocation.strategy_implementation_version ==
@@ -152,6 +150,7 @@ bool matches_definition(const StrategyDescriptor &descriptor,
          invocation.arithmetic_version == descriptor.arithmetic_version &&
          invocation.explanation_policy_version ==
              descriptor.explanation_policy_version &&
+         invocation.definition_digest == definition.definition_digest() &&
          invocation.maximum_operations <=
              descriptor.resource_limits.maximum_operations;
 }
@@ -204,7 +203,7 @@ bool append_factor(std::span<std::optional<ExplanationFactor>> factor_storage,
 StrategyHostResult complete_abstention(
     const AcceptedStrategyDefinition &definition,
     StrategyAbstentionReason reason, const InterpreterState &state,
-    std::size_t diagnostic_factor_index,
+    const InvocationView &invocation, std::size_t diagnostic_factor_index,
     const DeterministicOperationBudget &budget,
     std::span<std::optional<ExplanationFactor>> factor_storage) noexcept {
   const auto descriptor = definition.descriptor();
@@ -235,6 +234,18 @@ StrategyHostResult complete_abstention(
                   feature_factor && state.feature
                       ? std::optional{state.feature->evaluation_id}
                       : std::nullopt,
+              .causal_parameter_id =
+                  feature_factor ? std::nullopt
+                                 : std::optional{descriptor.parameter_schema[0]
+                                                     .parameter_id},
+              .causal_parameter_definition_version =
+                  feature_factor ? std::nullopt
+                                 : std::optional{descriptor.parameter_schema[0]
+                                                     .definition_version},
+              .causal_configuration_epoch = invocation.cut.configuration_epoch,
+              .causal_control_outcome_id =
+                  invocation.activation_control_outcome_id,
+              .causal_activation_checksum = invocation.activation_checksum,
               .ranking_policy_version = descriptor.explanation_policy_version,
           }))
     return failure(StrategyExecutionStatus::OutputCapacityExceeded, budget,
@@ -249,17 +260,6 @@ StrategyHostResult complete_abstention(
 
 } // namespace
 
-std::optional<AcceptedStrategyInvocation> StrategyInvocationAuthority::accept(
-    const AcceptedStrategyDefinition &definition,
-    const core::features::AcceptedFeatureEvaluationCut &feature_cut)
-    const noexcept {
-  const auto invocation = view(config_, feature_cut);
-  if (!matches_definition(definition.descriptor(), invocation) ||
-      !validate_feature_cut(invocation))
-    return std::nullopt;
-  return AcceptedStrategyInvocation(config_, feature_cut);
-}
-
 StrategyHostResult StrategyHost::evaluate(
     const AcceptedStrategyDefinition &definition,
     const AcceptedStrategyInvocation &accepted_invocation,
@@ -273,7 +273,7 @@ StrategyHostResult StrategyHost::evaluate(
       std::min(factor_storage.size(), kThresholdProgramFactors));
   clear_factors(bounded_factors);
 
-  if (!matches_definition(descriptor, invocation) ||
+  if (!matches_definition(definition, invocation) ||
       invocation.feature_cut.evaluations().empty() ||
       invocation.feature_cut.evaluations().size() >
           kMaximumAcceptedFeatureEvaluations ||
@@ -314,15 +314,15 @@ StrategyHostResult StrategyHost::evaluate(
       if (!state.feature)
         return complete_abstention(
             definition, StrategyAbstentionReason::MissingDeclaredFeature, state,
-            0, budget, bounded_factors);
+            invocation, 0, budget, bounded_factors);
       break;
     }
     case StrategyOpcode::RequireValidScaledRatio: {
       if (state.feature->disposition !=
           core::features::FeatureDisposition::ValidObservation)
-        return complete_abstention(definition,
-                                   StrategyAbstentionReason::NonValidFeature,
-                                   state, 0, budget, bounded_factors);
+        return complete_abstention(
+            definition, StrategyAbstentionReason::NonValidFeature, state,
+            invocation, 0, budget, bounded_factors);
       const auto &observation = *state.feature->observation;
       state.ratio =
           std::get_if<core::features::ScaledRatio>(&observation.value);
@@ -334,17 +334,17 @@ StrategyHostResult StrategyHost::evaluate(
           state.ratio->units < -state.ratio->scale.denominator() ||
           state.ratio->units > state.ratio->scale.denominator())
         return complete_abstention(
-            definition, StrategyAbstentionReason::IncompatibleFeature, state, 0,
-            budget, bounded_factors);
+            definition, StrategyAbstentionReason::IncompatibleFeature, state,
+            invocation, 0, budget, bounded_factors);
       break;
     }
     case StrategyOpcode::LoadParameter: {
       const auto &schema = descriptor.parameter_schema[instruction.operand];
       state.parameter = find_parameter(invocation, schema);
       if (!state.parameter)
-        return complete_abstention(definition,
-                                   StrategyAbstentionReason::MissingParameter,
-                                   state, 1, budget, bounded_factors);
+        return complete_abstention(
+            definition, StrategyAbstentionReason::MissingParameter, state,
+            invocation, 1, budget, bounded_factors);
       break;
     }
     case StrategyOpcode::RequirePositiveParameter: {
@@ -355,9 +355,9 @@ StrategyHostResult StrategyHost::evaluate(
           state.parameter->scale != state.ratio->scale ||
           state.parameter->units <= 0 ||
           state.parameter->units > state.parameter->scale.denominator())
-        return complete_abstention(definition,
-                                   StrategyAbstentionReason::InvalidParameter,
-                                   state, 1, budget, bounded_factors);
+        return complete_abstention(
+            definition, StrategyAbstentionReason::InvalidParameter, state,
+            invocation, 1, budget, bounded_factors);
       break;
     }
     case StrategyOpcode::CompareAbsoluteFeatureAtLeastParameter:
@@ -381,6 +381,11 @@ StrategyHostResult StrategyHost::evaluate(
                   .signed_contribution_units = state.ratio->units,
                   .contribution_scale = state.ratio->scale,
                   .causal_feature_evaluation_id = state.feature->evaluation_id,
+                  .causal_configuration_epoch =
+                      invocation.cut.configuration_epoch,
+                  .causal_control_outcome_id =
+                      invocation.activation_control_outcome_id,
+                  .causal_activation_checksum = invocation.activation_checksum,
                   .ranking_policy_version =
                       descriptor.explanation_policy_version,
               }))
@@ -406,6 +411,14 @@ StrategyHostResult StrategyHost::evaluate(
                   .observed_scale = state.parameter->scale,
                   .signed_contribution_units = signed_margin,
                   .contribution_scale = state.parameter->scale,
+                  .causal_parameter_id = state.parameter->parameter_id,
+                  .causal_parameter_definition_version =
+                      state.parameter->definition_version,
+                  .causal_configuration_epoch =
+                      invocation.cut.configuration_epoch,
+                  .causal_control_outcome_id =
+                      invocation.activation_control_outcome_id,
+                  .causal_activation_checksum = invocation.activation_checksum,
                   .ranking_policy_version =
                       descriptor.explanation_policy_version,
               }))

@@ -93,6 +93,9 @@ struct FeatureProvenance final {
   std::int64_t logical_time_nanoseconds{};
   std::uint64_t configuration_epoch{};
   std::optional<std::uint64_t> effective_control_position;
+  contracts::StreamCursor run_control_cursor;
+  contracts::StreamCursor run_timer_cursor;
+  contracts::Sha256Digest selection_semantic_checksum;
   contracts::StateLineage lineage;
   contracts::CanonicalInstrumentId canonical_instrument_id;
   contracts::VersionRef reference_snapshot_version;

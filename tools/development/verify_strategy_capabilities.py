@@ -78,7 +78,11 @@ def find_violations(paths: list[Path]) -> list[Violation]:
                 included = include.group(1)
                 if included in FORBIDDEN_INCLUDES:
                     violations.append(Violation(path, line_number, FORBIDDEN_INCLUDES[included]))
-                if included.startswith("chronos/core/") or included.endswith("/strategy_host.hpp"):
+                if (
+                    included.startswith("chronos/core/")
+                    or included.startswith("chronos/runtime/")
+                    or included.endswith("/strategy_host.hpp")
+                ):
                     violations.append(Violation(path, line_number, "undeclared-host-or-core"))
             for pattern, capability in TOKEN_PATTERNS:
                 if pattern.search(line):

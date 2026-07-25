@@ -34,14 +34,19 @@ def test_deterministic_strategy_surface_passes(tmp_path: Path) -> None:
     assert find_violations([path]) == []
 
 
-def test_strategy_cannot_import_core_or_host_authority(tmp_path: Path) -> None:
+def test_strategy_cannot_import_core_runtime_or_host_authority(tmp_path: Path) -> None:
     path = write_source(
         tmp_path,
         '#include "chronos/core/features/feature_runtime.hpp"\n'
+        '#include "chronos/runtime/strategies/strategy_runtime.hpp"\n'
         '#include "chronos/strategies/sdk/strategy_host.hpp"\n',
     )
     capabilities = [item.capability for item in find_violations([path])]
-    assert capabilities == ["undeclared-host-or-core", "undeclared-host-or-core"]
+    assert capabilities == [
+        "undeclared-host-or-core",
+        "undeclared-host-or-core",
+        "undeclared-host-or-core",
+    ]
 
 
 def test_host_clock_filesystem_network_and_secret_access_fail(tmp_path: Path) -> None:

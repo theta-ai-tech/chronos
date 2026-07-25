@@ -70,6 +70,9 @@ void append_provenance(std::vector<std::byte> &output,
   append_integer(output, value.logical_time_nanoseconds);
   append_integer(output, value.configuration_epoch);
   append_optional_u64(output, value.effective_control_position);
+  append_cursor(output, value.run_control_cursor);
+  append_cursor(output, value.run_timer_cursor);
+  append_digest(output, value.selection_semantic_checksum);
   append_id(output, value.lineage.run_id());
   append_integer(output, value.lineage.run_input_sequence());
   append_integer(output,
@@ -132,6 +135,9 @@ FeatureProvenance provenance(const FeatureRuntimeConfig &config,
       .logical_time_nanoseconds = bundle.logical_time_nanoseconds,
       .configuration_epoch = bundle.configuration_epoch,
       .effective_control_position = bundle.effective_control_position,
+      .run_control_cursor = bundle.run_control_cursor,
+      .run_timer_cursor = bundle.run_timer_cursor,
+      .selection_semantic_checksum = bundle.selection_semantic_checksum,
       .lineage = view.lineage,
       .canonical_instrument_id = view.canonical_instrument_id,
       .reference_snapshot_version = view.reference_snapshot_version,

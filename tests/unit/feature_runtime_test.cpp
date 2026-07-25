@@ -1,4 +1,5 @@
 #include "chronos/core/features/feature_runtime.hpp"
+#include "chronos/runtime/strategies/strategy_runtime.hpp"
 #include "chronos/strategies/sdk/strategy_host.hpp"
 
 #include "microtest.hpp"
@@ -8,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -15,7 +17,12 @@ namespace contracts = chronos::contracts;
 namespace dispatch = chronos::core::dispatch;
 namespace features = chronos::core::features;
 namespace market = chronos::core::market_state;
+namespace strategy_runtime = chronos::runtime::strategies;
 namespace sdk = chronos::strategies::sdk;
+
+static_assert(
+    !std::is_default_constructible_v<sdk::AcceptedStrategyInvocation>);
+static_assert(!std::is_aggregate_v<sdk::AcceptedStrategyInvocation>);
 
 template <typename Id> Id id(std::uint8_t seed) {
   typename Id::bytes_type value{};
@@ -425,7 +432,7 @@ std::span<const sdk::StrategyParameter> threshold_parameters() {
 
 sdk::AcceptedStrategyDefinition accepted_host_definition();
 
-sdk::StrategyInvocationAuthorityConfig host_authority_config(
+strategy_runtime::StrategyRuntimeConfig host_runtime_config(
     const features::AcceptedFeatureEvaluationCut &accepted,
     std::optional<sdk::StrategyParameter> parameter,
     std::optional<std::int64_t> deadline = std::nullopt,
@@ -434,35 +441,22 @@ sdk::StrategyInvocationAuthorityConfig host_authority_config(
   const auto &provenance = feature.observation
                                ? feature.observation->provenance
                                : feature.unavailable->provenance;
-  const auto timer =
-      std::find_if(provenance.lineage.cursors().begin(),
-                   provenance.lineage.cursors().end(), [](const auto &value) {
-                     return value.stream_id() == id<contracts::StreamId>(13);
-                   });
-  if (timer == provenance.lineage.cursors().end())
-    std::abort();
-  const auto descriptor = host_definition().descriptor;
   return {
       .run_id = provenance.run_id,
       .strategy_instance_id = id<contracts::StrategyInstanceId>(95),
       .listing_id = provenance.listing_id,
       .canonical_instrument_id = provenance.canonical_instrument_id,
-      .strategy_definition_version = descriptor.definition_version,
-      .strategy_implementation_version = descriptor.implementation_version,
-      .arithmetic_version = descriptor.arithmetic_version,
-      .explanation_policy_version = descriptor.explanation_policy_version,
-      .maximum_operations = maximum_operations,
+      .definition = accepted_host_definition(),
       .parameter = parameter,
-      .cut =
-          {
-              .run_input_sequence = provenance.run_input_sequence,
-              .logical_time_nanoseconds = provenance.logical_time_nanoseconds,
-              .run_timer_cursor = *timer,
-              .configuration_epoch = provenance.configuration_epoch,
-              .effective_control_position =
-                  provenance.effective_control_position,
-              .logical_deadline_nanoseconds = deadline,
-          },
+      .activation_control_outcome_id = id<contracts::EventId>(99),
+      .active_configuration_epoch = provenance.configuration_epoch,
+      .effective_control_position = provenance.effective_control_position,
+      .run_control_stream_id = id<contracts::StreamId>(12),
+      .run_control_stream_epoch = 1,
+      .run_timer_stream_id = id<contracts::StreamId>(13),
+      .run_timer_stream_epoch = 1,
+      .maximum_operations = maximum_operations,
+      .logical_deadline_nanoseconds = deadline,
   };
 }
 
@@ -470,10 +464,12 @@ sdk::AcceptedStrategyInvocation accepted_host_invocation(
     const features::AcceptedFeatureEvaluationCut &accepted,
     std::optional<std::int64_t> deadline = std::nullopt,
     std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations) {
-  auto authority = sdk::StrategyInvocationAuthority::from(host_authority_config(
-      accepted, threshold_parameters()[0], deadline, maximum_operations));
-  const auto invocation =
-      authority.accept(accepted_host_definition(), accepted);
+  const auto runtime =
+      strategy_runtime::StrategyRuntime::activate(host_runtime_config(
+          accepted, threshold_parameters()[0], deadline, maximum_operations));
+  if (!runtime)
+    std::abort();
+  const auto invocation = runtime->admit(accepted);
   if (!invocation)
     std::abort();
   return *invocation;
@@ -481,10 +477,11 @@ sdk::AcceptedStrategyInvocation accepted_host_invocation(
 
 sdk::AcceptedStrategyInvocation accepted_host_invocation_without_parameter(
     const features::AcceptedFeatureEvaluationCut &accepted) {
-  auto authority = sdk::StrategyInvocationAuthority::from(
-      host_authority_config(accepted, std::nullopt));
-  const auto invocation =
-      authority.accept(accepted_host_definition(), accepted);
+  const auto runtime = strategy_runtime::StrategyRuntime::activate(
+      host_runtime_config(accepted, std::nullopt));
+  if (!runtime)
+    std::abort();
+  const auto invocation = runtime->admit(accepted);
   if (!invocation)
     std::abort();
   return *invocation;
@@ -851,6 +848,12 @@ TEST_CASE("strategy host admits only authority-issued immutable feature cuts") {
         evaluation(result, features::FeatureKind::OrderBookImbalance)
             .evaluation_id);
   CHECK(!factors[1]->causal_feature_evaluation_id);
+  CHECK(factors[1]->causal_parameter_id == id<contracts::DefinitionId>(94));
+  CHECK(factors[1]->causal_parameter_definition_version == version(95));
+  CHECK(factors[1]->causal_configuration_epoch == 1);
+  CHECK(factors[1]->causal_control_outcome_id == id<contracts::EventId>(99));
+  CHECK(factors[1]->causal_activation_checksum ==
+        invocation.activation_checksum());
   CHECK(std::all_of(workspace.begin(),
                     workspace.begin() + sdk::kInterpreterWorkingBytes,
                     [](auto byte) { return byte == std::byte{}; }));
@@ -879,22 +882,28 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
                      [](const auto &factor) { return factor.has_value(); }));
 
   auto wrong_run =
-      host_authority_config(*result.accepted_cut(), threshold_parameters()[0]);
+      host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
   wrong_run.run_id = id<contracts::RunId>(96);
-  CHECK(!sdk::StrategyInvocationAuthority::from(wrong_run).accept(
-      definition, *result.accepted_cut()));
+  const auto wrong_run_runtime =
+      strategy_runtime::StrategyRuntime::activate(wrong_run);
+  CHECK(wrong_run_runtime.has_value());
+  CHECK(!wrong_run_runtime->admit(*result.accepted_cut()));
 
   auto wrong_timer =
-      host_authority_config(*result.accepted_cut(), threshold_parameters()[0]);
-  wrong_timer.cut.run_timer_cursor = cursor(99, 1);
-  CHECK(!sdk::StrategyInvocationAuthority::from(wrong_timer)
-             .accept(definition, *result.accepted_cut()));
+      host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
+  wrong_timer.run_timer_stream_id = id<contracts::StreamId>(99);
+  const auto wrong_timer_runtime =
+      strategy_runtime::StrategyRuntime::activate(wrong_timer);
+  CHECK(wrong_timer_runtime.has_value());
+  CHECK(!wrong_timer_runtime->admit(*result.accepted_cut()));
 
   auto wrong_control =
-      host_authority_config(*result.accepted_cut(), threshold_parameters()[0]);
-  ++wrong_control.cut.configuration_epoch;
-  CHECK(!sdk::StrategyInvocationAuthority::from(wrong_control)
-             .accept(definition, *result.accepted_cut()));
+      host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
+  ++wrong_control.active_configuration_epoch;
+  const auto wrong_control_runtime =
+      strategy_runtime::StrategyRuntime::activate(wrong_control);
+  CHECK(wrong_control_runtime.has_value());
+  CHECK(!wrong_control_runtime->admit(*result.accepted_cut()));
 
   const auto late_invocation = accepted_host_invocation(
       *result.accepted_cut(), invocation.cut().logical_time_nanoseconds - 1);
@@ -919,15 +928,14 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
   CHECK(no_output.charged_operations == 0);
 
   auto mutable_config =
-      host_authority_config(*result.accepted_cut(), threshold_parameters()[0]);
-  auto owning_authority =
-      sdk::StrategyInvocationAuthority::from(mutable_config);
+      host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
+  auto owning_runtime =
+      strategy_runtime::StrategyRuntime::activate(mutable_config);
   mutable_config.parameter->units = 900000;
-  mutable_config.cut.logical_deadline_nanoseconds = 0;
+  mutable_config.logical_deadline_nanoseconds = 0;
   mutable_config.strategy_instance_id = id<contracts::StrategyInstanceId>(97);
   mutable_config.maximum_operations = 0;
-  const auto owned_invocation =
-      owning_authority.accept(definition, *result.accepted_cut());
+  const auto owned_invocation = owning_runtime->admit(*result.accepted_cut());
   CHECK(owned_invocation.has_value());
   CHECK(owned_invocation->parameters()[0].units == 250000);
   CHECK(!owned_invocation->cut().logical_deadline_nanoseconds);
@@ -936,25 +944,55 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
   CHECK(owned_invocation->maximum_operations() ==
         sdk::kMaximumEvaluationOperations);
 
-  auto wrong_definition_config =
-      host_authority_config(*result.accepted_cut(), threshold_parameters()[0]);
-  wrong_definition_config.strategy_definition_version = version(98);
-  auto wrong_definition_authority =
-      sdk::StrategyInvocationAuthority::from(wrong_definition_config);
-  CHECK(!wrong_definition_authority.accept(definition, *result.accepted_cut()));
   auto alternate_candidate = host_definition();
-  alternate_candidate.descriptor.definition_version = version(98);
+  alternate_candidate.program.signal_horizon_nanoseconds = 2'000'000;
   const auto alternate_definition =
       sdk::AcceptedStrategyDefinition::accept(alternate_candidate);
   CHECK(alternate_definition.has_value());
-  const auto wrong_definition_invocation = wrong_definition_authority.accept(
-      *alternate_definition, *result.accepted_cut());
-  CHECK(wrong_definition_invocation.has_value());
   const auto definition_mismatch = sdk::StrategyHost::evaluate(
-      definition, *wrong_definition_invocation, workspace, factors);
+      *alternate_definition, invocation, workspace, factors);
   CHECK(definition_mismatch.status ==
         sdk::StrategyExecutionStatus::ContractViolation);
   CHECK(definition_mismatch.charged_operations == 0);
+
+  auto alternate_activation =
+      host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
+  alternate_activation.parameter->units = 500000;
+  const auto alternate_runtime =
+      strategy_runtime::StrategyRuntime::activate(alternate_activation);
+  CHECK(alternate_runtime.has_value());
+  CHECK(alternate_runtime->activation_checksum() !=
+        owning_runtime->activation_checksum());
+  CHECK(
+      alternate_runtime->admit(*result.accepted_cut())->activation_checksum() ==
+      alternate_runtime->activation_checksum());
+
+  auto alternate_instance =
+      host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
+  alternate_instance.strategy_instance_id =
+      id<contracts::StrategyInstanceId>(98);
+  auto alternate_fuel =
+      host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
+  alternate_fuel.maximum_operations = sdk::kAdmissionOperations + 4;
+  auto alternate_deadline =
+      host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
+  alternate_deadline.logical_deadline_nanoseconds =
+      invocation.cut().logical_time_nanoseconds;
+  const auto instance_runtime =
+      strategy_runtime::StrategyRuntime::activate(alternate_instance);
+  const auto fuel_runtime =
+      strategy_runtime::StrategyRuntime::activate(alternate_fuel);
+  const auto deadline_runtime =
+      strategy_runtime::StrategyRuntime::activate(alternate_deadline);
+  CHECK(instance_runtime.has_value());
+  CHECK(fuel_runtime.has_value());
+  CHECK(deadline_runtime.has_value());
+  CHECK(instance_runtime->activation_checksum() !=
+        owning_runtime->activation_checksum());
+  CHECK(fuel_runtime->activation_checksum() !=
+        owning_runtime->activation_checksum());
+  CHECK(deadline_runtime->activation_checksum() !=
+        owning_runtime->activation_checksum());
 
   std::array<std::optional<sdk::ExplanationFactor>, 4> oversized_factors;
   CHECK(sdk::StrategyHost::evaluate(definition, invocation, workspace,
@@ -962,10 +1000,10 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
             .completed());
   oversized_factors[2] = oversized_factors[0];
   oversized_factors[3] = oversized_factors[1];
-  const auto empty_fuel_invocation =
-      accepted_host_invocation(*result.accepted_cut(), std::nullopt, 0);
-  CHECK(sdk::StrategyHost::evaluate(definition, empty_fuel_invocation,
-                                    workspace, oversized_factors)
+  const auto one_fuel_invocation =
+      accepted_host_invocation(*result.accepted_cut(), std::nullopt, 1);
+  CHECK(sdk::StrategyHost::evaluate(definition, one_fuel_invocation, workspace,
+                                    oversized_factors)
             .status ==
         sdk::StrategyExecutionStatus::DeterministicBudgetExhausted);
   CHECK(!oversized_factors[0]);
@@ -990,6 +1028,12 @@ TEST_CASE("strategy host emits typed abstentions without native callbacks") {
         sdk::StrategyAbstentionReason::MissingParameter);
   CHECK(missing.factor_count == 1);
   CHECK(!factors[0]->causal_feature_evaluation_id);
+  CHECK(factors[0]->causal_parameter_id == id<contracts::DefinitionId>(94));
+  CHECK(factors[0]->causal_parameter_definition_version == version(95));
+  CHECK(factors[0]->causal_configuration_epoch == 1);
+  CHECK(factors[0]->causal_control_outcome_id == id<contracts::EventId>(99));
+  CHECK(factors[0]->causal_activation_checksum ==
+        invocation.activation_checksum());
 }
 
 TEST_CASE(

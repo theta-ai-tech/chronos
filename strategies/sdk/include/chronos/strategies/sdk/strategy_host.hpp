@@ -8,21 +8,11 @@
 #include <span>
 #include <utility>
 
-namespace chronos::strategies::sdk {
+namespace chronos::runtime::strategies {
+class StrategyRuntime;
+}
 
-struct StrategyInvocationAuthorityConfig final {
-  contracts::RunId run_id;
-  contracts::StrategyInstanceId strategy_instance_id;
-  contracts::ListingId listing_id;
-  contracts::CanonicalInstrumentId canonical_instrument_id;
-  contracts::VersionRef strategy_definition_version;
-  contracts::VersionRef strategy_implementation_version;
-  contracts::VersionRef arithmetic_version;
-  contracts::VersionRef explanation_policy_version;
-  std::uint64_t maximum_operations{};
-  std::optional<StrategyParameter> parameter;
-  LogicalCut cut;
-};
+namespace chronos::strategies::sdk {
 
 class AcceptedStrategyInvocation final {
 public:
@@ -53,6 +43,23 @@ public:
   explanation_policy_version() const noexcept {
     return explanation_policy_version_;
   }
+  [[nodiscard]] contracts::Sha256Digest definition_digest() const noexcept {
+    return definition_digest_;
+  }
+  [[nodiscard]] contracts::EventId
+  activation_control_outcome_id() const noexcept {
+    return activation_control_outcome_id_;
+  }
+  [[nodiscard]] contracts::Sha256Digest activation_checksum() const noexcept {
+    return activation_checksum_;
+  }
+  [[nodiscard]] contracts::StreamCursor run_control_cursor() const noexcept {
+    return run_control_cursor_;
+  }
+  [[nodiscard]] contracts::Sha256Digest
+  selection_semantic_checksum() const noexcept {
+    return selection_semantic_checksum_;
+  }
   [[nodiscard]] std::uint64_t maximum_operations() const noexcept {
     return maximum_operations_;
   }
@@ -68,20 +75,37 @@ public:
 
 private:
   AcceptedStrategyInvocation(
-      const StrategyInvocationAuthorityConfig &config,
-      const core::features::AcceptedFeatureEvaluationCut &feature_cut) noexcept
-      : run_id_(config.run_id),
-        strategy_instance_id_(config.strategy_instance_id),
-        listing_id_(config.listing_id),
-        canonical_instrument_id_(config.canonical_instrument_id),
-        strategy_definition_version_(config.strategy_definition_version),
-        strategy_implementation_version_(
-            config.strategy_implementation_version),
-        arithmetic_version_(config.arithmetic_version),
-        explanation_policy_version_(config.explanation_policy_version),
-        maximum_operations_(config.maximum_operations),
-        feature_cut_(feature_cut), parameter_(config.parameter),
-        cut_(config.cut) {}
+      contracts::RunId run_id,
+      contracts::StrategyInstanceId strategy_instance_id,
+      contracts::ListingId listing_id,
+      contracts::CanonicalInstrumentId canonical_instrument_id,
+      contracts::VersionRef strategy_definition_version,
+      contracts::VersionRef strategy_implementation_version,
+      contracts::VersionRef arithmetic_version,
+      contracts::VersionRef explanation_policy_version,
+      contracts::Sha256Digest definition_digest,
+      contracts::EventId activation_control_outcome_id,
+      contracts::Sha256Digest activation_checksum,
+      contracts::StreamCursor run_control_cursor,
+      contracts::Sha256Digest selection_semantic_checksum,
+      std::uint64_t maximum_operations,
+      core::features::AcceptedFeatureEvaluationCut feature_cut,
+      std::optional<StrategyParameter> parameter, LogicalCut cut) noexcept
+      : run_id_(run_id), strategy_instance_id_(strategy_instance_id),
+        listing_id_(listing_id),
+        canonical_instrument_id_(canonical_instrument_id),
+        strategy_definition_version_(strategy_definition_version),
+        strategy_implementation_version_(strategy_implementation_version),
+        arithmetic_version_(arithmetic_version),
+        explanation_policy_version_(explanation_policy_version),
+        definition_digest_(definition_digest),
+        activation_control_outcome_id_(activation_control_outcome_id),
+        activation_checksum_(activation_checksum),
+        run_control_cursor_(run_control_cursor),
+        selection_semantic_checksum_(selection_semantic_checksum),
+        maximum_operations_(maximum_operations),
+        feature_cut_(std::move(feature_cut)), parameter_(std::move(parameter)),
+        cut_(cut) {}
 
   contracts::RunId run_id_;
   contracts::StrategyInstanceId strategy_instance_id_;
@@ -91,32 +115,17 @@ private:
   contracts::VersionRef strategy_implementation_version_;
   contracts::VersionRef arithmetic_version_;
   contracts::VersionRef explanation_policy_version_;
+  contracts::Sha256Digest definition_digest_;
+  contracts::EventId activation_control_outcome_id_;
+  contracts::Sha256Digest activation_checksum_;
+  contracts::StreamCursor run_control_cursor_;
+  contracts::Sha256Digest selection_semantic_checksum_;
   std::uint64_t maximum_operations_{};
   core::features::AcceptedFeatureEvaluationCut feature_cut_;
   std::optional<StrategyParameter> parameter_;
   LogicalCut cut_;
 
-  friend class StrategyInvocationAuthority;
-};
-
-class StrategyInvocationAuthority final {
-public:
-  [[nodiscard]] static StrategyInvocationAuthority
-  from(StrategyInvocationAuthorityConfig config) noexcept {
-    return StrategyInvocationAuthority(std::move(config));
-  }
-
-  [[nodiscard]] std::optional<AcceptedStrategyInvocation>
-  accept(const AcceptedStrategyDefinition &definition,
-         const core::features::AcceptedFeatureEvaluationCut &feature_cut)
-      const noexcept;
-
-private:
-  explicit StrategyInvocationAuthority(
-      StrategyInvocationAuthorityConfig config) noexcept
-      : config_(std::move(config)) {}
-
-  StrategyInvocationAuthorityConfig config_;
+  friend class ::chronos::runtime::strategies::StrategyRuntime;
 };
 
 struct StrategyHostResult final {
