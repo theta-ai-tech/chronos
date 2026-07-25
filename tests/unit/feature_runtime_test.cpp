@@ -36,8 +36,6 @@ contracts::VersionRef version(std::uint8_t seed, std::uint64_t number = 1) {
       .value();
 }
 
-std::vector<std::byte> strategy_activation_payload();
-
 contracts::StreamCursor origin(std::uint8_t seed) {
   return contracts::StreamCursor::at_origin(id<contracts::StreamId>(seed), 1)
       .value();
@@ -58,11 +56,12 @@ std::vector<contracts::StreamId> required_streams() {
 
 contracts::StateLineage
 lineage(std::uint64_t run_sequence, contracts::StreamCursor book_cursor,
-        contracts::StreamCursor timer_cursor = origin(13)) {
+        contracts::StreamCursor timer_cursor = origin(13),
+        bool controlled = false) {
   const auto required = required_streams();
   const std::array cursors = {
       origin(4),   origin(7),  book_cursor,
-      origin(10),  origin(11), run_sequence == 0 ? origin(12) : cursor(12, 1),
+      origin(10),  origin(11), controlled ? cursor(12, 1) : origin(12),
       timer_cursor};
   return contracts::StateLineage::from(id<contracts::RunId>(30), run_sequence,
                                        required, cursors)
@@ -219,7 +218,8 @@ market::ListingViewPublisherConfig publisher_config() {
 market::ListingViewCutInput make_cut_input(
     std::uint64_t run_sequence, contracts::EventId event_id,
     std::string event_type, contracts::EventPosition selected_position,
-    std::vector<std::byte> payload, contracts::StateLineage cut_lineage) {
+    std::vector<std::byte> payload, contracts::StateLineage cut_lineage,
+    std::optional<dispatch::AcceptedControlOutcome> control = std::nullopt) {
   dispatch::RunInputCandidate candidate{
       .event_id = event_id,
       .event_type = event_type,
@@ -240,28 +240,17 @@ market::ListingViewCutInput make_cut_input(
                                     ? origin(14)
                                     : cursor(14, run_sequence - 1)},
       .post_selection_cursors = {cursor(14, run_sequence)},
-      .control_cursor = cursor(15, 1),
+      .control_cursor =
+          control ? control->accepted_control_cursor() : origin(15),
       .consumer_boundary_id = id<contracts::ConsumerBoundaryId>(38),
-      .active_configuration_epoch = 2,
+      .active_configuration_epoch =
+          control ? control->reservation().new_configuration_epoch : 1,
       .merge_policy_version = version(37),
       .registry_snapshot_version = version(39),
       .input_semantic_checksum = candidate.semantic_checksum,
   };
-  if (run_sequence == 1) {
-    auto behavior_payload = strategy_activation_payload();
-    selection.applied_controls.push_back({
-        .run_id = id<contracts::RunId>(30),
-        .control_stream_id = id<contracts::StreamId>(15),
-        .control_stream_epoch = 1,
-        .control_outcome_id = id<contracts::EventId>(99),
-        .control_sequence = 1,
-        .effective_position = 1,
-        .prior_configuration_epoch = 1,
-        .new_configuration_epoch = 2,
-        .behavior_payload = behavior_payload,
-        .behavior_checksum = contracts::sha256(behavior_payload),
-    });
-  }
+  if (control && run_sequence == control->reservation().effective_position)
+    selection.applied_controls.push_back(control->reservation());
   selection.selection_semantic_checksum =
       dispatch::derive_run_input_selection_checksum(
           publisher_config().dispatcher_config, selection, candidate);
@@ -277,38 +266,27 @@ market::ListingViewCutInput make_cut_input(
       .input_semantic_checksum = candidate.semantic_checksum,
       .selection_semantic_checksum = selection.selection_semantic_checksum,
       .merge_policy_version = version(37),
-      .configuration_epoch = 2,
-      .effective_control_position = 1,
+      .configuration_epoch = selection.active_configuration_epoch,
+      .effective_control_position =
+          control ? std::optional(control->reservation().effective_position)
+                  : std::nullopt,
       .canonical_instrument_id = id<contracts::CanonicalInstrumentId>(42),
       .reference_snapshot_version = version(43),
       .listing_definition_version = version(44),
       .reference_configuration_lineage_version = version(45),
       .lineage = std::move(cut_lineage),
+      .accepted_control_outcome = std::move(control),
   };
 }
 
 market::ListingViewCutInput initial_cut_input(
-    std::optional<std::vector<std::byte>> activation_payload = std::nullopt) {
-  auto input = make_cut_input(
+    std::optional<dispatch::AcceptedControlOutcome> control = std::nullopt) {
+  return make_cut_input(
       1, id<contracts::EventId>(23), "market.book.observation.snapshot",
       contracts::EventPosition::from(id<contracts::StreamId>(8), 1, 0).value(),
-      kInitialPayload, lineage(1, cursor(8, 0)));
-  if (activation_payload) {
-    auto &control = input.dispatch_selection.applied_controls.front();
-    control.behavior_payload = std::move(*activation_payload);
-    control.behavior_checksum = contracts::sha256(control.behavior_payload);
-    input.dispatch_selection.selection_semantic_checksum =
-        dispatch::derive_run_input_selection_checksum(
-            publisher_config().dispatcher_config, input.dispatch_selection,
-            input.dispatch_candidate);
-    input.dispatch_selection.selection_id =
-        dispatch::derive_run_input_selection_id(
-            input.dispatch_selection.selection_semantic_checksum);
-    input.selection_id = input.dispatch_selection.selection_id;
-    input.selection_semantic_checksum =
-        input.dispatch_selection.selection_semantic_checksum;
-  }
-  return input;
+      kInitialPayload,
+      lineage(1, cursor(8, 0), origin(13), control.has_value()),
+      std::move(control));
 }
 
 market::ViewPublicationTransition
@@ -638,21 +616,15 @@ sdk::AcceptedStrategyDefinition accepted_host_definition() {
   return *accepted;
 }
 
-std::vector<std::byte> strategy_activation_payload() {
-  return strategy_runtime::encode_strategy_activation_control(
-      host_runtime_config_base(threshold_parameters()[0]));
-}
-
 features::FeatureRuntimeResult accepted_features_for_strategy(
-    const strategy_runtime::StrategyRuntimeConfig &config) {
-  auto book = make_book();
+    const strategy_runtime::StrategyRuntimeConfig &config, TopSpec spec = {}) {
+  auto book = make_book(spec);
   auto auxiliary = make_auxiliary(book);
   auto publisher =
       market::ListingViewPublisher::create(publisher_config()).value();
-  const auto accepted = publisher.accept_cut(
-      initial_cut_input(
-          strategy_runtime::encode_strategy_activation_control(config)),
-      book, auxiliary);
+  const auto control = accepted_activation_control(config);
+  const auto accepted =
+      publisher.accept_cut(initial_cut_input(control), book, auxiliary);
   if (!accepted.ok())
     std::abort();
   acknowledge(publisher, accepted);
@@ -668,13 +640,12 @@ market::ListingViewPublisher publish_quality_state(
   auto auxiliary = make_auxiliary(book);
   auto publisher =
       market::ListingViewPublisher::create(publisher_config()).value();
-  const auto first = publisher.accept_cut(
+  const auto control =
       strategy_config
-          ? initial_cut_input(
-                strategy_runtime::encode_strategy_activation_control(
-                    *strategy_config))
-          : initial_cut_input(),
-      book, auxiliary);
+          ? std::optional(accepted_activation_control(*strategy_config))
+          : std::nullopt;
+  const auto first =
+      publisher.accept_cut(initial_cut_input(control), book, auxiliary);
   if (!first.ok())
     std::abort();
   acknowledge(publisher, first);
@@ -691,19 +662,20 @@ market::ListingViewPublisher publish_quality_state(
   };
   contracts::EventPosition selected_position =
       contracts::EventPosition::from(id<contracts::StreamId>(13), 1, 0).value();
-  auto cut_lineage = lineage(2, cursor(8, 0), cursor(13, 0));
+  auto cut_lineage =
+      lineage(2, cursor(8, 0), cursor(13, 0), control.has_value());
   if (kind == market::ListingQualityInputKind::BookGapDetected) {
     quality.event_cursor = cursor(8, 1);
     selected_position =
         contracts::EventPosition::from(id<contracts::StreamId>(8), 1, 1)
             .value();
-    cut_lineage = lineage(2, cursor(8, 1));
+    cut_lineage = lineage(2, cursor(8, 1), origin(13), control.has_value());
   }
   if (!auxiliary.apply_quality_input(quality, &book).ok())
     std::abort();
   const auto second_input =
       make_cut_input(2, event_id, std::move(event_type), selected_position,
-                     payload, std::move(cut_lineage));
+                     payload, std::move(cut_lineage), control);
   const auto second = publisher.accept_cut(second_input, book, auxiliary);
   if (!second.ok())
     std::abort();
@@ -998,14 +970,29 @@ TEST_CASE("retained accepted handles prevent future-view look-ahead") {
 }
 
 TEST_CASE("strategy host admits only authority-issued immutable feature cuts") {
-  auto publisher = publish_initial();
-  const features::FeatureRuntime runtime(runtime_config());
-  const auto result = runtime.evaluate(*publisher.accepted_feature_cut());
+  const auto config = host_runtime_config_base(threshold_parameters()[0]);
+  const auto result = accepted_features_for_strategy(config);
   CHECK(result.ok());
   CHECK(result.accepted_cut() != nullptr);
+  CHECK(result.accepted_cut()->accepted_control_outcome().has_value());
+  const auto &control_provenance =
+      evaluation(result, features::FeatureKind::OrderBookImbalance)
+          .observation->provenance;
+  CHECK(control_provenance.active_control_outcome_id ==
+        id<contracts::EventId>(99));
+  CHECK(control_provenance.active_control_selection_semantic_checksum ==
+        result.accepted_cut()
+            ->accepted_control_outcome()
+            ->selection_semantic_checksum());
 
   const auto definition = accepted_host_definition();
   const auto invocation = accepted_host_invocation(*result.accepted_cut());
+  auto uncontrolled_publisher = publish_initial();
+  const auto uncontrolled =
+      features::FeatureRuntime(runtime_config())
+          .evaluate(*uncontrolled_publisher.accepted_feature_cut());
+  const auto activated = activate_runtime(config);
+  CHECK(!activated->admit(*uncontrolled.accepted_cut()));
   std::array<std::byte, sdk::kInterpreterWorkingBytes + 4> workspace;
   workspace.fill(std::byte{0x7f});
   std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
@@ -1035,9 +1022,8 @@ TEST_CASE("strategy host admits only authority-issued immutable feature cuts") {
 }
 
 TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
-  auto publisher = publish_initial();
-  const features::FeatureRuntime runtime(runtime_config());
-  const auto result = runtime.evaluate(*publisher.accepted_feature_cut());
+  const auto base_config = host_runtime_config_base(threshold_parameters()[0]);
+  const auto result = accepted_features_for_strategy(base_config);
   const auto definition = accepted_host_definition();
   std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;
   std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
@@ -1075,6 +1061,13 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
                                                   accepted_control);
   CHECK(!wrong_control_runtime.has_value());
 
+  auto negative_deadline =
+      host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
+  negative_deadline.logical_deadline_offset_nanoseconds = -1;
+  const auto negative_control = accepted_activation_control(negative_deadline);
+  CHECK(!strategy_runtime::StrategyRuntime::activate(negative_deadline,
+                                                     negative_control));
+
   auto scheduled_config = host_runtime_config(*result.accepted_cut(),
                                               threshold_parameters()[0], 10);
   const auto scheduled_features =
@@ -1094,6 +1087,14 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
       scheduled_runtime->admit(*later_features.accepted_cut());
   CHECK(later_invocation.has_value());
   CHECK(later_invocation->cut().logical_deadline_nanoseconds == 160);
+  auto overflow_publisher = publish_quality_state(
+      market::ListingQualityInputKind::LogicalTimerAdvanced,
+      "run.timer.logical.advanced", std::numeric_limits<std::int64_t>::max(),
+      &scheduled_config);
+  const auto overflow_features =
+      features::FeatureRuntime(runtime_config())
+          .evaluate(*overflow_publisher.accepted_feature_cut());
+  CHECK(!scheduled_runtime->admit(*overflow_features.accepted_cut()));
 
   const auto short_workspace = sdk::StrategyHost::evaluate(
       definition, invocation,
@@ -1145,6 +1146,13 @@ TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
   CHECK(alternate_runtime->activation_checksum() !=
         owning_runtime->activation_checksum());
   CHECK(!alternate_runtime->admit(*result.accepted_cut()));
+  auto alternate_later = publish_quality_state(
+      market::ListingQualityInputKind::LogicalTimerAdvanced,
+      "run.timer.logical.advanced", 150, &alternate_activation);
+  const auto alternate_later_features =
+      features::FeatureRuntime(runtime_config())
+          .evaluate(*alternate_later.accepted_feature_cut());
+  CHECK(!owning_runtime->admit(*alternate_later_features.accepted_cut()));
 
   auto alternate_instance =
       host_runtime_config(*result.accepted_cut(), threshold_parameters()[0]);
@@ -1218,12 +1226,13 @@ TEST_CASE("strategy host emits typed abstentions without native callbacks") {
 TEST_CASE(
     "strategy host turns stale and gapped feature cuts into abstentions") {
   const features::FeatureRuntime runtime(runtime_config());
+  const auto config = host_runtime_config_base(threshold_parameters()[0]);
   auto stale_publisher = publish_quality_state(
       market::ListingQualityInputKind::LogicalTimerAdvanced,
-      "run.timer.logical.advanced", 111);
+      "run.timer.logical.advanced", 111, &config);
   auto gapped_publisher =
       publish_quality_state(market::ListingQualityInputKind::BookGapDetected,
-                            "market.book.quality.gap_detected", 101);
+                            "market.book.quality.gap_detected", 101, &config);
   const std::array results = {
       runtime.evaluate(*stale_publisher.accepted_feature_cut()),
       runtime.evaluate(*gapped_publisher.accepted_feature_cut()),
@@ -1249,7 +1258,6 @@ TEST_CASE(
 }
 
 TEST_CASE("strategy host preserves exact threshold and ratio boundaries") {
-  const features::FeatureRuntime runtime(runtime_config());
   const auto definition = accepted_host_definition();
   struct Case final {
     TopSpec top;
@@ -1272,8 +1280,8 @@ TEST_CASE("strategy host preserves exact threshold and ratio boundaries") {
   };
 
   for (const auto &test_case : cases) {
-    auto publisher = publish_initial(test_case.top);
-    const auto result = runtime.evaluate(*publisher.accepted_feature_cut());
+    const auto config = host_runtime_config_base(threshold_parameters()[0]);
+    const auto result = accepted_features_for_strategy(config, test_case.top);
     CHECK(result.ok());
     const auto invocation = accepted_host_invocation(*result.accepted_cut());
     std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;

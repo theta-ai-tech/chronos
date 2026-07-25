@@ -97,6 +97,7 @@ struct ListingViewCutInput final {
   contracts::VersionRef listing_definition_version;
   contracts::VersionRef reference_configuration_lineage_version;
   contracts::StateLineage lineage;
+  std::optional<dispatch::AcceptedControlOutcome> accepted_control_outcome;
 
   bool operator==(const ListingViewCutInput &) const = default;
 };
@@ -118,6 +119,9 @@ struct ListingStateView final {
   contracts::VersionRef merge_policy_version;
   std::uint64_t configuration_epoch{};
   std::optional<std::uint64_t> effective_control_position;
+  std::optional<contracts::EventId> active_control_outcome_id;
+  std::optional<contracts::Sha256Digest>
+      active_control_selection_semantic_checksum;
   contracts::StateLineage lineage;
   std::uint64_t l2_transition_sequence{};
   std::vector<L2Level> bids;
@@ -156,6 +160,9 @@ struct StateViewBundle final {
   contracts::VersionRef merge_policy_version;
   std::uint64_t configuration_epoch{};
   std::optional<std::uint64_t> effective_control_position;
+  std::optional<contracts::EventId> active_control_outcome_id;
+  std::optional<contracts::Sha256Digest>
+      active_control_selection_semantic_checksum;
   std::optional<contracts::StateViewId> prior_bundle_id;
   contracts::VersionRef view_schema_version;
   contracts::VersionRef bundle_schema_version;
@@ -177,14 +184,21 @@ public:
   [[nodiscard]] const StateViewBundle &bundle() const noexcept {
     return *bundle_;
   }
+  [[nodiscard]] const std::optional<dispatch::AcceptedControlOutcome> &
+  accepted_control_outcome() const noexcept {
+    return accepted_control_outcome_;
+  }
 
 private:
   AcceptedFeatureCut(std::shared_ptr<const ListingStateView> view,
-                     std::shared_ptr<const StateViewBundle> bundle)
-      : view_(std::move(view)), bundle_(std::move(bundle)) {}
+                     std::shared_ptr<const StateViewBundle> bundle,
+                     std::optional<dispatch::AcceptedControlOutcome> control)
+      : view_(std::move(view)), bundle_(std::move(bundle)),
+        accepted_control_outcome_(std::move(control)) {}
 
   std::shared_ptr<const ListingStateView> view_;
   std::shared_ptr<const StateViewBundle> bundle_;
+  std::optional<dispatch::AcceptedControlOutcome> accepted_control_outcome_;
 
   friend class ListingViewPublisher;
 };

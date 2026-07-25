@@ -17,6 +17,7 @@ def load_tool(name: str):
 capability_module = load_tool("verify_strategy_capabilities")
 find_violations = capability_module.find_violations
 find_authored_strategy_code = capability_module.find_authored_strategy_code
+default_strategy_sources = capability_module.default_strategy_sources
 find_cmake_violations = capability_module.find_cmake_violations
 find_symbol_violations = load_tool("verify_strategy_symbols").find_symbol_violations
 
@@ -40,6 +41,13 @@ def test_authored_strategy_code_is_never_a_packaging_input(tmp_path: Path) -> No
     assert [item.capability for item in find_authored_strategy_code([path])] == [
         "authored-strategy-code"
     ]
+
+
+def test_extra_sdk_source_is_not_trusted_by_directory_name(tmp_path: Path) -> None:
+    path = tmp_path / "strategies/sdk/src/extra.cpp"
+    path.parent.mkdir(parents=True)
+    path.write_text("void hidden();\n", encoding="utf-8")
+    assert default_strategy_sources(tmp_path) == [path]
 
 
 def test_strategy_cannot_import_core_runtime_or_host_authority(tmp_path: Path) -> None:
@@ -95,6 +103,8 @@ def test_low_level_host_api_bypasses_fail(tmp_path: Path) -> None:
                 'open("state", 0); read(1, nullptr, 0); write(1, nullptr, 0);',
                 'printf("leak"); sleep(1); sendto(1, nullptr, 0, 0, nullptr, 0);',
                 "syscall(1); ::operator new(64); std::vector<int> values;",
+                "pthread_create(nullptr, nullptr, nullptr, nullptr);",
+                'dlopen("hidden", 0); dlsym(nullptr, "run");',
             ]
         ),
     )
@@ -106,6 +116,7 @@ def test_low_level_host_api_bypasses_fail(tmp_path: Path) -> None:
         "host-scheduling",
         "network",
         "unbounded-allocation",
+        "dynamic-loading",
     }
 
 
@@ -118,7 +129,11 @@ def test_unregistered_strategy_cmake_target_fails(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     capabilities = {item.capability for item in find_cmake_violations(tmp_path)}
-    assert capabilities == {"unregistered-strategy-target", "unregistered-strategy-link"}
+    assert capabilities == {
+        "unregistered-strategy-target",
+        "unregistered-strategy-link",
+        "untrusted-sdk-target-shape",
+    }
 
 
 def test_strategy_pack_cmake_may_only_register_one_manifest(tmp_path: Path) -> None:
@@ -133,12 +148,30 @@ def test_strategy_pack_cmake_may_only_register_one_manifest(tmp_path: Path) -> N
     ]
 
 
+def test_trusted_sdk_target_cannot_accept_additional_sources(tmp_path: Path) -> None:
+    strategies = tmp_path / "strategies"
+    strategies.mkdir()
+    (strategies / "CMakeLists.txt").write_text(
+        "add_library(chronos_strategy_sdk STATIC\n"
+        "  sdk/src/strategy.cpp\n"
+        "  sdk/src/strategy_host.cpp)\n"
+        "target_sources(chronos_strategy_sdk PRIVATE sdk/src/hidden.cpp)\n",
+        encoding="utf-8",
+    )
+    assert [item.capability for item in find_cmake_violations(tmp_path)] == [
+        "untrusted-sdk-target-shape"
+    ]
+
+
 def test_linked_forbidden_symbols_fail() -> None:
     output = """                 U getenv
                  U std::chrono::system_clock::now()
                  U connect
                  U open
                  U operator new(unsigned long)
+                 U pthread_create
+                 U dlopen
+                 U dlsym
                  U chronos::contracts::sha256(...)
 """
     capabilities = {item.capability for item in find_symbol_violations(output)}
@@ -148,4 +181,6 @@ def test_linked_forbidden_symbols_fail() -> None:
         "network",
         "host-syscall",
         "unbounded-allocation",
+        "host-scheduling",
+        "dynamic-loading",
     }

@@ -120,6 +120,9 @@ bool same_admission_cut(
          left.logical_time_nanoseconds == right.logical_time_nanoseconds &&
          left.configuration_epoch == right.configuration_epoch &&
          left.effective_control_position == right.effective_control_position &&
+         left.active_control_outcome_id == right.active_control_outcome_id &&
+         left.active_control_selection_semantic_checksum ==
+             right.active_control_selection_semantic_checksum &&
          left.run_control_cursor == right.run_control_cursor &&
          left.run_timer_cursor == right.run_timer_cursor &&
          left.selection_semantic_checksum ==
@@ -173,7 +176,9 @@ std::optional<chronos::strategies::sdk::AcceptedStrategyInvocation>
 StrategyRuntime::admit(const core::features::AcceptedFeatureEvaluationCut
                            &feature_cut) const noexcept {
   const auto &evaluations = feature_cut.evaluations();
-  if (evaluations.empty() ||
+  if (!feature_cut.accepted_control_outcome() ||
+      *feature_cut.accepted_control_outcome() != control_ ||
+      evaluations.empty() ||
       evaluations.size() >
           chronos::strategies::sdk::kMaximumAcceptedFeatureEvaluations)
     return std::nullopt;
@@ -193,10 +198,11 @@ StrategyRuntime::admit(const core::features::AcceptedFeatureEvaluationCut
       first->configuration_epoch != reservation.new_configuration_epoch ||
       first->effective_control_position !=
           std::optional(reservation.effective_position) ||
+      first->active_control_outcome_id !=
+          std::optional(reservation.control_outcome_id) ||
+      first->active_control_selection_semantic_checksum !=
+          std::optional(control_.selection_semantic_checksum()) ||
       first->run_input_sequence < reservation.effective_position ||
-      (first->run_input_sequence == reservation.effective_position &&
-       first->selection_semantic_checksum !=
-           control_.selection_semantic_checksum()) ||
       first->run_control_cursor.last_consumed_sequence() !=
           std::optional(reservation.control_sequence) ||
       first->run_control_cursor.stream_id() != config_.run_control_stream_id ||

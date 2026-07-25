@@ -10,6 +10,9 @@ consumer accepts the persisted selection. The canonical control payload binds
 the complete runtime configuration, and admission verifies its epoch, effective
 position, control order, and activation-cut checksum. Logical deadline offsets
 are non-negative and are resolved independently against each admitted cut.
+Market-state and feature cuts retain the opaque accepted control token and hash
+its outcome ID and accepted-selection checksum into provenance, so later cuts
+cannot substitute a numerically similar control lineage.
 
 - **Parent:** `runtime/`
 - **Owner / plane:** Strategy runtime / hot data plane

@@ -70,6 +70,12 @@ void append_provenance(std::vector<std::byte> &output,
   append_integer(output, value.logical_time_nanoseconds);
   append_integer(output, value.configuration_epoch);
   append_optional_u64(output, value.effective_control_position);
+  if (value.active_control_outcome_id &&
+      value.active_control_selection_semantic_checksum) {
+    append_integer<std::uint8_t>(output, 1);
+    append_id(output, *value.active_control_outcome_id);
+    append_digest(output, *value.active_control_selection_semantic_checksum);
+  }
   append_cursor(output, value.run_control_cursor);
   append_cursor(output, value.run_timer_cursor);
   append_digest(output, value.selection_semantic_checksum);
@@ -135,6 +141,9 @@ FeatureProvenance provenance(const FeatureRuntimeConfig &config,
       .logical_time_nanoseconds = bundle.logical_time_nanoseconds,
       .configuration_epoch = bundle.configuration_epoch,
       .effective_control_position = bundle.effective_control_position,
+      .active_control_outcome_id = bundle.active_control_outcome_id,
+      .active_control_selection_semantic_checksum =
+          bundle.active_control_selection_semantic_checksum,
       .run_control_cursor = bundle.run_control_cursor,
       .run_timer_cursor = bundle.run_timer_cursor,
       .selection_semantic_checksum = bundle.selection_semantic_checksum,
@@ -364,6 +373,11 @@ FeatureRuntimeFailure validate_cut(const FeatureRuntimeConfig &config,
       bundle.merge_policy_version != view.merge_policy_version ||
       bundle.configuration_epoch != view.configuration_epoch ||
       bundle.effective_control_position != view.effective_control_position ||
+      bundle.active_control_outcome_id != view.active_control_outcome_id ||
+      bundle.active_control_selection_semantic_checksum !=
+          view.active_control_selection_semantic_checksum ||
+      bundle.active_control_outcome_id.has_value() !=
+          bundle.active_control_selection_semantic_checksum.has_value() ||
       bundle.logical_time_nanoseconds !=
           view.quality.logical_time_nanoseconds ||
       view.bids.empty() != !view.top.best_bid.has_value() ||
@@ -428,7 +442,8 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
     }
     result.accepted_cut_ = AcceptedFeatureEvaluationCut(
         std::make_shared<const std::vector<FeatureEvaluation>>(
-            std::move(evaluations)));
+            std::move(evaluations)),
+        cut.accepted_control_outcome());
     return result;
   }
 
@@ -515,7 +530,8 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
   }
   result.accepted_cut_ = AcceptedFeatureEvaluationCut(
       std::make_shared<const std::vector<FeatureEvaluation>>(
-          std::move(evaluations)));
+          std::move(evaluations)),
+      cut.accepted_control_outcome());
   return result;
 }
 
