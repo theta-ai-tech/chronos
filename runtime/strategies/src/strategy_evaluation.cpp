@@ -67,6 +67,11 @@ contracts::Sha256Digest evaluation_key(
   append_id(canonical, invocation.canonical_instrument_id());
   append_digest(canonical, invocation.definition_digest());
   append_digest(canonical, invocation.activation_checksum());
+  append_id(canonical,
+            invocation.recommendation_policy_version().definition_id());
+  append_integer(canonical,
+                 invocation.recommendation_policy_version().version());
+  append_digest(canonical, invocation.recommendation_policy_checksum());
   append_digest(canonical, invocation.selection_semantic_checksum());
   append_cursor(canonical, invocation.run_control_cursor());
   const auto &cut = invocation.cut();
@@ -196,7 +201,10 @@ StrategyEvaluationResult StrategyEvaluationAuthority::evaluate(
       evaluation_id, key, invocation.run_id(),
       invocation.strategy_instance_id(), invocation.listing_id(),
       invocation.canonical_instrument_id(), invocation.definition_digest(),
-      invocation.activation_checksum(), invocation.cut().run_input_sequence,
+      invocation.activation_checksum(),
+      invocation.recommendation_policy_version(),
+      invocation.recommendation_policy_checksum(),
+      invocation.cut().run_input_sequence,
       invocation.cut().logical_time_nanoseconds, std::move(feature_ids),
       std::move(terminal), std::move(factors));
   return result;

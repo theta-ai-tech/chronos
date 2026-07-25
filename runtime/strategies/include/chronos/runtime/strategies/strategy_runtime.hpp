@@ -15,6 +15,8 @@ struct StrategyRuntimeConfig final {
   contracts::CanonicalInstrumentId canonical_instrument_id;
   chronos::strategies::sdk::AcceptedStrategyDefinition definition;
   std::optional<chronos::strategies::sdk::StrategyParameter> parameter;
+  contracts::VersionRef recommendation_policy_version;
+  contracts::Sha256Digest recommendation_policy_checksum;
   contracts::StreamId run_control_stream_id;
   std::uint64_t run_control_stream_epoch{};
   contracts::StreamId run_timer_stream_id;

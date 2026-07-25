@@ -60,6 +60,8 @@ canonical_activation_config(const StrategyRuntimeConfig &config) {
     canonical.append_integer(config.parameter->units);
     canonical.append_integer(config.parameter->scale.exponent());
   }
+  canonical.append_version(config.recommendation_policy_version);
+  canonical.append_digest(config.recommendation_policy_checksum);
   canonical.append_id(config.run_control_stream_id);
   canonical.append_integer(config.run_control_stream_epoch);
   canonical.append_id(config.run_timer_stream_id);
@@ -228,6 +230,8 @@ StrategyRuntime::admit(const core::features::AcceptedFeatureEvaluationCut
       config_.canonical_instrument_id, descriptor.definition_version,
       descriptor.implementation_version, descriptor.arithmetic_version,
       descriptor.explanation_policy_version,
+      config_.recommendation_policy_version,
+      config_.recommendation_policy_checksum,
       config_.definition.definition_digest(), reservation.control_outcome_id,
       activation_checksum_, first->run_control_cursor,
       first->selection_semantic_checksum, config_.maximum_operations,
