@@ -43,14 +43,6 @@ Id id_from_digest(const contracts::Sha256Digest &checksum) {
   return *Id::from_bytes(bytes);
 }
 
-bool valid_policy(const RecommendationPolicy &policy) {
-  return policy.minimum_actionable_strength > 0 &&
-         policy.maximum_indicative_exposure > 0 &&
-         policy.minimum_actionable_strength <=
-             policy.maximum_indicative_exposure &&
-         policy.maximum_indicative_exposure <= policy.scale.denominator();
-}
-
 bool valid_factors(
     std::span<const chronos::strategies::sdk::ExplanationFactor> factors) {
   if (factors.empty())
@@ -60,21 +52,6 @@ bool valid_factors(
       return false;
   }
   return true;
-}
-
-std::vector<std::byte> canonical_policy(const RecommendationPolicy &policy) {
-  std::vector<std::byte> canonical;
-  canonical.reserve(96);
-  constexpr std::string_view domain = "chronos.recommendation-policy.v1";
-  for (const auto character : domain)
-    canonical.push_back(static_cast<std::byte>(character));
-  append_version(canonical, policy.policy_version);
-  append_version(canonical, policy.schema_version);
-  append_version(canonical, policy.authority_version);
-  append_integer(canonical, policy.minimum_actionable_strength);
-  append_integer(canonical, policy.maximum_indicative_exposure);
-  append_integer(canonical, policy.scale.exponent());
-  return canonical;
 }
 
 contracts::TradeRecommendationId
@@ -108,15 +85,10 @@ recommendation_id(const runtime::strategies::StrategySignal &signal,
 
 } // namespace
 
-contracts::Sha256Digest
-recommendation_policy_checksum(const RecommendationPolicy &policy) {
-  return contracts::sha256(canonical_policy(policy));
-}
-
 RecommendationResult RecommendationAuthority::recommend(
     const runtime::strategies::StrategyEvaluation &evaluation,
     const RecommendationPolicy &policy) {
-  if (!valid_policy(policy))
+  if (!contracts::valid_recommendation_policy(policy))
     return {.failure = RecommendationFailure::InvalidPolicy};
   if (evaluation.recommendation_policy_version() != policy.policy_version ||
       evaluation.recommendation_policy_checksum() !=

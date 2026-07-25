@@ -1,5 +1,6 @@
 #pragma once
 
+#include "chronos/contracts/recommendation_policy.hpp"
 #include "chronos/runtime/strategies/strategy_evaluation.hpp"
 
 #include <cstdint>
@@ -22,19 +23,8 @@ enum class RecommendationHoldReason : std::uint8_t {
   BelowActionThreshold,
 };
 
-struct RecommendationPolicy final {
-  contracts::VersionRef policy_version;
-  contracts::VersionRef schema_version;
-  contracts::VersionRef authority_version;
-  contracts::AmountUnits minimum_actionable_strength{};
-  contracts::AmountUnits maximum_indicative_exposure{};
-  contracts::DecimalScale scale;
-
-  bool operator==(const RecommendationPolicy &) const = default;
-};
-
-[[nodiscard]] contracts::Sha256Digest
-recommendation_policy_checksum(const RecommendationPolicy &policy);
+using contracts::recommendation_policy_checksum;
+using contracts::RecommendationPolicy;
 
 struct ActionableRecommendation final {
   contracts::AmountUnits indicative_exposure_units{};

@@ -486,9 +486,7 @@ strategy_runtime::StrategyRuntimeConfig host_runtime_config_base(
       .canonical_instrument_id = id<contracts::CanonicalInstrumentId>(42),
       .definition = accepted_host_definition(),
       .parameter = parameter,
-      .recommendation_policy_version = policy.policy_version,
-      .recommendation_policy_checksum =
-          recommendation::recommendation_policy_checksum(policy),
+      .recommendation_policy = policy,
       .run_control_stream_id = id<contracts::StreamId>(12),
       .run_control_stream_epoch = 1,
       .run_timer_stream_id = id<contracts::StreamId>(13),
@@ -705,9 +703,7 @@ strategy_runtime::StrategyRuntimeConfig reference_strategy_config(
       .canonical_instrument_id = id<contracts::CanonicalInstrumentId>(42),
       .definition = accepted_reference_definition(),
       .parameter = parameter,
-      .recommendation_policy_version = policy.policy_version,
-      .recommendation_policy_checksum =
-          recommendation::recommendation_policy_checksum(policy),
+      .recommendation_policy = policy,
       .run_control_stream_id = id<contracts::StreamId>(12),
       .run_control_stream_epoch = 1,
       .run_timer_stream_id = id<contracts::StreamId>(13),
@@ -1191,6 +1187,33 @@ TEST_CASE("strategy host admits only authority-issued immutable feature cuts") {
   CHECK(std::all_of(workspace.begin() + sdk::kInterpreterWorkingBytes,
                     workspace.end(),
                     [](auto byte) { return byte == std::byte{0x7f}; }));
+}
+
+TEST_CASE("strategy activation rejects unusable recommendation policies") {
+  auto malformed = host_runtime_config_base(threshold_parameters()[0]);
+  malformed.recommendation_policy.minimum_actionable_strength = 0;
+  CHECK(!activate_runtime(malformed));
+
+  auto incompatible = host_runtime_config_base(threshold_parameters()[0]);
+  incompatible.recommendation_policy.minimum_actionable_strength = 30000;
+  incompatible.recommendation_policy.maximum_indicative_exposure = 75000;
+  incompatible.recommendation_policy.scale =
+      *contracts::DecimalScale::from_exponent(5);
+  CHECK(contracts::valid_recommendation_policy(
+      incompatible.recommendation_policy));
+  CHECK(!activate_runtime(incompatible));
+
+  const auto accepted = host_runtime_config_base(threshold_parameters()[0]);
+  const auto runtime = activate_runtime(accepted);
+  CHECK(runtime.has_value());
+  const auto features = accepted_features_for_strategy(accepted);
+  const auto invocation = runtime->admit(*features.accepted_cut());
+  CHECK(invocation.has_value());
+  CHECK(invocation->recommendation_policy_version() ==
+        accepted.recommendation_policy.policy_version);
+  CHECK(invocation->recommendation_policy_checksum() ==
+        contracts::recommendation_policy_checksum(
+            accepted.recommendation_policy));
 }
 
 TEST_CASE("strategy host enforces fuel deadline workspace and output bounds") {
