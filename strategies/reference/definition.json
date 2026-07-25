@@ -1,0 +1,12 @@
+{
+  "definition_version": {"definition_id": "0f510000000000000000000000000001", "version": 1},
+  "implementation_version": {"definition_id": "0f510000000000000000000000000002", "version": 1},
+  "feature_definition_version": {"definition_id": "0f510000000000000000000000000003", "version": 1},
+  "parameter_id": "0f510000000000000000000000000004",
+  "parameter_definition_version": {"definition_id": "0f510000000000000000000000000005", "version": 1},
+  "arithmetic_version": {"definition_id": "0f510000000000000000000000000008", "version": 1},
+  "explanation_policy_version": {"definition_id": "0f510000000000000000000000000009", "version": 1},
+  "feature_factor_id": "0f510000000000000000000000000006",
+  "parameter_factor_id": "0f510000000000000000000000000007",
+  "signal_horizon_nanoseconds": 1000000000
+}
