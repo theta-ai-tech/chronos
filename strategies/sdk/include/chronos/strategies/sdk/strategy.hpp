@@ -51,6 +51,7 @@ enum class StrategyAbstentionReason : std::uint8_t {
   LogicalDeadlineExceeded,
   DeterministicBudgetExhausted,
   InsufficientWarmup,
+  NoDirectionalSignal,
 };
 
 enum class StrategyExecutionStatus : std::uint8_t {
