@@ -1,4 +1,5 @@
 #include "chronos/core/features/feature_runtime.hpp"
+#include "chronos/runtime/strategies/strategy_evaluation.hpp"
 #include "chronos/runtime/strategies/strategy_runtime.hpp"
 #include "chronos/strategies/generated/chronos_reference_strategies.hpp"
 #include "chronos/strategies/sdk/strategy_host.hpp"
@@ -737,6 +738,29 @@ ReferenceRun run_reference(
   captured.result = sdk::StrategyHost::evaluate(
       config.definition, *invocation, workspace,
       std::span(captured.factors).first(factor_capacity));
+  return captured;
+}
+
+struct ReferenceEvaluation final {
+  features::FeatureRuntimeResult features;
+  strategy_runtime::StrategyEvaluationResult result;
+};
+
+ReferenceEvaluation evaluate_reference(
+    std::optional<sdk::StrategyParameter> parameter, TopSpec spec = {},
+    std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations) {
+  auto config =
+      reference_strategy_config(parameter, std::nullopt, maximum_operations);
+  const auto feature_config = reference_runtime_config();
+  ReferenceEvaluation captured;
+  captured.features =
+      accepted_features_for_strategy(config, spec, false, &feature_config);
+  const auto runtime = activate_runtime(config);
+  const auto invocation = runtime->admit(*captured.features.accepted_cut());
+  if (!invocation)
+    std::abort();
+  captured.result = strategy_runtime::StrategyEvaluationAuthority::evaluate(
+      config.definition, *invocation);
   return captured;
 }
 
@@ -1529,4 +1553,103 @@ TEST_CASE("reference imbalance respects parameter fuel deadline and output") {
   CHECK(no_output.result.status ==
         sdk::StrategyExecutionStatus::OutputCapacityExceeded);
   CHECK(!no_output.result.terminal);
+}
+
+TEST_CASE("strategy evaluation emits one deterministic nonzero signal") {
+  const auto first = evaluate_reference(reference_threshold(),
+                                        {.bid_quantity = 5, .ask_quantity = 3});
+  const auto repeated = evaluate_reference(
+      reference_threshold(), {.bid_quantity = 5, .ask_quantity = 3});
+
+  CHECK(first.result.completed());
+  CHECK(repeated.result.completed());
+  CHECK(first.result.evaluation == repeated.result.evaluation);
+  const auto &evaluation = *first.result.evaluation;
+  CHECK(first.result.accepted_evaluation_key == evaluation.evaluation_key());
+  CHECK(first.result.accepted_evaluation_id == evaluation.evaluation_id());
+  CHECK(evaluation.signal_emitted());
+  CHECK(!evaluation.abstained());
+  const auto &signal =
+      std::get<strategy_runtime::StrategySignal>(evaluation.terminal());
+  CHECK(signal.evaluation_id() == evaluation.evaluation_id());
+  CHECK(signal.draft().direction == sdk::StrategyDirection::Positive);
+  CHECK(signal.draft().strength.units == 250000);
+  CHECK(signal.draft().horizon_nanoseconds == 1'000'000'000);
+  CHECK(evaluation.feature_evaluation_ids().size() == 3);
+  CHECK(evaluation.factors().size() == 2);
+  CHECK(evaluation.factors()[0].causal_feature_evaluation_id ==
+        evaluation.feature_evaluation_ids()[0]);
+}
+
+TEST_CASE("strategy evaluation records abstention without a signal") {
+  const auto result = evaluate_reference(
+      reference_threshold(), {.bid_quantity = 1, .ask_quantity = 1});
+  CHECK(result.result.completed());
+  const auto &evaluation = *result.result.evaluation;
+  CHECK(evaluation.abstained());
+  CHECK(!evaluation.signal_emitted());
+  CHECK(std::get<strategy_runtime::StrategyAbstention>(evaluation.terminal())
+            .reason == sdk::StrategyAbstentionReason::NoDirectionalSignal);
+}
+
+TEST_CASE("strategy evaluation abstains on stale and gapped feature cuts") {
+  const features::FeatureRuntime runtime(reference_runtime_config());
+  const auto config = reference_strategy_config(reference_threshold());
+  auto stale_publisher = publish_quality_state(
+      market::ListingQualityInputKind::LogicalTimerAdvanced,
+      "run.timer.logical.advanced", 111, &config);
+  auto gapped_publisher =
+      publish_quality_state(market::ListingQualityInputKind::BookGapDetected,
+                            "market.book.quality.gap_detected", 101, &config);
+  const std::array feature_results = {
+      runtime.evaluate(*stale_publisher.accepted_feature_cut()),
+      runtime.evaluate(*gapped_publisher.accepted_feature_cut()),
+  };
+  const auto strategy = activate_runtime(config);
+  for (const auto &feature_result : feature_results) {
+    const auto invocation = strategy->admit(*feature_result.accepted_cut());
+    CHECK(invocation.has_value());
+    const auto result = strategy_runtime::StrategyEvaluationAuthority::evaluate(
+        config.definition, *invocation);
+    CHECK(result.completed());
+    CHECK(result.evaluation->abstained());
+    CHECK(!result.evaluation->signal_emitted());
+    CHECK(std::get<strategy_runtime::StrategyAbstention>(
+              result.evaluation->terminal())
+              .reason == sdk::StrategyAbstentionReason::NonValidFeature);
+  }
+}
+
+TEST_CASE("strategy evaluation does not invent outcomes for host failures") {
+  const auto interrupted = evaluate_reference(reference_threshold(), {},
+                                              sdk::kAdmissionOperations + 4);
+  const auto repeated = evaluate_reference(reference_threshold(), {},
+                                           sdk::kAdmissionOperations + 4);
+  CHECK(!interrupted.result.completed());
+  CHECK(interrupted.result.failure ==
+        strategy_runtime::StrategyEvaluationFailure::OperationalInterruption);
+  CHECK(interrupted.result.execution_status ==
+        sdk::StrategyExecutionStatus::DeterministicBudgetExhausted);
+  CHECK(interrupted.result.accepted_evaluation_key.has_value());
+  CHECK(interrupted.result.accepted_evaluation_id.has_value());
+  CHECK(interrupted.result.accepted_evaluation_key ==
+        repeated.result.accepted_evaluation_key);
+  CHECK(interrupted.result.accepted_evaluation_id ==
+        repeated.result.accepted_evaluation_id);
+  CHECK(!interrupted.result.evaluation);
+
+  auto config = reference_strategy_config(reference_threshold());
+  const auto feature_config = reference_runtime_config();
+  const auto features =
+      accepted_features_for_strategy(config, {}, false, &feature_config);
+  const auto runtime = activate_runtime(config);
+  const auto invocation = runtime->admit(*features.accepted_cut());
+  CHECK(invocation.has_value());
+  const auto rejected = strategy_runtime::StrategyEvaluationAuthority::evaluate(
+      accepted_host_definition(), *invocation);
+  CHECK(rejected.failure ==
+        strategy_runtime::StrategyEvaluationFailure::ContractViolation);
+  CHECK(rejected.accepted_evaluation_key.has_value());
+  CHECK(rejected.accepted_evaluation_id.has_value());
+  CHECK(!rejected.evaluation);
 }
