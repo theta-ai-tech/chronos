@@ -44,10 +44,13 @@ def test_authored_strategy_code_is_never_a_packaging_input(tmp_path: Path) -> No
 
 
 def test_extra_sdk_source_is_not_trusted_by_directory_name(tmp_path: Path) -> None:
-    path = tmp_path / "strategies/sdk/src/extra.cpp"
-    path.parent.mkdir(parents=True)
-    path.write_text("void hidden();\n", encoding="utf-8")
-    assert default_strategy_sources(tmp_path) == [path]
+    source = tmp_path / "strategies/sdk/src/extra.cpp"
+    header = tmp_path / "strategies/sdk/include/hidden.h"
+    source.parent.mkdir(parents=True)
+    header.parent.mkdir(parents=True)
+    source.write_text("void hidden();\n", encoding="utf-8")
+    header.write_text("void hidden_header();\n", encoding="utf-8")
+    assert default_strategy_sources(tmp_path) == [header, source]
 
 
 def test_strategy_cannot_import_core_runtime_or_host_authority(tmp_path: Path) -> None:

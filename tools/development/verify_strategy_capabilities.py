@@ -88,6 +88,7 @@ TRUSTED_SDK_SOURCES = {
     Path("strategies/sdk/src/strategy_host.cpp"),
 }
 TRUSTED_ROOT_CMAKE_SHA256 = "10671f41a3917ae6ad87272064be171cb83b4328d39f56153a5ca2842d6a4ffe"
+CPP_SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".ipp"}
 
 
 def find_violations(paths: list[Path]) -> list[Violation]:
@@ -120,7 +121,8 @@ def default_strategy_sources(root: Path) -> list[Path]:
     return sorted(
         path
         for path in source_root.rglob("*")
-        if path.suffix in {".cpp", ".hpp"} and path.relative_to(root) not in TRUSTED_SDK_SOURCES
+        if path.suffix.lower() in CPP_SOURCE_SUFFIXES
+        and path.relative_to(root) not in TRUSTED_SDK_SOURCES
     )
 
 
