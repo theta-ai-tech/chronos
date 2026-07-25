@@ -765,11 +765,29 @@ DispatchResult RunInputDispatcher::dispatch(RunInputCandidate candidate,
       state_->controls.end());
   state_->pending = State::PendingPublication{
       .selection = std::move(selection), .candidate = std::move(candidate)};
-  return state_->publish(consumer);
+  auto result = state_->publish(consumer);
+  if (result.ok()) {
+    for (const auto &control : result.selection->applied_controls) {
+      result.accepted_control_outcomes.push_back(
+          AcceptedControlOutcome(control, result.selection->selection_id,
+                                 result.selection->selection_semantic_checksum,
+                                 result.selection->control_cursor));
+    }
+  }
+  return result;
 }
 
 DispatchResult RunInputDispatcher::retry_pending(RunInputConsumer &consumer) {
-  return state_->publish(consumer);
+  auto result = state_->publish(consumer);
+  if (result.ok()) {
+    for (const auto &control : result.selection->applied_controls) {
+      result.accepted_control_outcomes.push_back(
+          AcceptedControlOutcome(control, result.selection->selection_id,
+                                 result.selection->selection_semantic_checksum,
+                                 result.selection->control_cursor));
+    }
+  }
+  return result;
 }
 
 std::uint64_t RunInputDispatcher::current_run_input_sequence() const noexcept {

@@ -26,8 +26,13 @@ EXPECTED_SDIST_PATHS = {
     "tests/python/test_value_objects.py",
     "tests/python/test_state_lineage.py",
     "tests/python/test_serialization.py",
+    "tests/python/test_strategy_capabilities.py",
+    "tests/python/test_strategy_generator.py",
     "tests/python/test_package.py",
     "tools/development/bootstrap_m0.py",
+    "tools/development/generate_strategy_definition.py",
+    "tools/development/verify_strategy_capabilities.py",
+    "tools/development/verify_strategy_symbols.py",
 }
 EXPECTED_WHEEL_PACKAGE_PATHS = {
     "chronos/__init__.py",

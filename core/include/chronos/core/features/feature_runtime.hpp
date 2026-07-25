@@ -6,6 +6,7 @@
 #include "chronos/core/market_state/listing_view_publisher.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string_view>
 #include <variant>
@@ -92,6 +93,12 @@ struct FeatureProvenance final {
   std::int64_t logical_time_nanoseconds{};
   std::uint64_t configuration_epoch{};
   std::optional<std::uint64_t> effective_control_position;
+  std::optional<contracts::EventId> active_control_outcome_id;
+  std::optional<contracts::Sha256Digest>
+      active_control_selection_semantic_checksum;
+  contracts::StreamCursor run_control_cursor;
+  contracts::StreamCursor run_timer_cursor;
+  contracts::Sha256Digest selection_semantic_checksum;
   contracts::StateLineage lineage;
   contracts::CanonicalInstrumentId canonical_instrument_id;
   contracts::VersionRef reference_snapshot_version;
@@ -147,15 +154,58 @@ struct FeatureEvaluation final {
   bool operator==(const FeatureEvaluation &) const = default;
 };
 
-struct FeatureRuntimeResult final {
+class AcceptedFeatureEvaluationCut final {
+public:
+  [[nodiscard]] const std::vector<FeatureEvaluation> &
+  evaluations() const noexcept {
+    return *evaluations_;
+  }
+  [[nodiscard]] const std::optional<dispatch::AcceptedControlOutcome> &
+  accepted_control_outcome() const noexcept {
+    return accepted_control_outcome_;
+  }
+
+  bool operator==(const AcceptedFeatureEvaluationCut &other) const noexcept {
+    return evaluations() == other.evaluations() &&
+           accepted_control_outcome_ == other.accepted_control_outcome_;
+  }
+
+private:
+  explicit AcceptedFeatureEvaluationCut(
+      std::shared_ptr<const std::vector<FeatureEvaluation>> evaluations,
+      std::optional<dispatch::AcceptedControlOutcome> control)
+      : evaluations_(std::move(evaluations)),
+        accepted_control_outcome_(std::move(control)) {}
+
+  std::shared_ptr<const std::vector<FeatureEvaluation>> evaluations_;
+  std::optional<dispatch::AcceptedControlOutcome> accepted_control_outcome_;
+
+  friend class FeatureRuntime;
+};
+
+class FeatureRuntimeResult final {
+public:
   FeatureRuntimeFailure failure{FeatureRuntimeFailure::None};
-  std::vector<FeatureEvaluation> evaluations;
 
   [[nodiscard]] bool ok() const noexcept {
-    return failure == FeatureRuntimeFailure::None;
+    return failure == FeatureRuntimeFailure::None && accepted_cut_.has_value();
+  }
+  [[nodiscard]] const std::vector<FeatureEvaluation> &
+  evaluations() const noexcept {
+    static const std::vector<FeatureEvaluation> empty;
+    return accepted_cut_ ? accepted_cut_->evaluations() : empty;
+  }
+  [[nodiscard]] const AcceptedFeatureEvaluationCut *
+  accepted_cut() const noexcept {
+    return accepted_cut_ ? &*accepted_cut_ : nullptr;
   }
 
   bool operator==(const FeatureRuntimeResult &) const = default;
+
+private:
+  std::optional<AcceptedFeatureEvaluationCut> accepted_cut_;
+
+  friend class FeatureRuntime;
 };
 
 class FeatureRuntime final {

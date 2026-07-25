@@ -70,6 +70,15 @@ void append_provenance(std::vector<std::byte> &output,
   append_integer(output, value.logical_time_nanoseconds);
   append_integer(output, value.configuration_epoch);
   append_optional_u64(output, value.effective_control_position);
+  if (value.active_control_outcome_id &&
+      value.active_control_selection_semantic_checksum) {
+    append_integer<std::uint8_t>(output, 1);
+    append_id(output, *value.active_control_outcome_id);
+    append_digest(output, *value.active_control_selection_semantic_checksum);
+  }
+  append_cursor(output, value.run_control_cursor);
+  append_cursor(output, value.run_timer_cursor);
+  append_digest(output, value.selection_semantic_checksum);
   append_id(output, value.lineage.run_id());
   append_integer(output, value.lineage.run_input_sequence());
   append_integer(output,
@@ -132,6 +141,12 @@ FeatureProvenance provenance(const FeatureRuntimeConfig &config,
       .logical_time_nanoseconds = bundle.logical_time_nanoseconds,
       .configuration_epoch = bundle.configuration_epoch,
       .effective_control_position = bundle.effective_control_position,
+      .active_control_outcome_id = bundle.active_control_outcome_id,
+      .active_control_selection_semantic_checksum =
+          bundle.active_control_selection_semantic_checksum,
+      .run_control_cursor = bundle.run_control_cursor,
+      .run_timer_cursor = bundle.run_timer_cursor,
+      .selection_semantic_checksum = bundle.selection_semantic_checksum,
       .lineage = view.lineage,
       .canonical_instrument_id = view.canonical_instrument_id,
       .reference_snapshot_version = view.reference_snapshot_version,
@@ -358,6 +373,11 @@ FeatureRuntimeFailure validate_cut(const FeatureRuntimeConfig &config,
       bundle.merge_policy_version != view.merge_policy_version ||
       bundle.configuration_epoch != view.configuration_epoch ||
       bundle.effective_control_position != view.effective_control_position ||
+      bundle.active_control_outcome_id != view.active_control_outcome_id ||
+      bundle.active_control_selection_semantic_checksum !=
+          view.active_control_selection_semantic_checksum ||
+      bundle.active_control_outcome_id.has_value() !=
+          bundle.active_control_selection_semantic_checksum.has_value() ||
       bundle.logical_time_nanoseconds !=
           view.quality.logical_time_nanoseconds ||
       view.bids.empty() != !view.top.best_bid.has_value() ||
@@ -408,17 +428,22 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
   const auto &view = cut.view();
   FeatureRuntimeResult result;
   result.failure = validate_cut(config_, bundle, view);
-  if (!result.ok())
+  if (result.failure != FeatureRuntimeFailure::None)
     return result;
-  result.evaluations.reserve(3);
+  std::vector<FeatureEvaluation> evaluations;
+  evaluations.reserve(3);
 
   const auto book_reason = book_unavailable_reason(view);
   if (book_reason) {
     for (const auto kind : {FeatureKind::OrderBookImbalance,
                             FeatureKind::Microprice, FeatureKind::Spread}) {
-      result.evaluations.push_back(
+      evaluations.push_back(
           unavailable_evaluation(config_, kind, bundle, view, *book_reason));
     }
+    result.accepted_cut_ = AcceptedFeatureEvaluationCut(
+        std::make_shared<const std::vector<FeatureEvaluation>>(
+            std::move(evaluations)),
+        cut.accepted_control_outcome());
     return result;
   }
 
@@ -428,7 +453,7 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
   const auto &ask = *view.top.best_ask;
 
   if (quantity_failure) {
-    result.evaluations.push_back(
+    evaluations.push_back(
         unavailable_evaluation(config_, FeatureKind::OrderBookImbalance, bundle,
                                view, *quantity_failure));
   } else {
@@ -445,11 +470,11 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
                                  difference, 1'000'000, total,
                                  contracts::RoundingMode::nearest_ties_to_even);
     if (!units) {
-      result.evaluations.push_back(unavailable_evaluation(
+      evaluations.push_back(unavailable_evaluation(
           config_, FeatureKind::OrderBookImbalance, bundle, view,
           FeatureUnavailableReason::ArithmeticOverflow));
     } else {
-      result.evaluations.push_back(evaluate_observation(observation(
+      evaluations.push_back(evaluate_observation(observation(
           FeatureKind::OrderBookImbalance,
           provenance(config_, FeatureKind::OrderBookImbalance, bundle, view),
           ScaledRatio{.units = *units,
@@ -459,7 +484,7 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
   }
 
   if (price_reason || quantity_failure) {
-    result.evaluations.push_back(unavailable_evaluation(
+    evaluations.push_back(unavailable_evaluation(
         config_, FeatureKind::Microprice, bundle, view,
         price_reason ? *price_reason : *quantity_failure));
   } else {
@@ -477,11 +502,11 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
                                     *weighted_units, bid.price.definition_ref())
                               : std::nullopt;
     if (!weighted) {
-      result.evaluations.push_back(
+      evaluations.push_back(
           unavailable_evaluation(config_, FeatureKind::Microprice, bundle, view,
                                  FeatureUnavailableReason::ArithmeticOverflow));
     } else {
-      result.evaluations.push_back(evaluate_observation(observation(
+      evaluations.push_back(evaluate_observation(observation(
           FeatureKind::Microprice,
           provenance(config_, FeatureKind::Microprice, bundle, view),
           *weighted)));
@@ -489,20 +514,24 @@ FeatureRuntime::evaluate(const market_state::AcceptedFeatureCut &cut) const {
   }
 
   if (price_reason) {
-    result.evaluations.push_back(unavailable_evaluation(
-        config_, FeatureKind::Spread, bundle, view, *price_reason));
+    evaluations.push_back(unavailable_evaluation(config_, FeatureKind::Spread,
+                                                 bundle, view, *price_reason));
   } else {
     const auto spread = ask.price.checked_subtract(bid.price);
     if (!spread || spread->units() < 0) {
-      result.evaluations.push_back(
+      evaluations.push_back(
           unavailable_evaluation(config_, FeatureKind::Spread, bundle, view,
                                  FeatureUnavailableReason::ArithmeticOverflow));
     } else {
-      result.evaluations.push_back(evaluate_observation(observation(
+      evaluations.push_back(evaluate_observation(observation(
           FeatureKind::Spread,
           provenance(config_, FeatureKind::Spread, bundle, view), *spread)));
     }
   }
+  result.accepted_cut_ = AcceptedFeatureEvaluationCut(
+      std::make_shared<const std::vector<FeatureEvaluation>>(
+          std::move(evaluations)),
+      cut.accepted_control_outcome());
   return result;
 }
 

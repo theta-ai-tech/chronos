@@ -217,6 +217,13 @@ std::vector<std::byte> canonical_view_bytes(
   append_version(output, input.merge_policy_version);
   append_integer(output, input.configuration_epoch);
   append_optional_u64(output, input.effective_control_position);
+  if (input.accepted_control_outcome) {
+    append_bool(output, true);
+    append_id(output,
+              input.accepted_control_outcome->reservation().control_outcome_id);
+    append_digest(
+        output, input.accepted_control_outcome->selection_semantic_checksum());
+  }
   append_integer(output, input.lineage.run_input_sequence());
   append_integer(output,
                  static_cast<std::uint64_t>(input.lineage.cursors().size()));
@@ -286,6 +293,13 @@ std::vector<std::byte> canonical_bundle_bytes(
   append_version(output, input.merge_policy_version);
   append_integer(output, input.configuration_epoch);
   append_optional_u64(output, input.effective_control_position);
+  if (input.accepted_control_outcome) {
+    append_bool(output, true);
+    append_id(output,
+              input.accepted_control_outcome->reservation().control_outcome_id);
+    append_digest(
+        output, input.accepted_control_outcome->selection_semantic_checksum());
+  }
   append_optional_id(output, prior_bundle_id);
   append_version(output, config.view_schema_version);
   append_version(output, config.bundle_schema_version);
@@ -567,6 +581,7 @@ struct ListingViewPublisher::State final {
       config.reference_configuration_lineage_version};
   std::optional<std::uint64_t> effective_control_position{
       config.initial_effective_control_position};
+  std::optional<dispatch::AcceptedControlOutcome> accepted_control_outcome;
   ViewPublicationState publication_state{ViewPublicationState::NotPublished};
   std::optional<contracts::PublicationAttemptId> active_attempt_id;
   std::uint64_t active_attempt_number{};
@@ -668,6 +683,28 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
     return {.failure = ListingViewFailure::InvalidSelectionEvidence};
   }
   const auto &applied_controls = input.dispatch_selection.applied_controls;
+  const bool control_outcome_valid =
+      input.accepted_control_outcome
+          ? ((!applied_controls.empty() &&
+              input.accepted_control_outcome->reservation() ==
+                  applied_controls.back()) ||
+             (applied_controls.empty() && state_->accepted_control_outcome &&
+              *input.accepted_control_outcome ==
+                  *state_->accepted_control_outcome)) &&
+                input.accepted_control_outcome->selection_id() ==
+                    (applied_controls.empty()
+                         ? state_->accepted_control_outcome->selection_id()
+                         : input.selection_id) &&
+                input.accepted_control_outcome->selection_semantic_checksum() ==
+                    (applied_controls.empty()
+                         ? state_->accepted_control_outcome
+                               ->selection_semantic_checksum()
+                         : input.selection_semantic_checksum) &&
+                cursor_at_or_after(
+                    input.accepted_control_outcome->accepted_control_cursor(),
+                    input.dispatch_selection.control_cursor)
+          : applied_controls.empty() &&
+                !state_->accepted_control_outcome.has_value();
   const auto selected_stream =
       event_stream(state_->config, input.selected_event_type);
   const bool is_reference_input =
@@ -681,6 +718,7 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
   const auto &dispatcher_pre =
       input.dispatch_selection.pre_selection_cursors.front();
   const bool evidence_valid =
+      control_outcome_valid &&
       dispatch::validate_run_input_selection(state_->config.dispatcher_config,
                                              input.dispatch_selection,
                                              input.dispatch_candidate) &&
@@ -826,6 +864,16 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .merge_policy_version = input.merge_policy_version,
       .configuration_epoch = input.configuration_epoch,
       .effective_control_position = input.effective_control_position,
+      .active_control_outcome_id =
+          input.accepted_control_outcome
+              ? std::optional(input.accepted_control_outcome->reservation()
+                                  .control_outcome_id)
+              : std::nullopt,
+      .active_control_selection_semantic_checksum =
+          input.accepted_control_outcome
+              ? std::optional(input.accepted_control_outcome
+                                  ->selection_semantic_checksum())
+              : std::nullopt,
       .lineage = input.lineage,
       .l2_transition_sequence = transition_before,
       .bids = std::move(bids),
@@ -863,6 +911,9 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
       .merge_policy_version = input.merge_policy_version,
       .configuration_epoch = input.configuration_epoch,
       .effective_control_position = input.effective_control_position,
+      .active_control_outcome_id = accepted->active_control_outcome_id,
+      .active_control_selection_semantic_checksum =
+          accepted->active_control_selection_semantic_checksum,
       .prior_bundle_id = prior_bundle,
       .view_schema_version = state_->config.view_schema_version,
       .bundle_schema_version = state_->config.bundle_schema_version,
@@ -890,6 +941,7 @@ ListingViewPublisher::accept_cut(const ListingViewCutInput &input,
   state_->reference_configuration_lineage_version =
       input.reference_configuration_lineage_version;
   state_->effective_control_position = input.effective_control_position;
+  state_->accepted_control_outcome = input.accepted_control_outcome;
   state_->publication_state = ViewPublicationState::NotPublished;
   state_->active_attempt_id.reset();
   state_->active_attempt_number = 0;
@@ -967,7 +1019,8 @@ ListingViewPublisher::accepted_feature_cut() const noexcept {
     return std::nullopt;
   }
   return AcceptedFeatureCut(state_->last_published,
-                            state_->last_published_bundle);
+                            state_->last_published_bundle,
+                            state_->accepted_control_outcome);
 }
 
 ViewPublicationState ListingViewPublisher::publication_state() const noexcept {

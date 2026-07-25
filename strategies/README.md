@@ -1,16 +1,22 @@
 # strategies/
 
-> **Module owner stub (M0.1).** Public API, failure semantics, and reconstruction
-> source are filled in as the owning issues land. Scaffold only — no logic yet.
+> **Module owner stub (M0.1).** Implemented beginning in M5.2.
 
 - **Owner / plane:** Strategy (plugin-like)
 - **Language:** C++ (strategy SDK)
 - **Purpose:** Concrete strategies, living outside the strategy runtime.
 - **Accepted dependencies:** strategies/sdk and approved deterministic utilities only.
 - **Must not depend on:** Network, filesystem, wall-clock, secret, or order-submission access.
-- **Public API:** _TBD_
-- **Failure semantics:** _TBD_
-- **Reconstruction source:** _TBD_
+- **Public API:** `chronos/strategies/sdk/strategy.hpp`
+- **Failure semantics:** typed SDK execution status plus one bounded terminal
+  signal draft or abstention draft; host interruption is external.
+- **Reconstruction source:** declared feature outcomes, immutable parameters,
+  logical cut, and deterministic operation budget.
+
+Concrete native definition packs are strict JSON manifests registered with the
+CMake `chronos_add_strategy` function. A trusted generator emits their fixed
+descriptor/program code; authored strategy C++ is never compiled. The SDK host
+performs evaluation, and a linked-symbol check remains defense in depth.
 
 See `planning/01-architecture/architecture.md` (Repository and module structure,
 Dependency direction) and `planning/01-architecture/domain-model.md` for the

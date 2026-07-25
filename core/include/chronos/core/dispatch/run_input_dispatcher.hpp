@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace chronos::core::dispatch {
@@ -112,6 +113,43 @@ struct RunInputSelectionRecord final {
   bool operator==(const RunInputSelectionRecord &) const = default;
 };
 
+class AcceptedControlOutcome final {
+public:
+  [[nodiscard]] const ControlBoundaryReservation &reservation() const noexcept {
+    return reservation_;
+  }
+  [[nodiscard]] contracts::RunInputSelectionId selection_id() const noexcept {
+    return selection_id_;
+  }
+  [[nodiscard]] contracts::Sha256Digest
+  selection_semantic_checksum() const noexcept {
+    return selection_semantic_checksum_;
+  }
+  [[nodiscard]] contracts::StreamCursor
+  accepted_control_cursor() const noexcept {
+    return accepted_control_cursor_;
+  }
+
+  bool operator==(const AcceptedControlOutcome &) const = default;
+
+private:
+  AcceptedControlOutcome(
+      ControlBoundaryReservation reservation,
+      contracts::RunInputSelectionId selection_id,
+      contracts::Sha256Digest selection_semantic_checksum,
+      contracts::StreamCursor accepted_control_cursor) noexcept
+      : reservation_(std::move(reservation)), selection_id_(selection_id),
+        selection_semantic_checksum_(selection_semantic_checksum),
+        accepted_control_cursor_(accepted_control_cursor) {}
+
+  ControlBoundaryReservation reservation_;
+  contracts::RunInputSelectionId selection_id_;
+  contracts::Sha256Digest selection_semantic_checksum_;
+  contracts::StreamCursor accepted_control_cursor_;
+
+  friend class RunInputDispatcher;
+};
+
 struct PublicationTransition final {
   contracts::RunInputSelectionId selection_id;
   std::uint64_t run_input_sequence{};
@@ -208,6 +246,7 @@ public:
 
 struct DispatchResult final {
   std::optional<RunInputSelectionRecord> selection;
+  std::vector<AcceptedControlOutcome> accepted_control_outcomes;
   DispatchFailure failure{DispatchFailure::None};
 
   [[nodiscard]] bool ok() const noexcept {
