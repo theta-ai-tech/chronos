@@ -32,8 +32,9 @@ target_compile_definitions(chronos_unit_tests
 
 target_link_libraries(chronos_unit_tests
   PRIVATE chronos_boundary chronos_market_data_normalization chronos_options
-          chronos_replay_providers chronos_strategy_runtime
-          chronos_strategy_conformance_pack chronos_strategy_sdk
+          chronos_reference_strategies chronos_replay_providers
+          chronos_strategy_runtime chronos_strategy_conformance_pack
+          chronos_strategy_sdk
           chronos_warnings)
 
 add_test(NAME chronos_unit_tests COMMAND chronos_unit_tests)

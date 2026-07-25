@@ -91,7 +91,7 @@ TRUSTED_SDK_SOURCES = {
     Path("strategies/sdk/src/strategy.cpp"),
     Path("strategies/sdk/src/strategy_host.cpp"),
 }
-TRUSTED_ROOT_CMAKE_SHA256 = "10671f41a3917ae6ad87272064be171cb83b4328d39f56153a5ca2842d6a4ffe"
+TRUSTED_ROOT_CMAKE_SHA256 = "fd91a26d3d50712af39b1fa56855138b98a39b4265eca8c6d97b224603eb990f"
 TRUSTED_SDK_LOCAL_INCLUDES = {
     "chronos/contracts/digest.hpp",
     "chronos/contracts/fixed_point.hpp",

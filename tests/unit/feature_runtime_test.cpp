@@ -1,5 +1,6 @@
 #include "chronos/core/features/feature_runtime.hpp"
 #include "chronos/runtime/strategies/strategy_runtime.hpp"
+#include "chronos/strategies/generated/chronos_reference_strategies.hpp"
 #include "chronos/strategies/sdk/strategy_host.hpp"
 
 #include "microtest.hpp"
@@ -19,6 +20,7 @@ namespace dispatch = chronos::core::dispatch;
 namespace features = chronos::core::features;
 namespace market = chronos::core::market_state;
 namespace strategy_runtime = chronos::runtime::strategies;
+namespace generated = chronos::strategies::generated;
 namespace sdk = chronos::strategies::sdk;
 
 static_assert(
@@ -34,6 +36,14 @@ template <typename Id> Id id(std::uint8_t seed) {
 contracts::VersionRef version(std::uint8_t seed, std::uint64_t number = 1) {
   return contracts::VersionRef::from(id<contracts::DefinitionId>(seed), number)
       .value();
+}
+
+contracts::DefinitionId parsed_definition(std::string_view value) {
+  return contracts::DefinitionId::parse(value).value();
+}
+
+contracts::VersionRef named_version(std::string_view value) {
+  return contracts::VersionRef::from(parsed_definition(value), 1).value();
 }
 
 contracts::StreamCursor origin(std::uint8_t seed) {
@@ -634,9 +644,58 @@ sdk::AcceptedStrategyDefinition accepted_host_definition() {
   return *accepted;
 }
 
+sdk::AcceptedStrategyDefinition accepted_reference_definition() {
+  const auto accepted =
+      generated::accepted_chronos_reference_strategies_definition();
+  if (!accepted)
+    std::abort();
+  return *accepted;
+}
+
+features::FeatureRuntimeConfig reference_runtime_config() {
+  auto config = runtime_config();
+  config.imbalance_definition_version = accepted_reference_definition()
+                                            .descriptor()
+                                            .required_features[0]
+                                            .definition_version;
+  return config;
+}
+
+sdk::StrategyParameter
+reference_threshold(contracts::AmountUnits units = 250000) {
+  const auto schema =
+      accepted_reference_definition().descriptor().parameter_schema[0];
+  return {
+      .parameter_id = schema.parameter_id,
+      .definition_version = schema.definition_version,
+      .units = units,
+      .scale = schema.scale,
+  };
+}
+
+strategy_runtime::StrategyRuntimeConfig reference_strategy_config(
+    std::optional<sdk::StrategyParameter> parameter,
+    std::optional<std::int64_t> deadline_offset = std::nullopt,
+    std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations) {
+  return {
+      .strategy_instance_id = id<contracts::StrategyInstanceId>(98),
+      .listing_id = id<contracts::ListingId>(1),
+      .canonical_instrument_id = id<contracts::CanonicalInstrumentId>(42),
+      .definition = accepted_reference_definition(),
+      .parameter = parameter,
+      .run_control_stream_id = id<contracts::StreamId>(12),
+      .run_control_stream_epoch = 1,
+      .run_timer_stream_id = id<contracts::StreamId>(13),
+      .run_timer_stream_epoch = 1,
+      .maximum_operations = maximum_operations,
+      .logical_deadline_offset_nanoseconds = deadline_offset,
+  };
+}
+
 features::FeatureRuntimeResult accepted_features_for_strategy(
     const strategy_runtime::StrategyRuntimeConfig &config, TopSpec spec = {},
-    bool reserve_future_control = false) {
+    bool reserve_future_control = false,
+    const features::FeatureRuntimeConfig *feature_config = nullptr) {
   auto book = make_book(spec);
   auto auxiliary = make_auxiliary(book);
   auto publisher =
@@ -648,8 +707,37 @@ features::FeatureRuntimeResult accepted_features_for_strategy(
   if (!accepted.ok())
     std::abort();
   acknowledge(publisher, accepted);
-  return features::FeatureRuntime(runtime_config())
+  return features::FeatureRuntime(feature_config ? *feature_config
+                                                 : runtime_config())
       .evaluate(*publisher.accepted_feature_cut());
+}
+
+struct ReferenceRun final {
+  features::FeatureRuntimeResult features;
+  sdk::StrategyHostResult result;
+  std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
+};
+
+ReferenceRun run_reference(
+    std::optional<sdk::StrategyParameter> parameter, TopSpec spec = {},
+    std::optional<std::int64_t> deadline_offset = std::nullopt,
+    std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations,
+    std::size_t factor_capacity = 2) {
+  auto config =
+      reference_strategy_config(parameter, deadline_offset, maximum_operations);
+  const auto feature_config = reference_runtime_config();
+  ReferenceRun captured;
+  captured.features =
+      accepted_features_for_strategy(config, spec, false, &feature_config);
+  const auto runtime = activate_runtime(config);
+  const auto invocation = runtime->admit(*captured.features.accepted_cut());
+  if (!invocation)
+    std::abort();
+  std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;
+  captured.result = sdk::StrategyHost::evaluate(
+      config.definition, *invocation, workspace,
+      std::span(captured.factors).first(factor_capacity));
+  return captured;
 }
 
 market::ListingViewPublisher publish_quality_state(
@@ -1330,4 +1418,115 @@ TEST_CASE("strategy host preserves exact threshold and ratio boundaries") {
     CHECK(signal.strength.units == test_case.expected_strength);
     CHECK(signal.strength.scale.denominator() == 1'000'000);
   }
+}
+
+TEST_CASE("reference imbalance strategy is an accepted data-only definition") {
+  const auto definition = accepted_reference_definition();
+  const auto descriptor = definition.descriptor();
+  const auto program = definition.program();
+  CHECK(descriptor.definition_version ==
+        named_version("0f510000-0000-0000-0000-000000000001"));
+  CHECK(descriptor.implementation_version ==
+        named_version("0f510000-0000-0000-0000-000000000002"));
+  CHECK(descriptor.required_features[0].definition_version ==
+        named_version("0f510000-0000-0000-0000-000000000003"));
+  CHECK(descriptor.parameter_schema[0].parameter_id ==
+        parsed_definition("0f510000-0000-0000-0000-000000000004"));
+  CHECK(program.factors[0].factor_id ==
+        parsed_definition("0f510000-0000-0000-0000-000000000006"));
+  CHECK(program.factors[1].factor_id ==
+        parsed_definition("0f510000-0000-0000-0000-000000000007"));
+  CHECK(program.signal_horizon_nanoseconds == 1'000'000'000);
+}
+
+TEST_CASE("reference imbalance signals are exact signed and repeatable") {
+  const auto positive = run_reference(reference_threshold(),
+                                      {.bid_quantity = 5, .ask_quantity = 3});
+  const auto repeated = run_reference(reference_threshold(),
+                                      {.bid_quantity = 5, .ask_quantity = 3});
+  const auto negative = run_reference(reference_threshold(),
+                                      {.bid_quantity = 3, .ask_quantity = 5});
+
+  CHECK(positive.result.completed());
+  CHECK(positive.result.terminal == repeated.result.terminal);
+  CHECK(positive.factors == repeated.factors);
+  const auto &positive_signal =
+      std::get<sdk::SignalDraft>(*positive.result.terminal);
+  CHECK(positive_signal.direction == sdk::StrategyDirection::Positive);
+  CHECK(positive_signal.strength.units == 250000);
+  CHECK(positive.factors[0]->causal_feature_evaluation_id ==
+        evaluation(positive.features, features::FeatureKind::OrderBookImbalance)
+            .evaluation_id);
+  const auto &negative_signal =
+      std::get<sdk::SignalDraft>(*negative.result.terminal);
+  CHECK(negative_signal.direction == sdk::StrategyDirection::Negative);
+  CHECK(negative_signal.strength.units == 250000);
+  CHECK(negative.factors[1]->signed_contribution_units == 0);
+}
+
+TEST_CASE("reference imbalance stays abstained below its threshold") {
+  const auto result = run_reference(reference_threshold(),
+                                    {.bid_quantity = 3, .ask_quantity = 2});
+  CHECK(result.result.completed());
+  CHECK(std::get<sdk::AbstentionDraft>(*result.result.terminal).reason ==
+        sdk::StrategyAbstentionReason::NoDirectionalSignal);
+  CHECK(result.result.factor_count == 2);
+  CHECK(result.factors[0]->role == sdk::ExplanationRole::ExplainsAbstention);
+  CHECK(result.factors[1]->signed_contribution_units == -50000);
+}
+
+TEST_CASE("reference imbalance abstains for stale and gapped authority cuts") {
+  const features::FeatureRuntime runtime(reference_runtime_config());
+  const auto config = reference_strategy_config(reference_threshold());
+  auto stale_publisher = publish_quality_state(
+      market::ListingQualityInputKind::LogicalTimerAdvanced,
+      "run.timer.logical.advanced", 111, &config);
+  auto gapped_publisher =
+      publish_quality_state(market::ListingQualityInputKind::BookGapDetected,
+                            "market.book.quality.gap_detected", 101, &config);
+  const std::array feature_results = {
+      runtime.evaluate(*stale_publisher.accepted_feature_cut()),
+      runtime.evaluate(*gapped_publisher.accepted_feature_cut()),
+  };
+  const auto strategy = activate_runtime(config);
+  for (const auto &feature_result : feature_results) {
+    const auto invocation = strategy->admit(*feature_result.accepted_cut());
+    CHECK(invocation.has_value());
+    std::array<std::byte, sdk::kInterpreterWorkingBytes> workspace;
+    std::array<std::optional<sdk::ExplanationFactor>, 2> factors;
+    const auto result = sdk::StrategyHost::evaluate(
+        config.definition, *invocation, workspace, factors);
+    CHECK(result.completed());
+    CHECK(std::get<sdk::AbstentionDraft>(*result.terminal).reason ==
+          sdk::StrategyAbstentionReason::NonValidFeature);
+    CHECK(factors[0]->causal_feature_evaluation_id ==
+          evaluation(feature_result, features::FeatureKind::OrderBookImbalance)
+              .evaluation_id);
+  }
+}
+
+TEST_CASE("reference imbalance respects parameter fuel deadline and output") {
+  const auto missing = run_reference(std::nullopt);
+  CHECK(std::get<sdk::AbstentionDraft>(*missing.result.terminal).reason ==
+        sdk::StrategyAbstentionReason::MissingParameter);
+  const auto invalid = run_reference(reference_threshold(0));
+  CHECK(std::get<sdk::AbstentionDraft>(*invalid.result.terminal).reason ==
+        sdk::StrategyAbstentionReason::InvalidParameter);
+
+  const auto bounded_deadline = run_reference(reference_threshold(), {}, 0);
+  CHECK(bounded_deadline.result.completed());
+  CHECK(bounded_deadline.result.charged_operations ==
+        sdk::kMaximumEvaluationOperations);
+
+  const auto low_fuel = run_reference(reference_threshold(), {}, std::nullopt,
+                                      sdk::kAdmissionOperations + 4);
+  CHECK(low_fuel.result.status ==
+        sdk::StrategyExecutionStatus::DeterministicBudgetExhausted);
+  CHECK(low_fuel.result.charged_operations == sdk::kAdmissionOperations + 4);
+
+  const auto no_output = run_reference(reference_threshold(), {}, std::nullopt,
+                                       sdk::kMaximumEvaluationOperations, 1);
+  CHECK(no_output.result.status ==
+        sdk::StrategyExecutionStatus::OutputCapacityExceeded);
+  CHECK(!no_output.result.terminal);
 }
