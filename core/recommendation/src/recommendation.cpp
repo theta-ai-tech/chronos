@@ -184,13 +184,13 @@ RecommendationAcceptanceResult RecommendationAcceptanceAuthority::accept(
 bool RecommendationAcceptanceAuthority::finalize(
     std::span<const contracts::StrategySignalId> emitted_signal_ids) {
   if (finalized_) {
-    if (!cardinality_proven() ||
-        !same_unique_signal_ids(emitted_signal_ids, emitted_signal_ids_)) {
+    if (terminal_failure_ != RecommendationAcceptanceFailure::None)
+      return false;
+    if (!same_unique_signal_ids(emitted_signal_ids, emitted_signal_ids_)) {
       terminal_failure_ = RecommendationAcceptanceFailure::CardinalityMismatch;
       return false;
-    } else {
-      return true;
     }
+    return true;
   }
   finalized_ = true;
   emitted_signal_ids_.assign(emitted_signal_ids.begin(),

@@ -211,12 +211,6 @@ def property_mutates_target(text: str, target: str) -> bool:
     return bool(set_property.search(text) or set_target_properties.search(text))
 
 
-def mutates_target(text: str, target: str) -> bool:
-    return property_mutates_target(text, target) or any(
-        cmake_call_bodies(text, command, target) for command in CMAKE_TARGET_COMMANDS
-    )
-
-
 def unsupported_owner_mutation(text: str, target: str) -> bool:
     if property_mutates_target(text, target):
         return True
@@ -247,59 +241,62 @@ def dynamically_mutates_target(text: str) -> bool:
     )
 
 
-def target_mutating_helpers(cmake_texts: dict[Path, str]) -> list[tuple[str, int]]:
-    definitions: list[tuple[str, int]] = []
-    definition = re.compile(
-        r"\b(?:function|macro)\s*\((?P<header>[^)]*)\)(?P<body>.*?)"
-        r"\bend(?:function|macro)\s*\([^)]*\)",
-        re.DOTALL | re.IGNORECASE,
-    )
-    mutation = re.compile(
-        rf'\b(?:{"|".join(CMAKE_TARGET_COMMANDS)})\s*\(\s*"?(?P<target>\$\{{[^}}]+\}})',
-        re.IGNORECASE,
-    )
-    property_mutation = re.compile(
-        r'\b(?:set_property\s*\(\s*TARGET|set_target_properties\s*\()\s*"?'
-        r"(?P<target>\$\{[^}]+\})",
-        re.IGNORECASE,
-    )
-    for text in cmake_texts.values():
-        for match in definition.finditer(text):
-            header = CMAKE_TOKEN.findall(match.group("header"))
-            if not header:
+def cmake_commands(text: str) -> list[tuple[str, list[str]]]:
+    commands: list[tuple[str, list[str]]] = []
+    command = re.compile(r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
+    position = 0
+    while match := command.search(text, position):
+        index = match.end()
+        depth = 1
+        while index < len(text) and depth > 0:
+            if text[index] == '"':
+                index += 1
+                while index < len(text):
+                    if text[index] == "\\":
+                        index += 2
+                    elif text[index] == '"':
+                        index += 1
+                        break
+                    else:
+                        index += 1
                 continue
-            name, *parameters = header
-            mutated = list(mutation.finditer(match.group("body"))) + list(
-                property_mutation.finditer(match.group("body"))
-            )
-            for target_match in mutated:
-                parameter = target_match.group("target")[2:-1]
-                if parameter in parameters:
-                    definitions.append((name, parameters.index(parameter)))
-    return definitions
+            bracket = re.match(r"\[(=*)\[", text[index:])
+            if bracket:
+                closing = "]" + bracket.group(1) + "]"
+                end = text.find(closing, index + len(bracket.group(0)))
+                index = len(text) if end == -1 else end + len(closing)
+                continue
+            if text[index] == "(":
+                depth += 1
+            elif text[index] == ")":
+                depth -= 1
+            index += 1
+        if depth != 0:
+            break
+        body = text[match.end() : index - 1]
+        commands.append((match.group("name").lower(), CMAKE_TOKEN.findall(body)))
+        position = index
+    return commands
 
 
-def helper_mutates_target(
-    text: str, target: str, helpers: list[tuple[str, int]]
-) -> tuple[bool, bool]:
-    callable_definition = re.compile(
-        r"\b(?:function|macro)\s*\([^)]*\).*?"
-        r"\bend(?:function|macro)\s*\([^)]*\)",
-        re.DOTALL | re.IGNORECASE,
-    )
-    invocations = callable_definition.sub("", text)
-    for name, target_index in helpers:
-        invocation = re.compile(rf"\b{re.escape(name)}\s*\((?P<body>[^)]*)\)", re.IGNORECASE)
-        for match in invocation.finditer(invocations):
-            arguments = CMAKE_TOKEN.findall(match.group("body"))
-            if target_index >= len(arguments):
-                continue
-            argument = arguments[target_index]
-            if argument == target:
-                return True, False
-            if "$" in argument:
-                return False, True
-    return False, False
+def protected_target_usage(text: str, target: str) -> str | None:
+    # Outside its owner, a protected target may only be named as a dependency
+    # of a built-in command. Passing it to an opaque helper is intentionally
+    # forbidden so this gate never has to interpret arbitrary CMake code.
+    for command, arguments in cmake_commands(text):
+        target_positions = [index for index, argument in enumerate(arguments) if argument == target]
+        if not target_positions:
+            continue
+        if command in {"target_link_libraries", "add_dependencies"} and all(
+            index > 0 for index in target_positions
+        ):
+            continue
+        if command == "message":
+            continue
+        if command in {"set", "list", "string"}:
+            return "dynamic-target-mutation"
+        return "protected-target-mutated-outside-owner"
+    return None
 
 
 def cmake_files(root: Path) -> list[Path]:
@@ -341,7 +338,6 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     all_cmake = {
         path: strip_cmake_comments(path.read_text(encoding="utf-8")) for path in cmake_files(root)
     }
-    mutating_helpers = target_mutating_helpers(all_cmake)
     for authority, allowed in ALLOWED_INCLUDES.items():
         source_paths: list[Path] = []
         for relative_path in AUTHORITY_PATHS[authority]:
@@ -380,18 +376,15 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
             if candidate == cmake_path:
                 continue
             candidate_cmake = all_cmake[candidate]
-            helper_mutation, dynamic_helper_mutation = helper_mutates_target(
-                candidate_cmake, target, mutating_helpers
-            )
+            usage = protected_target_usage(candidate_cmake, target)
             if (
-                dynamically_mutates_target(candidate_cmake) or dynamic_helper_mutation
-            ) and candidate not in reported_dynamic_paths:
+                dynamically_mutates_target(candidate_cmake)
+                and candidate not in reported_dynamic_paths
+            ):
                 violations.append(BoundaryViolation(candidate, "dynamic-target-mutation"))
                 reported_dynamic_paths.add(candidate)
-            elif mutates_target(candidate_cmake, target) or helper_mutation:
-                violations.append(
-                    BoundaryViolation(candidate, "protected-target-mutated-outside-owner")
-                )
+            elif usage is not None:
+                violations.append(BoundaryViolation(candidate, usage))
 
         sources = cmake_tokens(
             cmake_call_bodies(cmake, "add_library", target)

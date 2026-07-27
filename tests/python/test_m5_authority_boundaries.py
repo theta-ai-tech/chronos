@@ -163,6 +163,46 @@ def test_invoked_helper_cannot_mutate_protected_target(tmp_path: Path) -> None:
     assert {item.dependency for item in violations} == {"protected-target-mutated-outside-owner"}
 
 
+def test_nested_and_argv_helpers_cannot_receive_protected_target(tmp_path: Path) -> None:
+    write_feature_owner(
+        tmp_path,
+        "add_library(chronos_features STATIC)\n"
+        "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
+    )
+    (tmp_path / "CMakeLists.txt").write_text(
+        "function(add_dep)\n"
+        "  target_link_libraries(${ARGV0} PRIVATE ${ARGV1})\n"
+        "endfunction()\n"
+        "function(wrap target dep)\n"
+        "  add_dep(${target} ${dep})\n"
+        "endfunction()\n"
+        "add_subdirectory(core)\n"
+        "wrap(chronos_features chronos_risk)\n",
+        encoding="utf-8",
+    )
+    write_other_authorities(tmp_path)
+
+    violations = boundary.find_violations(tmp_path)
+    assert {item.dependency for item in violations} == {"protected-target-mutated-outside-owner"}
+
+
+def test_bracket_quoted_protected_target_cannot_be_mutated(tmp_path: Path) -> None:
+    write_feature_owner(
+        tmp_path,
+        "add_library(chronos_features STATIC)\n"
+        "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
+    )
+    (tmp_path / "CMakeLists.txt").write_text(
+        "add_subdirectory(core)\n"
+        "target_link_libraries([[chronos_features]] PRIVATE chronos_risk)\n",
+        encoding="utf-8",
+    )
+    write_other_authorities(tmp_path)
+
+    violations = boundary.find_violations(tmp_path)
+    assert {item.dependency for item in violations} == {"protected-target-mutated-outside-owner"}
+
+
 def test_protected_target_cannot_be_mutated_from_cmake_module(tmp_path: Path) -> None:
     feature = tmp_path / "core/features/src/feature_runtime.cpp"
     feature.parent.mkdir(parents=True)

@@ -1947,6 +1947,9 @@ TEST_CASE(
   CHECK(!acceptance.cardinality_proven());
   CHECK(acceptance.terminal_failure() ==
         recommendation::RecommendationAcceptanceFailure::CapacityExceeded);
+  CHECK(!acceptance.finalize(emitted_signals));
+  CHECK(acceptance.terminal_failure() ==
+        recommendation::RecommendationAcceptanceFailure::CapacityExceeded);
   CHECK(after_exhaustion.failure ==
         recommendation::RecommendationAcceptanceFailure::CapacityExceeded);
   CHECK(!after_exhaustion.recommendation);
