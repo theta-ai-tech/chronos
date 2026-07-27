@@ -140,6 +140,8 @@ RecommendationAcceptanceResult RecommendationAcceptanceAuthority::accept(
     const TradeRecommendation &candidate) {
   if (terminal_failure_ != RecommendationAcceptanceFailure::None)
     return {.failure = terminal_failure_};
+  if (finalized_)
+    return {.failure = RecommendationAcceptanceFailure::AcceptanceFinalized};
   const auto existing =
       std::find_if(accepted_.begin(), accepted_.end(), [&](const auto &value) {
         return value.signal_id() == candidate.signal_id();
@@ -166,6 +168,19 @@ RecommendationAcceptanceResult RecommendationAcceptanceAuthority::accept(
       .disposition = RecommendationAcceptanceDisposition::AcceptedNew,
       .recommendation = accepted_.back(),
   };
+}
+
+bool RecommendationAcceptanceAuthority::finalize(
+    std::size_t emitted_signal_count) noexcept {
+  if (finalized_)
+    return cardinality_proven() &&
+           emitted_signal_count == emitted_signal_count_;
+  finalized_ = true;
+  emitted_signal_count_ = emitted_signal_count;
+  if (terminal_failure_ == RecommendationAcceptanceFailure::None &&
+      accepted_.size() != emitted_signal_count_)
+    terminal_failure_ = RecommendationAcceptanceFailure::CardinalityMismatch;
+  return cardinality_proven();
 }
 
 } // namespace chronos::core::recommendation

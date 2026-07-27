@@ -76,6 +76,7 @@ def test_downstream_include_is_rejected(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (tmp_path / "core/recommendation/CMakeLists.txt").write_text(
+        "add_library(chronos_recommendation STATIC src/recommendation.cpp)\n"
         "target_link_libraries(chronos_recommendation PRIVATE chronos_execution)\n",
         encoding="utf-8",
     )
@@ -95,9 +96,9 @@ def test_only_feature_target_dependencies_are_scanned(tmp_path: Path) -> None:
     feature.write_text('#include "chronos/core/features/feature_runtime.hpp"\n', encoding="utf-8")
     write_feature_owner(
         tmp_path,
-        "add_library(chronos_features STATIC src/feature_runtime.cpp)\n"
+        "ADD_LIBRARY(chronos_features STATIC src/feature_runtime.cpp)\n"
         "add_subdirectory(execution_planning)\n"
-        "target_link_libraries(chronos_features PUBLIC chronos_contracts "
+        "TARGET_LINK_LIBRARIES(chronos_features PUBLIC chronos_contracts "
         "PRIVATE chronos_risk)\n",
     )
     write_other_authorities(tmp_path)
@@ -118,7 +119,7 @@ def test_feature_sources_must_stay_inside_scanned_boundary(tmp_path: Path) -> No
     write_other_authorities(tmp_path)
 
     violations = boundary.find_violations(tmp_path)
-    assert {item.dependency for item in violations} == {"feature-source-outside-core/features"}
+    assert {item.dependency for item in violations} == {"source-outside-authority"}
 
 
 def test_protected_target_cannot_be_mutated_outside_owner(tmp_path: Path) -> None:
@@ -138,3 +139,51 @@ def test_protected_target_cannot_be_mutated_outside_owner(tmp_path: Path) -> Non
 
     violations = boundary.find_violations(tmp_path)
     assert {item.dependency for item in violations} == {"protected-target-mutated-outside-owner"}
+
+
+def test_protected_target_cannot_be_mutated_from_cmake_module(tmp_path: Path) -> None:
+    feature = tmp_path / "core/features/src/feature_runtime.cpp"
+    feature.parent.mkdir(parents=True)
+    feature.write_text('#include "chronos/core/features/feature_runtime.hpp"\n', encoding="utf-8")
+    write_feature_owner(
+        tmp_path,
+        "add_library(chronos_features STATIC src/feature_runtime.cpp)\n"
+        "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
+    )
+    module = tmp_path / "cmake/evil.cmake"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        "TARGET_LINK_LIBRARIES(chronos_features PRIVATE chronos_risk)\n",
+        encoding="utf-8",
+    )
+    write_other_authorities(tmp_path)
+
+    violations = boundary.find_violations(tmp_path)
+    assert {item.dependency for item in violations} == {"protected-target-mutated-outside-owner"}
+
+
+def test_all_protected_targets_reject_external_sources(tmp_path: Path) -> None:
+    feature = tmp_path / "core/features/src/feature_runtime.cpp"
+    feature.parent.mkdir(parents=True)
+    feature.write_text('#include "chronos/core/features/feature_runtime.hpp"\n', encoding="utf-8")
+    write_feature_owner(
+        tmp_path,
+        "add_library(chronos_features STATIC src/feature_runtime.cpp)\n"
+        "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
+    )
+    write_other_authorities(tmp_path)
+    external = tmp_path / "core/risk/risk_authority.CXX"
+    external.parent.mkdir(parents=True)
+    external.write_text("#include <filesystem>\n", encoding="utf-8")
+    (tmp_path / "runtime/strategies/CMakeLists.txt").write_text(
+        "add_library(chronos_strategy_runtime STATIC ../../core/risk/risk_authority.CXX)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "core/recommendation/CMakeLists.txt").write_text(
+        "add_library(chronos_recommendation STATIC ../risk/risk_authority.CXX)\n",
+        encoding="utf-8",
+    )
+
+    violations = boundary.find_violations(tmp_path)
+    outside = [item for item in violations if item.dependency == "source-outside-authority"]
+    assert len(outside) == 2

@@ -78,6 +78,12 @@ AUTHORITY_PATHS = {
     Path("core/recommendation"): (Path("core/recommendation"),),
 }
 
+AUTHORITY_SOURCE_ROOTS = {
+    Path("core/features"): (Path("core/features/src"),),
+    Path("runtime/strategies"): (Path("runtime/strategies/src"),),
+    Path("core/recommendation"): (Path("core/recommendation/src"),),
+}
+
 CMAKE_TARGETS = {
     Path("core/features"): (Path("core/features/CMakeLists.txt"), "chronos_features"),
     Path("runtime/strategies"): (
@@ -132,7 +138,7 @@ class BoundaryViolation:
 def cmake_call_bodies(text: str, command: str, target: str) -> list[str]:
     call = re.compile(
         rf"\b{re.escape(command)}\s*\(\s*{re.escape(target)}\b(?P<body>[^)]*)\)",
-        re.DOTALL,
+        re.DOTALL | re.IGNORECASE,
     )
     return [match.group("body") for match in call.finditer(text)]
 
@@ -153,6 +159,30 @@ def mutates_target(text: str, target: str) -> bool:
     return bool(set_property.search(text) or set_target_properties.search(text))
 
 
+def cmake_files(root: Path) -> list[Path]:
+    files: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file() or (
+            path.name != "CMakeLists.txt" and path.suffix.lower() != ".cmake"
+        ):
+            continue
+        relative = path.relative_to(root)
+        if any(part.startswith("build") or part in {".git", ".venv"} for part in relative.parts):
+            continue
+        files.append(path)
+    return sorted(files)
+
+
+def within_any(path: Path, roots: tuple[Path, ...]) -> bool:
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def find_violations(root: Path) -> list[BoundaryViolation]:
     violations: list[BoundaryViolation] = []
     for authority, allowed in ALLOWED_INCLUDES.items():
@@ -161,7 +191,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
             path = root / relative_path
             source_paths.extend(path.rglob("*") if path.is_dir() else (path,))
         for path in sorted(source_paths):
-            if not path.is_file() or path.suffix not in NATIVE_SUFFIXES:
+            if not path.is_file() or path.suffix.lower() not in NATIVE_SUFFIXES:
                 continue
             for dependency in LOCAL_INCLUDE.findall(path.read_text(encoding="utf-8")):
                 if not any(
@@ -184,7 +214,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
             ):
                 violations.append(BoundaryViolation(cmake_path, dependency))
 
-        for candidate in root.rglob("CMakeLists.txt"):
+        for candidate in cmake_files(root):
             if candidate == cmake_path:
                 continue
             if mutates_target(candidate.read_text(encoding="utf-8"), target):
@@ -192,33 +222,34 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
                     BoundaryViolation(candidate, "protected-target-mutated-outside-owner")
                 )
 
-        if authority == Path("core/features"):
-            sources = cmake_tokens(
-                cmake_call_bodies(cmake, "add_library", target)
-                + cmake_call_bodies(cmake, "target_sources", target)
-            )
-            source_root = (root / "core/features/src").resolve()
-            declared_sources: set[Path] = set()
-            for source in sources:
-                source_path = Path(source)
-                if source_path.suffix not in NATIVE_SUFFIXES:
-                    continue
-                resolved_source = (cmake_path.parent / source_path).resolve()
-                try:
-                    resolved_source.relative_to(source_root)
-                except ValueError:
-                    violations.append(
-                        BoundaryViolation(cmake_path, "feature-source-outside-core/features")
-                    )
-                    continue
-                declared_sources.add(resolved_source)
-            actual_sources = {
-                path.resolve()
-                for path in source_root.rglob("*")
-                if path.is_file() and path.suffix in NATIVE_SUFFIXES
-            }
-            if not actual_sources.issubset(declared_sources):
-                violations.append(BoundaryViolation(cmake_path, "feature-source-not-declared"))
+        sources = cmake_tokens(
+            cmake_call_bodies(cmake, "add_library", target)
+            + cmake_call_bodies(cmake, "target_sources", target)
+        )
+        source_roots = tuple(
+            (root / relative).resolve() for relative in AUTHORITY_SOURCE_ROOTS[authority]
+        )
+        declared_sources: set[Path] = set()
+        for source in sources:
+            if "$" in source:
+                violations.append(BoundaryViolation(cmake_path, "dynamic-authority-source"))
+                continue
+            source_path = Path(source)
+            if source_path.suffix.lower() not in NATIVE_SUFFIXES:
+                continue
+            resolved_source = (cmake_path.parent / source_path).resolve()
+            if not within_any(resolved_source, source_roots):
+                violations.append(BoundaryViolation(cmake_path, "source-outside-authority"))
+                continue
+            declared_sources.add(resolved_source)
+        actual_sources = {
+            path.resolve()
+            for source_root in source_roots
+            for path in source_root.rglob("*")
+            if path.is_file() and path.suffix.lower() in NATIVE_SUFFIXES
+        }
+        if not actual_sources.issubset(declared_sources):
+            violations.append(BoundaryViolation(cmake_path, "authority-source-not-declared"))
     return violations
 
 

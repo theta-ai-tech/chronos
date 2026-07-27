@@ -1896,6 +1896,7 @@ TEST_CASE("M5 invariants preserve terminal and recommendation cardinality") {
   CHECK(actionable_count > 0);
   CHECK(hold_count > 0);
   CHECK(acceptance.accepted_recommendations().size() == signal_count);
+  CHECK(acceptance.finalize(signal_count));
   CHECK(acceptance.cardinality_proven());
   CHECK(acceptance.terminal_failure() ==
         recommendation::RecommendationAcceptanceFailure::None);
@@ -1922,7 +1923,7 @@ TEST_CASE(
       1));
   auto acceptance =
       recommendation::RecommendationAcceptanceAuthority::create(1).value();
-  CHECK(acceptance.cardinality_proven());
+  CHECK(!acceptance.cardinality_proven());
   const auto accepted = acceptance.accept(*first.recommendation);
   const auto retried = acceptance.accept(*first.recommendation);
   const auto exhausted = acceptance.accept(*second.recommendation);
@@ -1937,6 +1938,7 @@ TEST_CASE(
   CHECK(exhausted.disposition ==
         recommendation::RecommendationAcceptanceDisposition::None);
   CHECK(!exhausted.recommendation);
+  CHECK(!acceptance.finalize(2));
   CHECK(!acceptance.cardinality_proven());
   CHECK(acceptance.terminal_failure() ==
         recommendation::RecommendationAcceptanceFailure::CapacityExceeded);
@@ -1944,6 +1946,24 @@ TEST_CASE(
         recommendation::RecommendationAcceptanceFailure::CapacityExceeded);
   CHECK(!after_exhaustion.recommendation);
   CHECK(acceptance.accepted_recommendations().size() == 1);
+
+  auto omitted =
+      recommendation::RecommendationAcceptanceAuthority::create(2).value();
+  CHECK(omitted.accept(*first.recommendation).accepted());
+  CHECK(!omitted.finalize(2));
+  CHECK(!omitted.cardinality_proven());
+  CHECK(omitted.terminal_failure() ==
+        recommendation::RecommendationAcceptanceFailure::CardinalityMismatch);
+
+  auto complete =
+      recommendation::RecommendationAcceptanceAuthority::create(2).value();
+  CHECK(complete.accept(*first.recommendation).accepted());
+  CHECK(complete.finalize(1));
+  CHECK(complete.cardinality_proven());
+  const auto after_finalize = complete.accept(*second.recommendation);
+  CHECK(after_finalize.failure ==
+        recommendation::RecommendationAcceptanceFailure::AcceptanceFinalized);
+  CHECK(complete.cardinality_proven());
 }
 
 TEST_CASE("M5 invalid and non-consumable features terminate at abstention") {

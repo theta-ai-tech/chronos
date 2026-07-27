@@ -27,6 +27,8 @@ enum class RecommendationAcceptanceFailure : std::uint8_t {
   None,
   CapacityExceeded,
   ConflictingRecommendation,
+  CardinalityMismatch,
+  AcceptanceFinalized,
 };
 
 enum class RecommendationAcceptanceDisposition : std::uint8_t {
@@ -187,13 +189,16 @@ public:
 
   [[nodiscard]] RecommendationAcceptanceResult
   accept(const TradeRecommendation &candidate);
+  [[nodiscard]] bool finalize(std::size_t emitted_signal_count) noexcept;
 
   [[nodiscard]] std::span<const TradeRecommendation>
   accepted_recommendations() const noexcept {
     return accepted_;
   }
   [[nodiscard]] bool cardinality_proven() const noexcept {
-    return terminal_failure_ == RecommendationAcceptanceFailure::None;
+    return finalized_ &&
+           terminal_failure_ == RecommendationAcceptanceFailure::None &&
+           accepted_.size() == emitted_signal_count_;
   }
   [[nodiscard]] RecommendationAcceptanceFailure
   terminal_failure() const noexcept {
@@ -211,6 +216,8 @@ private:
   std::vector<TradeRecommendation> accepted_;
   RecommendationAcceptanceFailure terminal_failure_{
       RecommendationAcceptanceFailure::None};
+  std::size_t emitted_signal_count_{};
+  bool finalized_{false};
 };
 
 } // namespace chronos::core::recommendation
