@@ -25,6 +25,19 @@ def test_current_m5_authorities_have_no_downstream_capabilities() -> None:
 
 
 def test_downstream_include_is_rejected(tmp_path: Path) -> None:
+    feature = tmp_path / "core/src/feature_runtime.cpp"
+    feature.parent.mkdir(parents=True)
+    feature.write_text(
+        '#include "chronos/adapters/execution/order_gateway.hpp"\n', encoding="utf-8"
+    )
+    feature_header = tmp_path / "core/include/chronos/core/features/feature_runtime.hpp"
+    feature_header.parent.mkdir(parents=True)
+    feature_header.write_text(
+        '#include "chronos/core/features/feature_runtime.hpp"\n', encoding="utf-8"
+    )
+    (tmp_path / "core/CMakeLists.txt").write_text(
+        "add_library(chronos_core STATIC src/feature_runtime.cpp)\n", encoding="utf-8"
+    )
     strategy = tmp_path / "runtime/strategies/src/strategy_evaluation.cpp"
     strategy.parent.mkdir(parents=True)
     strategy.write_text(
@@ -48,6 +61,7 @@ def test_downstream_include_is_rejected(tmp_path: Path) -> None:
 
     violations = boundary.find_violations(tmp_path)
     assert {item.dependency for item in violations} == {
+        "chronos/adapters/execution/order_gateway.hpp",
         "chronos/core/risk/risk_authority.hpp",
         "execution",
         "filesystem",

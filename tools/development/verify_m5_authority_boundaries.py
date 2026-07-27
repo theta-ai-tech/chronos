@@ -8,6 +8,13 @@ LOCAL_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
 SYSTEM_INCLUDE = re.compile(r"^\s*#\s*include\s+<([^>]+)>", re.MULTILINE)
 
 ALLOWED_INCLUDES = {
+    Path("core/features"): (
+        "chronos/core/features/",
+        "chronos/contracts/digest.hpp",
+        "chronos/contracts/fixed_point.hpp",
+        "chronos/contracts/state_lineage.hpp",
+        "chronos/core/market_state/listing_view_publisher.hpp",
+    ),
     Path("runtime/strategies"): (
         "chronos/runtime/strategies/",
         "chronos/contracts/recommendation_policy.hpp",
@@ -22,6 +29,17 @@ ALLOWED_INCLUDES = {
 }
 
 ALLOWED_SYSTEM_INCLUDES = {
+    Path("core/features"): {
+        "algorithm",
+        "cstdint",
+        "limits",
+        "memory",
+        "optional",
+        "string_view",
+        "type_traits",
+        "variant",
+        "vector",
+    },
     Path("runtime/strategies"): {
         "algorithm",
         "array",
@@ -49,6 +67,21 @@ ALLOWED_SYSTEM_INCLUDES = {
     },
 }
 
+AUTHORITY_PATHS = {
+    Path("core/features"): (
+        Path("core/include/chronos/core/features"),
+        Path("core/src/feature_runtime.cpp"),
+    ),
+    Path("runtime/strategies"): (Path("runtime/strategies"),),
+    Path("core/recommendation"): (Path("core/recommendation"),),
+}
+
+CMAKE_PATHS = {
+    Path("core/features"): Path("core/CMakeLists.txt"),
+    Path("runtime/strategies"): Path("runtime/strategies/CMakeLists.txt"),
+    Path("core/recommendation"): Path("core/recommendation/CMakeLists.txt"),
+}
+
 FORBIDDEN_CMAKE_TARGET_FRAGMENTS = (
     "accounting",
     "adapter",
@@ -66,10 +99,13 @@ class BoundaryViolation:
 
 def find_violations(root: Path) -> list[BoundaryViolation]:
     violations: list[BoundaryViolation] = []
-    for relative_root, allowed in ALLOWED_INCLUDES.items():
-        module_root = root / relative_root
-        for path in sorted(module_root.rglob("*")):
-            if path.suffix not in {".cpp", ".hpp"}:
+    for authority, allowed in ALLOWED_INCLUDES.items():
+        source_paths: list[Path] = []
+        for relative_path in AUTHORITY_PATHS[authority]:
+            path = root / relative_path
+            source_paths.extend(path.rglob("*") if path.is_dir() else (path,))
+        for path in sorted(source_paths):
+            if not path.is_file() or path.suffix not in {".cpp", ".hpp"}:
                 continue
             for dependency in LOCAL_INCLUDE.findall(path.read_text(encoding="utf-8")):
                 if not any(
@@ -78,13 +114,14 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
                 ):
                     violations.append(BoundaryViolation(path, dependency))
             for dependency in SYSTEM_INCLUDE.findall(path.read_text(encoding="utf-8")):
-                if dependency not in ALLOWED_SYSTEM_INCLUDES[relative_root]:
+                if dependency not in ALLOWED_SYSTEM_INCLUDES[authority]:
                     violations.append(BoundaryViolation(path, dependency))
 
-        cmake = (module_root / "CMakeLists.txt").read_text(encoding="utf-8").lower()
+        cmake_path = root / CMAKE_PATHS[authority]
+        cmake = cmake_path.read_text(encoding="utf-8").lower()
         for fragment in FORBIDDEN_CMAKE_TARGET_FRAGMENTS:
             if fragment in cmake:
-                violations.append(BoundaryViolation(module_root / "CMakeLists.txt", fragment))
+                violations.append(BoundaryViolation(cmake_path, fragment))
     return violations
 
 
