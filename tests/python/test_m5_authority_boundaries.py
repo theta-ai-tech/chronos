@@ -107,6 +107,22 @@ def test_only_feature_target_dependencies_are_scanned(tmp_path: Path) -> None:
     assert {item.dependency for item in violations} == {"chronos_risk"}
 
 
+def test_quoted_owner_target_cannot_hide_dependency(tmp_path: Path) -> None:
+    feature = tmp_path / "core/features/src/feature_runtime.cpp"
+    feature.parent.mkdir(parents=True)
+    feature.write_text('#include "chronos/core/features/feature_runtime.hpp"\n', encoding="utf-8")
+    write_feature_owner(
+        tmp_path,
+        "add_library(chronos_features STATIC src/feature_runtime.cpp)\n"
+        'target_link_libraries("chronos_features" PUBLIC chronos_contracts '
+        "PRIVATE chronos_risk)\n",
+    )
+    write_other_authorities(tmp_path)
+
+    violations = boundary.find_violations(tmp_path)
+    assert {item.dependency for item in violations} == {"chronos_risk"}
+
+
 def test_feature_sources_must_stay_inside_scanned_boundary(tmp_path: Path) -> None:
     feature = tmp_path / "core/src/feature_observation.cpp"
     feature.parent.mkdir(parents=True)
@@ -115,6 +131,21 @@ def test_feature_sources_must_stay_inside_scanned_boundary(tmp_path: Path) -> No
         tmp_path,
         "add_library(chronos_features STATIC)\n"
         "target_sources(chronos_features PRIVATE ../src/feature_observation.cpp)\n",
+    )
+    write_other_authorities(tmp_path)
+
+    violations = boundary.find_violations(tmp_path)
+    assert {item.dependency for item in violations} == {"source-outside-authority"}
+
+
+def test_bracket_quoted_owner_target_cannot_hide_source(tmp_path: Path) -> None:
+    feature = tmp_path / "core/src/feature_observation.cpp"
+    feature.parent.mkdir(parents=True)
+    feature.write_text("#include <cstdint>\n", encoding="utf-8")
+    write_feature_owner(
+        tmp_path,
+        "add_library([[chronos_features]] STATIC)\n"
+        "target_sources([[chronos_features]] PRIVATE ../src/feature_observation.cpp)\n",
     )
     write_other_authorities(tmp_path)
 
@@ -286,3 +317,20 @@ def test_all_protected_targets_reject_external_sources(tmp_path: Path) -> None:
     violations = boundary.find_violations(tmp_path)
     outside = [item for item in violations if item.dependency == "source-outside-authority"]
     assert len(outside) == 2
+
+
+def test_nested_codex_worktrees_are_not_scanned(tmp_path: Path) -> None:
+    write_feature_owner(
+        tmp_path,
+        "add_library(chronos_features STATIC)\n"
+        "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
+    )
+    write_other_authorities(tmp_path)
+    stale = tmp_path / ".codex/worktrees/stale/CMakeLists.txt"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(
+        "target_link_libraries(chronos_features PRIVATE chronos_risk)\n",
+        encoding="utf-8",
+    )
+
+    assert boundary.find_violations(tmp_path) == []

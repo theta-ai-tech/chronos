@@ -190,11 +190,11 @@ def strip_cmake_comments(text: str) -> str:
 
 
 def cmake_call_bodies(text: str, command: str, target: str) -> list[str]:
-    call = re.compile(
-        rf"\b{re.escape(command)}\s*\(\s*{re.escape(target)}\b(?P<body>[^)]*)\)",
-        re.DOTALL | re.IGNORECASE,
-    )
-    return [match.group("body") for match in call.finditer(text)]
+    return [
+        " ".join(arguments[1:])
+        for name, arguments in cmake_commands(text)
+        if name == command.lower() and arguments and arguments[0] == target
+    ]
 
 
 def cmake_tokens(bodies: list[str]) -> list[str]:
@@ -202,13 +202,17 @@ def cmake_tokens(bodies: list[str]) -> list[str]:
 
 
 def property_mutates_target(text: str, target: str) -> bool:
-    set_property = re.compile(
-        rf"\bset_property\s*\(\s*TARGET\s+{re.escape(target)}\b", re.IGNORECASE
-    )
-    set_target_properties = re.compile(
-        rf"\bset_target_properties\s*\(\s*{re.escape(target)}\b", re.IGNORECASE
-    )
-    return bool(set_property.search(text) or set_target_properties.search(text))
+    for command, arguments in cmake_commands(text):
+        if (
+            command == "set_property"
+            and len(arguments) > 1
+            and arguments[0].upper() == "TARGET"
+            and arguments[1] == target
+        ):
+            return True
+        if command == "set_target_properties" and arguments and arguments[0] == target:
+            return True
+    return False
 
 
 def unsupported_owner_mutation(text: str, target: str) -> bool:
@@ -307,7 +311,7 @@ def cmake_files(root: Path) -> list[Path]:
         ):
             continue
         relative = path.relative_to(root)
-        if any(part in {".git", ".venv"} for part in relative.parts):
+        if any(part in {".codex", ".git", ".venv"} for part in relative.parts):
             continue
         ancestor = path.parent
         generated = False
