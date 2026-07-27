@@ -6,6 +6,8 @@ from pathlib import Path
 
 LOCAL_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
 SYSTEM_INCLUDE = re.compile(r"^\s*#\s*include\s+<([^>]+)>", re.MULTILINE)
+NATIVE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
+CMAKE_TOKEN = re.compile(r"[A-Za-z0-9_./:+$<>{}-]+")
 
 ALLOWED_INCLUDES = {
     Path("core/features"): (
@@ -70,31 +72,58 @@ ALLOWED_SYSTEM_INCLUDES = {
 AUTHORITY_PATHS = {
     Path("core/features"): (
         Path("core/include/chronos/core/features"),
-        Path("core/src/feature_runtime.cpp"),
+        Path("core/features/src"),
     ),
     Path("runtime/strategies"): (Path("runtime/strategies"),),
     Path("core/recommendation"): (Path("core/recommendation"),),
 }
 
-CMAKE_PATHS = {
-    Path("core/features"): Path("core/CMakeLists.txt"),
-    Path("runtime/strategies"): Path("runtime/strategies/CMakeLists.txt"),
-    Path("core/recommendation"): Path("core/recommendation/CMakeLists.txt"),
+CMAKE_TARGETS = {
+    Path("core/features"): (Path("core/CMakeLists.txt"), "chronos_core"),
+    Path("runtime/strategies"): (
+        Path("runtime/strategies/CMakeLists.txt"),
+        "chronos_strategy_runtime",
+    ),
+    Path("core/recommendation"): (
+        Path("core/recommendation/CMakeLists.txt"),
+        "chronos_recommendation",
+    ),
 }
 
-FORBIDDEN_CMAKE_TARGET_FRAGMENTS = (
-    "accounting",
-    "adapter",
-    "execution",
-    "portfolio",
-    "risk",
-)
+ALLOWED_TARGET_DEPENDENCIES = {
+    Path("core/features"): {"chronos_contracts", "chronos_options", "chronos_warnings"},
+    Path("runtime/strategies"): {
+        "chronos_core",
+        "chronos_options",
+        "chronos_strategy_sdk",
+        "chronos_warnings",
+    },
+    Path("core/recommendation"): {
+        "chronos_options",
+        "chronos_strategy_runtime",
+        "chronos_warnings",
+    },
+}
+
+CMAKE_LINK_KEYWORDS = {"PUBLIC", "PRIVATE", "INTERFACE", "debug", "optimized", "general"}
 
 
 @dataclass(frozen=True)
 class BoundaryViolation:
     path: Path
     dependency: str
+
+
+def cmake_call_bodies(text: str, command: str, target: str) -> list[str]:
+    call = re.compile(
+        rf"\b{re.escape(command)}\s*\(\s*{re.escape(target)}\b(?P<body>[^)]*)\)",
+        re.DOTALL,
+    )
+    return [match.group("body") for match in call.finditer(text)]
+
+
+def cmake_tokens(bodies: list[str]) -> list[str]:
+    return [token for body in bodies for token in CMAKE_TOKEN.findall(body)]
 
 
 def find_violations(root: Path) -> list[BoundaryViolation]:
@@ -105,7 +134,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
             path = root / relative_path
             source_paths.extend(path.rglob("*") if path.is_dir() else (path,))
         for path in sorted(source_paths):
-            if not path.is_file() or path.suffix not in {".cpp", ".hpp"}:
+            if not path.is_file() or path.suffix not in NATIVE_SUFFIXES:
                 continue
             for dependency in LOCAL_INCLUDE.findall(path.read_text(encoding="utf-8")):
                 if not any(
@@ -117,11 +146,29 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
                 if dependency not in ALLOWED_SYSTEM_INCLUDES[authority]:
                     violations.append(BoundaryViolation(path, dependency))
 
-        cmake_path = root / CMAKE_PATHS[authority]
-        cmake = cmake_path.read_text(encoding="utf-8").lower()
-        for fragment in FORBIDDEN_CMAKE_TARGET_FRAGMENTS:
-            if fragment in cmake:
-                violations.append(BoundaryViolation(cmake_path, fragment))
+        relative_cmake, target = CMAKE_TARGETS[authority]
+        cmake_path = root / relative_cmake
+        cmake = cmake_path.read_text(encoding="utf-8")
+        dependencies = cmake_tokens(cmake_call_bodies(cmake, "target_link_libraries", target))
+        for dependency in dependencies:
+            if (
+                dependency not in CMAKE_LINK_KEYWORDS
+                and dependency not in ALLOWED_TARGET_DEPENDENCIES[authority]
+            ):
+                violations.append(BoundaryViolation(cmake_path, dependency))
+
+        if authority == Path("core/features"):
+            sources = cmake_tokens(cmake_call_bodies(cmake, "add_library", target))
+            for source in sources:
+                source_path = Path(source)
+                if (
+                    source_path.suffix in NATIVE_SUFFIXES
+                    and source_path.stem.startswith("feature")
+                    and not source.startswith("features/src/")
+                ):
+                    violations.append(
+                        BoundaryViolation(cmake_path, "feature-source-outside-core/features")
+                    )
     return violations
 
 
