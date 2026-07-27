@@ -1793,6 +1793,7 @@ TEST_CASE("M5 invariants preserve terminal and recommendation cardinality") {
   std::size_t abstention_count{};
   std::size_t actionable_count{};
   std::size_t hold_count{};
+  std::vector<contracts::StrategySignalId> emitted_signal_ids;
   for (contracts::AmountUnits bid = 1; bid <= 8; ++bid) {
     for (contracts::AmountUnits ask = 1; ask <= 8; ++ask) {
       const auto evaluated = evaluate_reference(
@@ -1821,6 +1822,7 @@ TEST_CASE("M5 invariants preserve terminal and recommendation cardinality") {
         ++signal_count;
         const auto &signal =
             std::get<strategy_runtime::StrategySignal>(value.terminal());
+        emitted_signal_ids.push_back(signal.signal_id());
         CHECK(signal.evaluation_id() == value.evaluation_id());
         CHECK(signal.draft().strength.units > 0);
         CHECK(signal.draft().horizon_nanoseconds > 0);
@@ -1896,7 +1898,7 @@ TEST_CASE("M5 invariants preserve terminal and recommendation cardinality") {
   CHECK(actionable_count > 0);
   CHECK(hold_count > 0);
   CHECK(acceptance.accepted_recommendations().size() == signal_count);
-  CHECK(acceptance.finalize(signal_count));
+  CHECK(acceptance.finalize(emitted_signal_ids));
   CHECK(acceptance.cardinality_proven());
   CHECK(acceptance.terminal_failure() ==
         recommendation::RecommendationAcceptanceFailure::None);
@@ -1915,6 +1917,9 @@ TEST_CASE(
       *second_evaluation.result.evaluation, policy);
   CHECK(first.completed());
   CHECK(second.completed());
+  const std::array emitted_signals{first.recommendation->signal_id(),
+                                   second.recommendation->signal_id()};
+  const std::array first_signal{first.recommendation->signal_id()};
 
   CHECK(!recommendation::RecommendationAcceptanceAuthority::create(0));
   CHECK(!recommendation::RecommendationAcceptanceAuthority::create(
@@ -1938,7 +1943,7 @@ TEST_CASE(
   CHECK(exhausted.disposition ==
         recommendation::RecommendationAcceptanceDisposition::None);
   CHECK(!exhausted.recommendation);
-  CHECK(!acceptance.finalize(2));
+  CHECK(!acceptance.finalize(emitted_signals));
   CHECK(!acceptance.cardinality_proven());
   CHECK(acceptance.terminal_failure() ==
         recommendation::RecommendationAcceptanceFailure::CapacityExceeded);
@@ -1950,20 +1955,37 @@ TEST_CASE(
   auto omitted =
       recommendation::RecommendationAcceptanceAuthority::create(2).value();
   CHECK(omitted.accept(*first.recommendation).accepted());
-  CHECK(!omitted.finalize(2));
+  CHECK(!omitted.finalize(emitted_signals));
   CHECK(!omitted.cardinality_proven());
   CHECK(omitted.terminal_failure() ==
+        recommendation::RecommendationAcceptanceFailure::CardinalityMismatch);
+
+  auto wrong_identity =
+      recommendation::RecommendationAcceptanceAuthority::create(2).value();
+  CHECK(wrong_identity.accept(*first.recommendation).accepted());
+  const std::array wrong_emitted_identity{second.recommendation->signal_id()};
+  CHECK(!wrong_identity.finalize(wrong_emitted_identity));
+  CHECK(wrong_identity.terminal_failure() ==
         recommendation::RecommendationAcceptanceFailure::CardinalityMismatch);
 
   auto complete =
       recommendation::RecommendationAcceptanceAuthority::create(2).value();
   CHECK(complete.accept(*first.recommendation).accepted());
-  CHECK(complete.finalize(1));
+  CHECK(complete.finalize(first_signal));
   CHECK(complete.cardinality_proven());
   const auto after_finalize = complete.accept(*second.recommendation);
   CHECK(after_finalize.failure ==
         recommendation::RecommendationAcceptanceFailure::AcceptanceFinalized);
   CHECK(complete.cardinality_proven());
+
+  auto reordered =
+      recommendation::RecommendationAcceptanceAuthority::create(2).value();
+  CHECK(reordered.accept(*first.recommendation).accepted());
+  CHECK(reordered.accept(*second.recommendation).accepted());
+  CHECK(reordered.finalize(emitted_signals));
+  const std::array reversed_signals{second.recommendation->signal_id(),
+                                    first.recommendation->signal_id()};
+  CHECK(reordered.finalize(reversed_signals));
 
   auto conflicting =
       recommendation::RecommendationAcceptanceAuthority::create(2).value();
@@ -1976,7 +1998,7 @@ TEST_CASE(
   const auto conflict = conflicting.accept(*first.recommendation);
   CHECK(conflict.failure == recommendation::RecommendationAcceptanceFailure::
                                 ConflictingRecommendation);
-  CHECK(!conflicting.finalize(1));
+  CHECK(!conflicting.finalize(first_signal));
   CHECK(!conflicting.cardinality_proven());
   CHECK(conflicting.terminal_failure() ==
         recommendation::RecommendationAcceptanceFailure::

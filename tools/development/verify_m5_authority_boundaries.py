@@ -141,6 +141,54 @@ class BoundaryViolation:
     dependency: str
 
 
+def strip_cmake_comments(text: str) -> str:
+    output: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] == '"':
+            start = index
+            index += 1
+            while index < len(text):
+                if text[index] == "\\":
+                    index += 2
+                elif text[index] == '"':
+                    index += 1
+                    break
+                else:
+                    index += 1
+            output.append(text[start:index])
+            continue
+
+        bracket = re.match(r"\[(=*)\[", text[index:])
+        if bracket:
+            closing = "]" + bracket.group(1) + "]"
+            end = text.find(closing, index + len(bracket.group(0)))
+            end = len(text) if end == -1 else end + len(closing)
+            output.append(text[index:end])
+            index = end
+            continue
+
+        if text[index] == "#":
+            bracket_comment = re.match(r"#\[(=*)\[", text[index:])
+            if bracket_comment:
+                closing = "]" + bracket_comment.group(1) + "]"
+                end = text.find(closing, index + len(bracket_comment.group(0)))
+                end = len(text) if end == -1 else end + len(closing)
+                output.append("\n" * text[index:end].count("\n"))
+                index = end
+                continue
+            end = text.find("\n", index)
+            if end == -1:
+                break
+            output.append("\n")
+            index = end + 1
+            continue
+
+        output.append(text[index])
+        index += 1
+    return "".join(output)
+
+
 def cmake_call_bodies(text: str, command: str, target: str) -> list[str]:
     call = re.compile(
         rf"\b{re.escape(command)}\s*\(\s*{re.escape(target)}\b(?P<body>[^)]*)\)",
@@ -179,6 +227,26 @@ def unsupported_owner_mutation(text: str, target: str) -> bool:
     )
 
 
+def dynamically_mutates_target(text: str) -> bool:
+    callable_definition = re.compile(
+        r"\b(?:function|macro)\s*\([^)]*\).*?"
+        r"\bend(?:function|macro)\s*\([^)]*\)",
+        re.DOTALL | re.IGNORECASE,
+    )
+    invocations = callable_definition.sub("", text)
+    direct_target = re.compile(
+        rf"\b(?:{'|'.join(CMAKE_TARGET_COMMANDS)})\s*\(\s*[^\s)\"]*\$",
+        re.IGNORECASE,
+    )
+    property_target = re.compile(r"\bset_property\s*\(\s*TARGET\s+[^\s)\"]*\$", re.IGNORECASE)
+    target_properties = re.compile(r"\bset_target_properties\s*\(\s*[^\s)\"]*\$", re.IGNORECASE)
+    return bool(
+        direct_target.search(invocations)
+        or property_target.search(invocations)
+        or target_properties.search(invocations)
+    )
+
+
 def cmake_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for path in root.rglob("*"):
@@ -214,6 +282,7 @@ def within_any(path: Path, roots: tuple[Path, ...]) -> bool:
 
 def find_violations(root: Path) -> list[BoundaryViolation]:
     violations: list[BoundaryViolation] = []
+    reported_dynamic_paths: set[Path] = set()
     for authority, allowed in ALLOWED_INCLUDES.items():
         source_paths: list[Path] = []
         for relative_path in AUTHORITY_PATHS[authority]:
@@ -234,7 +303,10 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
 
         relative_cmake, target = CMAKE_TARGETS[authority]
         cmake_path = root / relative_cmake
-        cmake = cmake_path.read_text(encoding="utf-8")
+        cmake = strip_cmake_comments(cmake_path.read_text(encoding="utf-8"))
+        if dynamically_mutates_target(cmake) and cmake_path not in reported_dynamic_paths:
+            violations.append(BoundaryViolation(cmake_path, "dynamic-target-mutation"))
+            reported_dynamic_paths.add(cmake_path)
         if unsupported_owner_mutation(cmake, target):
             violations.append(BoundaryViolation(cmake_path, "unsupported-owner-target-mutation"))
         dependencies = cmake_tokens(cmake_call_bodies(cmake, "target_link_libraries", target))
@@ -248,7 +320,14 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
         for candidate in cmake_files(root):
             if candidate == cmake_path:
                 continue
-            if mutates_target(candidate.read_text(encoding="utf-8"), target):
+            candidate_cmake = strip_cmake_comments(candidate.read_text(encoding="utf-8"))
+            if (
+                dynamically_mutates_target(candidate_cmake)
+                and candidate not in reported_dynamic_paths
+            ):
+                violations.append(BoundaryViolation(candidate, "dynamic-target-mutation"))
+                reported_dynamic_paths.add(candidate)
+            elif mutates_target(candidate_cmake, target):
                 violations.append(
                     BoundaryViolation(candidate, "protected-target-mutated-outside-owner")
                 )

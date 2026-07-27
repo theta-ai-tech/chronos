@@ -132,13 +132,15 @@ def test_protected_target_cannot_be_mutated_outside_owner(tmp_path: Path) -> Non
         "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
     )
     (tmp_path / "CMakeLists.txt").write_text(
-        "add_subdirectory(core)\ntarget_link_libraries(chronos_features PRIVATE chronos_risk)\n",
+        "add_subdirectory(core)\n"
+        "set(PROTECTED chronos_features)\n"
+        "target_link_libraries(${PROTECTED} PRIVATE chronos_risk)\n",
         encoding="utf-8",
     )
     write_other_authorities(tmp_path)
 
     violations = boundary.find_violations(tmp_path)
-    assert {item.dependency for item in violations} == {"protected-target-mutated-outside-owner"}
+    assert {item.dependency for item in violations} == {"dynamic-target-mutation"}
 
 
 def test_protected_target_cannot_be_mutated_from_cmake_module(tmp_path: Path) -> None:
@@ -177,6 +179,26 @@ def test_owner_rejects_property_based_target_mutation(tmp_path: Path) -> None:
 
     violations = boundary.find_violations(tmp_path)
     assert {item.dependency for item in violations} == {"unsupported-owner-target-mutation"}
+
+
+def test_cmake_comments_are_not_parsed_as_commands(tmp_path: Path) -> None:
+    feature = tmp_path / "core/features/src/feature_runtime.cpp"
+    feature.parent.mkdir(parents=True)
+    feature.write_text('#include "chronos/core/features/feature_runtime.hpp"\n', encoding="utf-8")
+    write_feature_owner(
+        tmp_path,
+        "add_library(chronos_features STATIC)\n"
+        "# target_sources(chronos_features PRIVATE src/feature_runtime.cpp)\n"
+        "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
+    )
+    (tmp_path / "CMakeLists.txt").write_text(
+        "add_subdirectory(core)\n# target_link_libraries(chronos_features PRIVATE chronos_risk)\n",
+        encoding="utf-8",
+    )
+    write_other_authorities(tmp_path)
+
+    violations = boundary.find_violations(tmp_path)
+    assert {item.dependency for item in violations} == {"authority-source-not-declared"}
 
 
 def test_all_protected_targets_reject_external_sources(tmp_path: Path) -> None:

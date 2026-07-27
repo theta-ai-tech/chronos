@@ -189,7 +189,8 @@ public:
 
   [[nodiscard]] RecommendationAcceptanceResult
   accept(const TradeRecommendation &candidate);
-  [[nodiscard]] bool finalize(std::size_t emitted_signal_count) noexcept;
+  [[nodiscard]] bool
+  finalize(std::span<const contracts::StrategySignalId> emitted_signal_ids);
 
   [[nodiscard]] std::span<const TradeRecommendation>
   accepted_recommendations() const noexcept {
@@ -197,8 +198,7 @@ public:
   }
   [[nodiscard]] bool cardinality_proven() const noexcept {
     return finalized_ &&
-           terminal_failure_ == RecommendationAcceptanceFailure::None &&
-           accepted_.size() == emitted_signal_count_;
+           terminal_failure_ == RecommendationAcceptanceFailure::None;
   }
   [[nodiscard]] RecommendationAcceptanceFailure
   terminal_failure() const noexcept {
@@ -216,7 +216,7 @@ private:
   std::vector<TradeRecommendation> accepted_;
   RecommendationAcceptanceFailure terminal_failure_{
       RecommendationAcceptanceFailure::None};
-  std::size_t emitted_signal_count_{};
+  std::vector<contracts::StrategySignalId> emitted_signal_ids_;
   bool finalized_{false};
 };
 
