@@ -21,3 +21,8 @@ cannot substitute a numerically similar control lineage.
 - **Accepted dependencies:** strategy SDK, feature authority, contracts
 - **Failure semantics:** Invalid activations or mismatched cuts are rejected
   before an evaluation obligation is admitted.
+
+External strategy observations are not activated in Deliverable 0. Evaluation
+inputs are limited to the admitted feature/control/timer cut, and the checked
+M5 dependency gate prevents imports from portfolio, risk, execution, adapters,
+or accounting.

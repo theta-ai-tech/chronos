@@ -23,6 +23,20 @@ enum class RecommendationHoldReason : std::uint8_t {
   BelowActionThreshold,
 };
 
+enum class RecommendationAcceptanceFailure : std::uint8_t {
+  None,
+  CapacityExceeded,
+  ConflictingRecommendation,
+  CardinalityMismatch,
+  AcceptanceFinalized,
+};
+
+enum class RecommendationAcceptanceDisposition : std::uint8_t {
+  None,
+  AcceptedNew,
+  DeduplicatedExisting,
+};
+
 using contracts::recommendation_policy_checksum;
 using contracts::RecommendationPolicy;
 
@@ -151,6 +165,59 @@ public:
   [[nodiscard]] static RecommendationResult
   recommend(const runtime::strategies::StrategyEvaluation &evaluation,
             const RecommendationPolicy &policy);
+};
+
+struct RecommendationAcceptanceResult final {
+  RecommendationAcceptanceFailure failure{
+      RecommendationAcceptanceFailure::None};
+  RecommendationAcceptanceDisposition disposition{
+      RecommendationAcceptanceDisposition::None};
+  std::optional<TradeRecommendation> recommendation;
+
+  [[nodiscard]] bool accepted() const noexcept {
+    return failure == RecommendationAcceptanceFailure::None &&
+           recommendation.has_value();
+  }
+};
+
+class RecommendationAcceptanceAuthority final {
+public:
+  static constexpr std::size_t kMaximumAcceptedRecommendations = 4096;
+
+  [[nodiscard]] static std::optional<RecommendationAcceptanceAuthority>
+  create(std::size_t maximum_recommendations);
+
+  [[nodiscard]] RecommendationAcceptanceResult
+  accept(const TradeRecommendation &candidate);
+  [[nodiscard]] bool
+  finalize(std::span<const contracts::StrategySignalId> emitted_signal_ids);
+
+  [[nodiscard]] std::span<const TradeRecommendation>
+  accepted_recommendations() const noexcept {
+    return accepted_;
+  }
+  [[nodiscard]] bool cardinality_proven() const noexcept {
+    return finalized_ &&
+           terminal_failure_ == RecommendationAcceptanceFailure::None;
+  }
+  [[nodiscard]] RecommendationAcceptanceFailure
+  terminal_failure() const noexcept {
+    return terminal_failure_;
+  }
+
+private:
+  explicit RecommendationAcceptanceAuthority(
+      std::size_t maximum_recommendations)
+      : maximum_recommendations_(maximum_recommendations) {
+    accepted_.reserve(maximum_recommendations);
+  }
+
+  std::size_t maximum_recommendations_{};
+  std::vector<TradeRecommendation> accepted_;
+  RecommendationAcceptanceFailure terminal_failure_{
+      RecommendationAcceptanceFailure::None};
+  std::vector<contracts::StrategySignalId> emitted_signal_ids_;
+  bool finalized_{false};
 };
 
 } // namespace chronos::core::recommendation

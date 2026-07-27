@@ -54,6 +54,17 @@ bool valid_factors(
   return true;
 }
 
+bool same_unique_signal_ids(
+    std::span<const contracts::StrategySignalId> left,
+    std::span<const contracts::StrategySignalId> right) noexcept {
+  if (left.size() != right.size())
+    return false;
+  return std::all_of(left.begin(), left.end(), [&](const auto &signal_id) {
+    return std::count(left.begin(), left.end(), signal_id) == 1 &&
+           std::count(right.begin(), right.end(), signal_id) == 1;
+  });
+}
+
 contracts::TradeRecommendationId
 recommendation_id(const runtime::strategies::StrategySignal &signal,
                   const RecommendationPolicy &policy,
@@ -126,6 +137,84 @@ RecommendationResult RecommendationAuthority::recommend(
       evaluation.run_input_sequence(), evaluation.logical_time_nanoseconds(),
       std::move(outcome), std::move(factors));
   return result;
+}
+
+std::optional<RecommendationAcceptanceAuthority>
+RecommendationAcceptanceAuthority::create(std::size_t maximum_recommendations) {
+  if (maximum_recommendations == 0 ||
+      maximum_recommendations > kMaximumAcceptedRecommendations)
+    return std::nullopt;
+  return RecommendationAcceptanceAuthority(maximum_recommendations);
+}
+
+RecommendationAcceptanceResult RecommendationAcceptanceAuthority::accept(
+    const TradeRecommendation &candidate) {
+  if (terminal_failure_ != RecommendationAcceptanceFailure::None)
+    return {.failure = terminal_failure_};
+  if (finalized_)
+    return {.failure = RecommendationAcceptanceFailure::AcceptanceFinalized};
+  const auto existing =
+      std::find_if(accepted_.begin(), accepted_.end(), [&](const auto &value) {
+        return value.signal_id() == candidate.signal_id();
+      });
+  if (existing != accepted_.end()) {
+    if (*existing != candidate) {
+      terminal_failure_ =
+          RecommendationAcceptanceFailure::ConflictingRecommendation;
+      return {.failure =
+                  RecommendationAcceptanceFailure::ConflictingRecommendation};
+    }
+    return {
+        .disposition =
+            RecommendationAcceptanceDisposition::DeduplicatedExisting,
+        .recommendation = *existing,
+    };
+  }
+  if (accepted_.size() == maximum_recommendations_) {
+    terminal_failure_ = RecommendationAcceptanceFailure::CapacityExceeded;
+    return {.failure = RecommendationAcceptanceFailure::CapacityExceeded};
+  }
+  accepted_.push_back(candidate);
+  return {
+      .disposition = RecommendationAcceptanceDisposition::AcceptedNew,
+      .recommendation = accepted_.back(),
+  };
+}
+
+bool RecommendationAcceptanceAuthority::finalize(
+    std::span<const contracts::StrategySignalId> emitted_signal_ids) {
+  if (finalized_) {
+    if (terminal_failure_ != RecommendationAcceptanceFailure::None)
+      return false;
+    if (!same_unique_signal_ids(emitted_signal_ids, emitted_signal_ids_)) {
+      terminal_failure_ = RecommendationAcceptanceFailure::CardinalityMismatch;
+      return false;
+    }
+    return true;
+  }
+  finalized_ = true;
+  emitted_signal_ids_.assign(emitted_signal_ids.begin(),
+                             emitted_signal_ids.end());
+  const auto unique_emitted_ids = std::all_of(
+      emitted_signal_ids_.begin(), emitted_signal_ids_.end(),
+      [&](const auto &signal_id) {
+        return std::count(emitted_signal_ids_.begin(),
+                          emitted_signal_ids_.end(), signal_id) == 1;
+      });
+  const auto identities_match =
+      accepted_.size() == emitted_signal_ids_.size() && unique_emitted_ids &&
+      std::all_of(emitted_signal_ids_.begin(), emitted_signal_ids_.end(),
+                  [&](const auto &signal_id) {
+                    return std::count_if(accepted_.begin(), accepted_.end(),
+                                         [&](const auto &recommendation) {
+                                           return recommendation.signal_id() ==
+                                                  signal_id;
+                                         }) == 1;
+                  });
+  if (terminal_failure_ == RecommendationAcceptanceFailure::None &&
+      !identities_match)
+    terminal_failure_ = RecommendationAcceptanceFailure::CardinalityMismatch;
+  return cardinality_proven();
 }
 
 } // namespace chronos::core::recommendation
