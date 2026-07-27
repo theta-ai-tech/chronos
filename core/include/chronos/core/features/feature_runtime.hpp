@@ -14,6 +14,8 @@
 
 namespace chronos::core::features {
 
+inline constexpr bool kDiagnosticFeatureObservationsActivated = false;
+
 enum class FeatureKind : std::uint8_t {
   OrderBookImbalance,
   Microprice,

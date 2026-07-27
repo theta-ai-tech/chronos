@@ -1785,6 +1785,10 @@ TEST_CASE("recommendations reject abstentions and invalid policies") {
 
 TEST_CASE("M5 invariants preserve terminal and recommendation cardinality") {
   const auto policy = recommendation_policy(300000);
+  auto acceptance =
+      recommendation::RecommendationAcceptanceAuthority::create(64).value();
+  const auto expected_strategy =
+      reference_strategy_config(reference_threshold());
   std::size_t signal_count{};
   std::size_t abstention_count{};
   std::size_t actionable_count{};
@@ -1796,6 +1800,20 @@ TEST_CASE("M5 invariants preserve terminal and recommendation cardinality") {
       CHECK(evaluated.result.completed());
       const auto &value = *evaluated.result.evaluation;
       CHECK(value.signal_emitted() != value.abstained());
+      CHECK(value.run_id() == runtime_config().run_id);
+      CHECK(value.strategy_instance_id() ==
+            expected_strategy.strategy_instance_id);
+      CHECK(value.listing_id() == expected_strategy.listing_id);
+      CHECK(value.canonical_instrument_id() ==
+            expected_strategy.canonical_instrument_id);
+      CHECK(value.definition_digest() ==
+            expected_strategy.definition.definition_digest());
+      CHECK(value.feature_evaluation_ids().size() ==
+            evaluated.features.evaluations().size());
+      for (std::size_t index = 0;
+           index < evaluated.features.evaluations().size(); ++index)
+        CHECK(value.feature_evaluation_ids()[index] ==
+              evaluated.features.evaluations()[index].evaluation_id);
 
       const auto recommended =
           recommendation::RecommendationAuthority::recommend(value, policy);
@@ -1806,14 +1824,36 @@ TEST_CASE("M5 invariants preserve terminal and recommendation cardinality") {
         CHECK(signal.evaluation_id() == value.evaluation_id());
         CHECK(signal.draft().strength.units > 0);
         CHECK(signal.draft().horizon_nanoseconds > 0);
-        CHECK(!value.feature_evaluation_ids().empty());
-        CHECK(!value.factors().empty());
+        CHECK(value.factors().size() == 2);
         for (std::size_t index = 0; index < value.factors().size(); ++index)
           CHECK(value.factors()[index].rank ==
                 static_cast<std::uint32_t>(index + 1));
+        CHECK(value.factors()[0].causal_feature_evaluation_id ==
+              evaluation(evaluated.features,
+                         features::FeatureKind::OrderBookImbalance)
+                  .evaluation_id);
+        CHECK(value.factors()[1].causal_parameter_id ==
+              reference_threshold().parameter_id);
+        CHECK(value.factors()[1].causal_parameter_definition_version ==
+              reference_threshold().definition_version);
+        CHECK(value.factors()[0].causal_configuration_epoch.has_value());
+        CHECK(value.factors()[0].causal_control_outcome_id.has_value());
+        CHECK(value.factors()[0].causal_activation_checksum ==
+              value.activation_checksum());
 
         CHECK(recommended.completed());
         CHECK(recommended.recommendation->signal_id() == signal.signal_id());
+        CHECK(recommended.recommendation->evaluation_id() ==
+              value.evaluation_id());
+        CHECK(recommended.recommendation->horizon_nanoseconds() ==
+              signal.draft().horizon_nanoseconds);
+        CHECK(recommended.recommendation->issue_run_input_sequence() ==
+              value.run_input_sequence());
+        CHECK(recommended.recommendation->issue_logical_time_nanoseconds() ==
+              value.logical_time_nanoseconds());
+        CHECK(std::equal(recommended.recommendation->factors().begin(),
+                         recommended.recommendation->factors().end(),
+                         value.factors().begin(), value.factors().end()));
         CHECK(recommended.recommendation->actionable() !=
               recommended.recommendation->hold());
         if (recommended.recommendation->actionable()) {
@@ -1831,6 +1871,18 @@ TEST_CASE("M5 invariants preserve terminal and recommendation cardinality") {
                 recommendation::RecommendationHoldReason::BelowActionThreshold);
           CHECK(!recommended.recommendation->downstream_target_eligible());
         }
+        const auto accepted = acceptance.accept(*recommended.recommendation);
+        const auto retried = acceptance.accept(*recommended.recommendation);
+        CHECK(accepted.accepted());
+        CHECK(accepted.disposition ==
+              recommendation::RecommendationAcceptanceDisposition::AcceptedNew);
+        CHECK(retried.accepted());
+        CHECK(retried.disposition ==
+              recommendation::RecommendationAcceptanceDisposition::
+                  DeduplicatedExisting);
+        CHECK(accepted.recommendation->recommendation_id() ==
+              retried.recommendation->recommendation_id());
+        CHECK(acceptance.accepted_recommendations().size() == signal_count);
       } else {
         ++abstention_count;
         CHECK(recommended.failure ==
@@ -1843,6 +1895,44 @@ TEST_CASE("M5 invariants preserve terminal and recommendation cardinality") {
   CHECK(abstention_count > 0);
   CHECK(actionable_count > 0);
   CHECK(hold_count > 0);
+  CHECK(acceptance.accepted_recommendations().size() == signal_count);
+}
+
+TEST_CASE(
+    "recommendation acceptance deduplicates retries and bounds capacity") {
+  const auto policy = recommendation_policy(300000);
+  const auto first_evaluation = evaluate_reference(
+      reference_threshold(), {.bid_quantity = 3, .ask_quantity = 1});
+  const auto second_evaluation = evaluate_reference(
+      reference_threshold(), {.bid_quantity = 4, .ask_quantity = 1});
+  const auto first = recommendation::RecommendationAuthority::recommend(
+      *first_evaluation.result.evaluation, policy);
+  const auto second = recommendation::RecommendationAuthority::recommend(
+      *second_evaluation.result.evaluation, policy);
+  CHECK(first.completed());
+  CHECK(second.completed());
+
+  CHECK(!recommendation::RecommendationAcceptanceAuthority::create(0));
+  CHECK(!recommendation::RecommendationAcceptanceAuthority::create(
+      recommendation::RecommendationAcceptanceAuthority::
+          kMaximumAcceptedRecommendations +
+      1));
+  auto acceptance =
+      recommendation::RecommendationAcceptanceAuthority::create(1).value();
+  const auto accepted = acceptance.accept(*first.recommendation);
+  const auto retried = acceptance.accept(*first.recommendation);
+  const auto exhausted = acceptance.accept(*second.recommendation);
+  CHECK(accepted.accepted());
+  CHECK(retried.accepted());
+  CHECK(retried.disposition ==
+        recommendation::RecommendationAcceptanceDisposition::
+            DeduplicatedExisting);
+  CHECK(exhausted.failure ==
+        recommendation::RecommendationAcceptanceFailure::CapacityExceeded);
+  CHECK(exhausted.disposition ==
+        recommendation::RecommendationAcceptanceDisposition::None);
+  CHECK(!exhausted.recommendation);
+  CHECK(acceptance.accepted_recommendations().size() == 1);
 }
 
 TEST_CASE("M5 invalid and non-consumable features terminate at abstention") {

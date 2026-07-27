@@ -29,3 +29,7 @@ definition, quantity, or arithmetic condition produces a typed `unavailable`
 evaluation containing no feature value. Valid and unavailable outcomes bind
 the exact bundle, listing view, complete `StateLineage`, reference versions,
 input checksums, and feature/implementation/arithmetic/identity versions.
+
+Diagnostic feature observations are not activated in Deliverable 0. The public
+capability flag remains false, and the M5 authority dependency gate prevents
+feature/strategy/recommendation code from importing downstream authority.

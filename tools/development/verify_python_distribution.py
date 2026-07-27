@@ -23,6 +23,7 @@ EXPECTED_SDIST_PATHS = {
     "tests/python/test_bootstrap.py",
     "tests/python/test_contracts_fixed_point.py",
     "tests/python/test_event_envelope.py",
+    "tests/python/test_m5_authority_boundaries.py",
     "tests/python/test_value_objects.py",
     "tests/python/test_state_lineage.py",
     "tests/python/test_serialization.py",
@@ -31,6 +32,7 @@ EXPECTED_SDIST_PATHS = {
     "tests/python/test_package.py",
     "tools/development/bootstrap_m0.py",
     "tools/development/generate_strategy_definition.py",
+    "tools/development/verify_m5_authority_boundaries.py",
     "tools/development/verify_strategy_capabilities.py",
     "tools/development/verify_strategy_symbols.py",
 }

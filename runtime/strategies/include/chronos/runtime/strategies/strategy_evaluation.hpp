@@ -12,6 +12,8 @@
 
 namespace chronos::runtime::strategies {
 
+inline constexpr bool kExternalStrategyObservationsActivated = false;
+
 enum class StrategyEvaluationFailure : std::uint8_t {
   None,
   ContractViolation,

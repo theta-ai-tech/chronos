@@ -128,4 +128,37 @@ RecommendationResult RecommendationAuthority::recommend(
   return result;
 }
 
+std::optional<RecommendationAcceptanceAuthority>
+RecommendationAcceptanceAuthority::create(std::size_t maximum_recommendations) {
+  if (maximum_recommendations == 0 ||
+      maximum_recommendations > kMaximumAcceptedRecommendations)
+    return std::nullopt;
+  return RecommendationAcceptanceAuthority(maximum_recommendations);
+}
+
+RecommendationAcceptanceResult RecommendationAcceptanceAuthority::accept(
+    const TradeRecommendation &candidate) {
+  const auto existing =
+      std::find_if(accepted_.begin(), accepted_.end(), [&](const auto &value) {
+        return value.signal_id() == candidate.signal_id();
+      });
+  if (existing != accepted_.end()) {
+    if (*existing != candidate)
+      return {.failure =
+                  RecommendationAcceptanceFailure::ConflictingRecommendation};
+    return {
+        .disposition =
+            RecommendationAcceptanceDisposition::DeduplicatedExisting,
+        .recommendation = *existing,
+    };
+  }
+  if (accepted_.size() == maximum_recommendations_)
+    return {.failure = RecommendationAcceptanceFailure::CapacityExceeded};
+  accepted_.push_back(candidate);
+  return {
+      .disposition = RecommendationAcceptanceDisposition::AcceptedNew,
+      .recommendation = accepted_.back(),
+  };
+}
+
 } // namespace chronos::core::recommendation

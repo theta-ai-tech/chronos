@@ -27,6 +27,10 @@ static_assert(!CarriesExecutionAuthority<
               chronos::runtime::strategies::StrategyEvaluation>);
 static_assert(!CarriesExecutionAuthority<
               chronos::core::recommendation::TradeRecommendation>);
+static_assert(
+    !chronos::core::features::kDiagnosticFeatureObservationsActivated);
+static_assert(
+    !chronos::runtime::strategies::kExternalStrategyObservationsActivated);
 
 TEST_CASE("M5 outputs expose no direct order or risk authority") {
   CHECK(!CreatesOrderDirectly<chronos::runtime::strategies::StrategySignal>);
@@ -38,6 +42,11 @@ TEST_CASE("M5 outputs expose no direct order or risk authority") {
         chronos::runtime::strategies::StrategyEvaluation>);
   CHECK(!CarriesExecutionAuthority<
         chronos::core::recommendation::TradeRecommendation>);
+}
+
+TEST_CASE("deferred M5 observation capabilities remain unactivated") {
+  CHECK(!chronos::core::features::kDiagnosticFeatureObservationsActivated);
+  CHECK(!chronos::runtime::strategies::kExternalStrategyObservationsActivated);
 }
 
 } // namespace

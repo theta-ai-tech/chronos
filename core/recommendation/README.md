@@ -18,3 +18,7 @@ The M5.5 authority consumes only an immutable signal-emitting
 It returns one deterministic actionable or explicit hold recommendation. An
 abstained evaluation has no recommendation, and a hold has zero indicative
 exposure and is not eligible for target construction.
+
+M5.6 adds bounded acceptance keyed by `StrategySignalId`. Exact retries return
+the previously accepted recommendation; a conflicting second recommendation
+for one signal fails closed, and capacity exhaustion is explicit.
