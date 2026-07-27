@@ -118,6 +118,7 @@ ALLOWED_TARGET_DEPENDENCIES = {
 
 CMAKE_LINK_KEYWORDS = {"PUBLIC", "PRIVATE", "INTERFACE", "debug", "optimized", "general"}
 CMAKE_TARGET_COMMANDS = (
+    "add_dependencies",
     "target_compile_definitions",
     "target_compile_features",
     "target_compile_options",
@@ -127,6 +128,11 @@ CMAKE_TARGET_COMMANDS = (
     "target_precompile_headers",
     "target_sources",
 )
+OWNER_ALLOWED_TARGET_COMMANDS = {
+    "target_include_directories",
+    "target_link_libraries",
+    "target_sources",
+}
 
 
 @dataclass(frozen=True)
@@ -147,9 +153,7 @@ def cmake_tokens(bodies: list[str]) -> list[str]:
     return [token for body in bodies for token in CMAKE_TOKEN.findall(body)]
 
 
-def mutates_target(text: str, target: str) -> bool:
-    if any(cmake_call_bodies(text, command, target) for command in CMAKE_TARGET_COMMANDS):
-        return True
+def property_mutates_target(text: str, target: str) -> bool:
     set_property = re.compile(
         rf"\bset_property\s*\(\s*TARGET\s+{re.escape(target)}\b", re.IGNORECASE
     )
@@ -157,6 +161,22 @@ def mutates_target(text: str, target: str) -> bool:
         rf"\bset_target_properties\s*\(\s*{re.escape(target)}\b", re.IGNORECASE
     )
     return bool(set_property.search(text) or set_target_properties.search(text))
+
+
+def mutates_target(text: str, target: str) -> bool:
+    return property_mutates_target(text, target) or any(
+        cmake_call_bodies(text, command, target) for command in CMAKE_TARGET_COMMANDS
+    )
+
+
+def unsupported_owner_mutation(text: str, target: str) -> bool:
+    if property_mutates_target(text, target):
+        return True
+    return any(
+        cmake_call_bodies(text, command, target)
+        for command in CMAKE_TARGET_COMMANDS
+        if command not in OWNER_ALLOWED_TARGET_COMMANDS
+    )
 
 
 def cmake_files(root: Path) -> list[Path]:
@@ -167,7 +187,16 @@ def cmake_files(root: Path) -> list[Path]:
         ):
             continue
         relative = path.relative_to(root)
-        if any(part.startswith("build") or part in {".git", ".venv"} for part in relative.parts):
+        if any(part in {".git", ".venv"} for part in relative.parts):
+            continue
+        ancestor = path.parent
+        generated = False
+        while ancestor != root:
+            if (ancestor / "CMakeCache.txt").is_file():
+                generated = True
+                break
+            ancestor = ancestor.parent
+        if generated:
             continue
         files.append(path)
     return sorted(files)
@@ -206,6 +235,8 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
         relative_cmake, target = CMAKE_TARGETS[authority]
         cmake_path = root / relative_cmake
         cmake = cmake_path.read_text(encoding="utf-8")
+        if unsupported_owner_mutation(cmake, target):
+            violations.append(BoundaryViolation(cmake_path, "unsupported-owner-target-mutation"))
         dependencies = cmake_tokens(cmake_call_bodies(cmake, "target_link_libraries", target))
         for dependency in dependencies:
             if (

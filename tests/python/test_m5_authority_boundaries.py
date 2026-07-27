@@ -150,7 +150,7 @@ def test_protected_target_cannot_be_mutated_from_cmake_module(tmp_path: Path) ->
         "add_library(chronos_features STATIC src/feature_runtime.cpp)\n"
         "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
     )
-    module = tmp_path / "cmake/evil.cmake"
+    module = tmp_path / "cmake/build_helpers/AuthorityMutations.cmake"
     module.parent.mkdir(parents=True)
     module.write_text(
         "TARGET_LINK_LIBRARIES(chronos_features PRIVATE chronos_risk)\n",
@@ -160,6 +160,23 @@ def test_protected_target_cannot_be_mutated_from_cmake_module(tmp_path: Path) ->
 
     violations = boundary.find_violations(tmp_path)
     assert {item.dependency for item in violations} == {"protected-target-mutated-outside-owner"}
+
+
+def test_owner_rejects_property_based_target_mutation(tmp_path: Path) -> None:
+    feature = tmp_path / "core/features/src/feature_runtime.cpp"
+    feature.parent.mkdir(parents=True)
+    feature.write_text('#include "chronos/core/features/feature_runtime.hpp"\n', encoding="utf-8")
+    write_feature_owner(
+        tmp_path,
+        "add_library(chronos_features STATIC src/feature_runtime.cpp)\n"
+        "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n"
+        "SET_PROPERTY(TARGET chronos_features APPEND PROPERTY "
+        "LINK_LIBRARIES chronos_risk)\n",
+    )
+    write_other_authorities(tmp_path)
+
+    violations = boundary.find_violations(tmp_path)
+    assert {item.dependency for item in violations} == {"unsupported-owner-target-mutation"}
 
 
 def test_all_protected_targets_reject_external_sources(tmp_path: Path) -> None:

@@ -1964,6 +1964,27 @@ TEST_CASE(
   CHECK(after_finalize.failure ==
         recommendation::RecommendationAcceptanceFailure::AcceptanceFinalized);
   CHECK(complete.cardinality_proven());
+
+  auto conflicting =
+      recommendation::RecommendationAcceptanceAuthority::create(2).value();
+  CHECK(conflicting.accept(*first.recommendation).accepted());
+  auto accepted_values = conflicting.accepted_recommendations();
+  CHECK(!accepted_values.front().factors().empty());
+  auto &stored_factor = const_cast<sdk::ExplanationFactor &>(
+      accepted_values.front().factors().front());
+  ++stored_factor.rank;
+  const auto conflict = conflicting.accept(*first.recommendation);
+  CHECK(conflict.failure == recommendation::RecommendationAcceptanceFailure::
+                                ConflictingRecommendation);
+  CHECK(!conflicting.finalize(1));
+  CHECK(!conflicting.cardinality_proven());
+  CHECK(conflicting.terminal_failure() ==
+        recommendation::RecommendationAcceptanceFailure::
+            ConflictingRecommendation);
+  const auto after_conflict = conflicting.accept(*second.recommendation);
+  CHECK(after_conflict.failure ==
+        recommendation::RecommendationAcceptanceFailure::
+            ConflictingRecommendation);
 }
 
 TEST_CASE("M5 invalid and non-consumable features terminate at abstention") {
