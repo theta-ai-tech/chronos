@@ -183,9 +183,15 @@ RecommendationAcceptanceResult RecommendationAcceptanceAuthority::accept(
 
 bool RecommendationAcceptanceAuthority::finalize(
     std::span<const contracts::StrategySignalId> emitted_signal_ids) {
-  if (finalized_)
-    return cardinality_proven() &&
-           same_unique_signal_ids(emitted_signal_ids, emitted_signal_ids_);
+  if (finalized_) {
+    if (!cardinality_proven() ||
+        !same_unique_signal_ids(emitted_signal_ids, emitted_signal_ids_)) {
+      terminal_failure_ = RecommendationAcceptanceFailure::CardinalityMismatch;
+      return false;
+    } else {
+      return true;
+    }
+  }
   finalized_ = true;
   emitted_signal_ids_.assign(emitted_signal_ids.begin(),
                              emitted_signal_ids.end());

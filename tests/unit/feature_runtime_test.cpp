@@ -1987,6 +1987,25 @@ TEST_CASE(
                                     first.recommendation->signal_id()};
   CHECK(reordered.finalize(reversed_signals));
 
+  const std::array contradictory_signals{first.recommendation->signal_id(),
+                                         id<contracts::StrategySignalId>(99)};
+  CHECK(!reordered.finalize(contradictory_signals));
+  CHECK(!reordered.cardinality_proven());
+  CHECK(reordered.terminal_failure() ==
+        recommendation::RecommendationAcceptanceFailure::CardinalityMismatch);
+
+  auto duplicate_repeat =
+      recommendation::RecommendationAcceptanceAuthority::create(2).value();
+  CHECK(duplicate_repeat.accept(*first.recommendation).accepted());
+  CHECK(duplicate_repeat.accept(*second.recommendation).accepted());
+  CHECK(duplicate_repeat.finalize(emitted_signals));
+  const std::array duplicate_signals{first.recommendation->signal_id(),
+                                     first.recommendation->signal_id()};
+  CHECK(!duplicate_repeat.finalize(duplicate_signals));
+  CHECK(!duplicate_repeat.cardinality_proven());
+  CHECK(duplicate_repeat.terminal_failure() ==
+        recommendation::RecommendationAcceptanceFailure::CardinalityMismatch);
+
   auto conflicting =
       recommendation::RecommendationAcceptanceAuthority::create(2).value();
   CHECK(conflicting.accept(*first.recommendation).accepted());

@@ -134,13 +134,33 @@ def test_protected_target_cannot_be_mutated_outside_owner(tmp_path: Path) -> Non
     (tmp_path / "CMakeLists.txt").write_text(
         "add_subdirectory(core)\n"
         "set(PROTECTED chronos_features)\n"
-        "target_link_libraries(${PROTECTED} PRIVATE chronos_risk)\n",
+        'target_link_libraries("${PROTECTED}" PRIVATE chronos_risk)\n',
         encoding="utf-8",
     )
     write_other_authorities(tmp_path)
 
     violations = boundary.find_violations(tmp_path)
     assert {item.dependency for item in violations} == {"dynamic-target-mutation"}
+
+
+def test_invoked_helper_cannot_mutate_protected_target(tmp_path: Path) -> None:
+    write_feature_owner(
+        tmp_path,
+        "add_library(chronos_features STATIC)\n"
+        "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
+    )
+    (tmp_path / "CMakeLists.txt").write_text(
+        "function(add_dep target dep)\n"
+        "  target_link_libraries(${target} PRIVATE ${dep})\n"
+        "endfunction()\n"
+        "add_subdirectory(core)\n"
+        "add_dep(chronos_features chronos_risk)\n",
+        encoding="utf-8",
+    )
+    write_other_authorities(tmp_path)
+
+    violations = boundary.find_violations(tmp_path)
+    assert {item.dependency for item in violations} == {"protected-target-mutated-outside-owner"}
 
 
 def test_protected_target_cannot_be_mutated_from_cmake_module(tmp_path: Path) -> None:
