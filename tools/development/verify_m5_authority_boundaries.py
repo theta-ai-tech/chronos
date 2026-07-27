@@ -79,7 +79,7 @@ AUTHORITY_PATHS = {
 }
 
 CMAKE_TARGETS = {
-    Path("core/features"): (Path("core/CMakeLists.txt"), "chronos_core"),
+    Path("core/features"): (Path("core/features/CMakeLists.txt"), "chronos_features"),
     Path("runtime/strategies"): (
         Path("runtime/strategies/CMakeLists.txt"),
         "chronos_strategy_runtime",
@@ -91,7 +91,12 @@ CMAKE_TARGETS = {
 }
 
 ALLOWED_TARGET_DEPENDENCIES = {
-    Path("core/features"): {"chronos_contracts", "chronos_options", "chronos_warnings"},
+    Path("core/features"): {
+        "chronos_contracts",
+        "chronos_core",
+        "chronos_options",
+        "chronos_warnings",
+    },
     Path("runtime/strategies"): {
         "chronos_core",
         "chronos_options",
@@ -106,6 +111,16 @@ ALLOWED_TARGET_DEPENDENCIES = {
 }
 
 CMAKE_LINK_KEYWORDS = {"PUBLIC", "PRIVATE", "INTERFACE", "debug", "optimized", "general"}
+CMAKE_TARGET_COMMANDS = (
+    "target_compile_definitions",
+    "target_compile_features",
+    "target_compile_options",
+    "target_include_directories",
+    "target_link_libraries",
+    "target_link_options",
+    "target_precompile_headers",
+    "target_sources",
+)
 
 
 @dataclass(frozen=True)
@@ -124,6 +139,18 @@ def cmake_call_bodies(text: str, command: str, target: str) -> list[str]:
 
 def cmake_tokens(bodies: list[str]) -> list[str]:
     return [token for body in bodies for token in CMAKE_TOKEN.findall(body)]
+
+
+def mutates_target(text: str, target: str) -> bool:
+    if any(cmake_call_bodies(text, command, target) for command in CMAKE_TARGET_COMMANDS):
+        return True
+    set_property = re.compile(
+        rf"\bset_property\s*\(\s*TARGET\s+{re.escape(target)}\b", re.IGNORECASE
+    )
+    set_target_properties = re.compile(
+        rf"\bset_target_properties\s*\(\s*{re.escape(target)}\b", re.IGNORECASE
+    )
+    return bool(set_property.search(text) or set_target_properties.search(text))
 
 
 def find_violations(root: Path) -> list[BoundaryViolation]:
@@ -157,18 +184,41 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
             ):
                 violations.append(BoundaryViolation(cmake_path, dependency))
 
+        for candidate in root.rglob("CMakeLists.txt"):
+            if candidate == cmake_path:
+                continue
+            if mutates_target(candidate.read_text(encoding="utf-8"), target):
+                violations.append(
+                    BoundaryViolation(candidate, "protected-target-mutated-outside-owner")
+                )
+
         if authority == Path("core/features"):
-            sources = cmake_tokens(cmake_call_bodies(cmake, "add_library", target))
+            sources = cmake_tokens(
+                cmake_call_bodies(cmake, "add_library", target)
+                + cmake_call_bodies(cmake, "target_sources", target)
+            )
+            source_root = (root / "core/features/src").resolve()
+            declared_sources: set[Path] = set()
             for source in sources:
                 source_path = Path(source)
-                if (
-                    source_path.suffix in NATIVE_SUFFIXES
-                    and source_path.stem.startswith("feature")
-                    and not source.startswith("features/src/")
-                ):
+                if source_path.suffix not in NATIVE_SUFFIXES:
+                    continue
+                resolved_source = (cmake_path.parent / source_path).resolve()
+                try:
+                    resolved_source.relative_to(source_root)
+                except ValueError:
                     violations.append(
                         BoundaryViolation(cmake_path, "feature-source-outside-core/features")
                     )
+                    continue
+                declared_sources.add(resolved_source)
+            actual_sources = {
+                path.resolve()
+                for path in source_root.rglob("*")
+                if path.is_file() and path.suffix in NATIVE_SUFFIXES
+            }
+            if not actual_sources.issubset(declared_sources):
+                violations.append(BoundaryViolation(cmake_path, "feature-source-not-declared"))
     return violations
 
 

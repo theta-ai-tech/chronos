@@ -192,6 +192,13 @@ public:
   accepted_recommendations() const noexcept {
     return accepted_;
   }
+  [[nodiscard]] bool cardinality_proven() const noexcept {
+    return terminal_failure_ == RecommendationAcceptanceFailure::None;
+  }
+  [[nodiscard]] RecommendationAcceptanceFailure
+  terminal_failure() const noexcept {
+    return terminal_failure_;
+  }
 
 private:
   explicit RecommendationAcceptanceAuthority(
@@ -202,6 +209,8 @@ private:
 
   std::size_t maximum_recommendations_{};
   std::vector<TradeRecommendation> accepted_;
+  RecommendationAcceptanceFailure terminal_failure_{
+      RecommendationAcceptanceFailure::None};
 };
 
 } // namespace chronos::core::recommendation

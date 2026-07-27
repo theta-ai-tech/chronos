@@ -138,22 +138,29 @@ RecommendationAcceptanceAuthority::create(std::size_t maximum_recommendations) {
 
 RecommendationAcceptanceResult RecommendationAcceptanceAuthority::accept(
     const TradeRecommendation &candidate) {
+  if (terminal_failure_ != RecommendationAcceptanceFailure::None)
+    return {.failure = terminal_failure_};
   const auto existing =
       std::find_if(accepted_.begin(), accepted_.end(), [&](const auto &value) {
         return value.signal_id() == candidate.signal_id();
       });
   if (existing != accepted_.end()) {
-    if (*existing != candidate)
+    if (*existing != candidate) {
+      terminal_failure_ =
+          RecommendationAcceptanceFailure::ConflictingRecommendation;
       return {.failure =
                   RecommendationAcceptanceFailure::ConflictingRecommendation};
+    }
     return {
         .disposition =
             RecommendationAcceptanceDisposition::DeduplicatedExisting,
         .recommendation = *existing,
     };
   }
-  if (accepted_.size() == maximum_recommendations_)
+  if (accepted_.size() == maximum_recommendations_) {
+    terminal_failure_ = RecommendationAcceptanceFailure::CapacityExceeded;
     return {.failure = RecommendationAcceptanceFailure::CapacityExceeded};
+  }
   accepted_.push_back(candidate);
   return {
       .disposition = RecommendationAcceptanceDisposition::AcceptedNew,

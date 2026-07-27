@@ -1896,6 +1896,9 @@ TEST_CASE("M5 invariants preserve terminal and recommendation cardinality") {
   CHECK(actionable_count > 0);
   CHECK(hold_count > 0);
   CHECK(acceptance.accepted_recommendations().size() == signal_count);
+  CHECK(acceptance.cardinality_proven());
+  CHECK(acceptance.terminal_failure() ==
+        recommendation::RecommendationAcceptanceFailure::None);
 }
 
 TEST_CASE(
@@ -1919,9 +1922,11 @@ TEST_CASE(
       1));
   auto acceptance =
       recommendation::RecommendationAcceptanceAuthority::create(1).value();
+  CHECK(acceptance.cardinality_proven());
   const auto accepted = acceptance.accept(*first.recommendation);
   const auto retried = acceptance.accept(*first.recommendation);
   const auto exhausted = acceptance.accept(*second.recommendation);
+  const auto after_exhaustion = acceptance.accept(*first.recommendation);
   CHECK(accepted.accepted());
   CHECK(retried.accepted());
   CHECK(retried.disposition ==
@@ -1932,6 +1937,12 @@ TEST_CASE(
   CHECK(exhausted.disposition ==
         recommendation::RecommendationAcceptanceDisposition::None);
   CHECK(!exhausted.recommendation);
+  CHECK(!acceptance.cardinality_proven());
+  CHECK(acceptance.terminal_failure() ==
+        recommendation::RecommendationAcceptanceFailure::CapacityExceeded);
+  CHECK(after_exhaustion.failure ==
+        recommendation::RecommendationAcceptanceFailure::CapacityExceeded);
+  CHECK(!after_exhaustion.recommendation);
   CHECK(acceptance.accepted_recommendations().size() == 1);
 }
 

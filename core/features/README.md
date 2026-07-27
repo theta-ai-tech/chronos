@@ -33,3 +33,8 @@ input checksums, and feature/implementation/arithmetic/identity versions.
 Diagnostic feature observations are not activated in Deliverable 0. The public
 capability flag remains false, and the M5 authority dependency gate prevents
 feature/strategy/recommendation code from importing downstream authority.
+
+Feature implementation sources are owned exclusively under `core/features/src/`
+and compile into the dedicated `chronos_features` target. The M5 gate checks
+complete source declaration, exact target dependencies, and rejects mutation of
+that target from any other CMake file.

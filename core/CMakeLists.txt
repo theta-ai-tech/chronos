@@ -4,7 +4,6 @@
 # can prove it can invoke C++ without introducing domain logic yet.
 add_library(chronos_core STATIC
   src/boundary.cpp
-  features/src/feature_runtime.cpp
   src/l2_book.cpp
   src/listing_aux_state.cpp
   src/listing_view_publisher.cpp
@@ -41,3 +40,5 @@ target_compile_definitions(chronos_boundary
 target_link_libraries(chronos_boundary
   PUBLIC  chronos_options
   PRIVATE chronos_core chronos_warnings)
+
+add_subdirectory(features)
