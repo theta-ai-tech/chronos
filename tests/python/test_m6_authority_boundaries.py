@@ -61,6 +61,23 @@ def test_forbidden_portfolio_include_is_rejected(tmp_path: Path) -> None:
     assert {item.dependency for item in violations} == {"chronos/core/risk/risk_authority.hpp"}
 
 
+def test_portfolio_include_allowlist_rejects_parent_traversal(tmp_path: Path) -> None:
+    dependency = "chronos/core/portfolio/../../risk/risk_authority.hpp"
+    write_portfolio_source(tmp_path, f'#include "{dependency}"\n')
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+
+    violations = boundary.find_violations(tmp_path)
+
+    assert {item.dependency for item in violations} == {dependency}
+
+
+def test_portfolio_value_objects_include_is_allowed(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path, '#include "chronos/contracts/value_objects.hpp"\n')
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+
+    assert boundary.find_violations(tmp_path) == []
+
+
 def test_forbidden_portfolio_link_dependency_is_rejected(tmp_path: Path) -> None:
     write_portfolio_source(tmp_path)
     write_portfolio_owner(
@@ -71,6 +88,85 @@ def test_forbidden_portfolio_link_dependency_is_rejected(tmp_path: Path) -> None
     violations = boundary.find_violations(tmp_path)
 
     assert {item.dependency for item in violations} == {"chronos_risk"}
+
+
+def test_owner_directory_scoped_link_mutations_are_rejected(tmp_path: Path) -> None:
+    mutations = (
+        "link_libraries(chronos_risk)\n",
+        "link_directories(${CMAKE_SOURCE_DIR}/risk)\n",
+        "add_link_options(-Wl,--whole-archive)\n",
+    )
+    for index, mutation in enumerate(mutations):
+        root = tmp_path / str(index)
+        write_portfolio_source(root)
+        write_portfolio_owner(root, mutation + valid_owner_cmake())
+
+        violations = boundary.find_violations(root)
+
+        assert {item.dependency for item in violations} == {"directory-scoped-link-mutation"}
+
+
+def test_core_ancestor_directory_scoped_link_mutations_are_rejected(
+    tmp_path: Path,
+) -> None:
+    mutations = (
+        "link_libraries(chronos_risk)\n",
+        "link_directories(${CMAKE_SOURCE_DIR}/risk)\n",
+        "add_link_options(-Wl,--whole-archive)\n",
+    )
+    for index, mutation in enumerate(mutations):
+        root = tmp_path / str(index)
+        write_portfolio_source(root)
+        write_portfolio_owner(root, valid_owner_cmake())
+        (root / "core/CMakeLists.txt").write_text(
+            mutation + "add_subdirectory(portfolio)\n", encoding="utf-8"
+        )
+
+        violations = boundary.find_violations(root)
+
+        assert {item.dependency for item in violations} == {"directory-scoped-link-mutation"}
+
+
+def test_root_ancestor_directory_scoped_link_mutations_are_rejected(
+    tmp_path: Path,
+) -> None:
+    mutations = (
+        "link_libraries(chronos_risk)\n",
+        "link_directories(${CMAKE_SOURCE_DIR}/risk)\n",
+        "add_link_options(-Wl,--whole-archive)\n",
+    )
+    for index, mutation in enumerate(mutations):
+        root = tmp_path / str(index)
+        write_portfolio_source(root)
+        write_portfolio_owner(root, valid_owner_cmake())
+        (root / "CMakeLists.txt").write_text(
+            mutation + "add_subdirectory(core)\n", encoding="utf-8"
+        )
+
+        violations = boundary.find_violations(root)
+
+        assert {item.dependency for item in violations} == {"directory-scoped-link-mutation"}
+
+
+def test_root_ancestor_directory_scoped_link_helper_is_rejected(
+    tmp_path: Path,
+) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    helper = tmp_path / "cmake/PortfolioLinks.cmake"
+    helper.parent.mkdir(parents=True)
+    helper.write_text(
+        "function(add_portfolio_links)\n  link_libraries(chronos_risk)\nendfunction()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "CMakeLists.txt").write_text(
+        "include(cmake/PortfolioLinks.cmake)\nadd_portfolio_links()\nadd_subdirectory(core)\n",
+        encoding="utf-8",
+    )
+
+    violations = boundary.find_violations(tmp_path)
+
+    assert {item.dependency for item in violations} == {"directory-scoped-link-mutation"}
 
 
 def test_portfolio_source_outside_owner_directory_is_rejected(tmp_path: Path) -> None:

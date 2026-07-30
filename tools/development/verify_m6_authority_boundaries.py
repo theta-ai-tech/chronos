@@ -19,6 +19,7 @@ ALLOWED_INCLUDES = (
     "chronos/core/portfolio/",
     "chronos/contracts/digest.hpp",
     "chronos/contracts/fixed_point.hpp",
+    "chronos/contracts/value_objects.hpp",
     "chronos/core/recommendation/recommendation.hpp",
 )
 ALLOWED_SYSTEM_INCLUDES = {
@@ -57,6 +58,11 @@ OWNER_ALLOWED_TARGET_COMMANDS = {
     "target_include_directories",
     "target_link_libraries",
     "target_sources",
+}
+DIRECTORY_SCOPED_LINK_COMMANDS = {
+    "add_link_options",
+    "link_directories",
+    "link_libraries",
 }
 
 
@@ -175,6 +181,10 @@ def include_dependencies(text: str) -> list[tuple[str, str]]:
         else:
             dependencies.append(("nonliteral", "nonliteral-include"))
     return dependencies
+
+
+def has_local_include_traversal(dependency: str) -> bool:
+    return any(component in {".", ".."} for component in dependency.split("/"))
 
 
 def cmake_commands(text: str) -> list[tuple[str, list[str]]]:
@@ -520,6 +530,36 @@ def is_owner_registered(core_cmake: str) -> bool:
     )
 
 
+def directory_scoped_link_callables(cmake_texts: list[str]) -> set[str]:
+    definitions: dict[str, list[tuple[list[str], list[tuple[str, list[str]]]]]] = {}
+    for text in cmake_texts:
+        for name, bodies in callable_definitions(text).items():
+            definitions.setdefault(name, []).extend(bodies)
+
+    mutating: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for name, bodies in definitions.items():
+            if name in mutating:
+                continue
+            if any(
+                command in DIRECTORY_SCOPED_LINK_COMMANDS or command in mutating
+                for _, body in bodies
+                for command, _ in body
+            ):
+                mutating.add(name)
+                changed = True
+    return mutating
+
+
+def directory_scoped_link_mutation(text: str, mutating_callables: set[str]) -> bool:
+    return any(
+        command in DIRECTORY_SCOPED_LINK_COMMANDS or command in mutating_callables
+        for command, _ in runtime_cmake_commands(text)
+    )
+
+
 def find_violations(root: Path) -> list[BoundaryViolation]:
     violations: list[BoundaryViolation] = []
     reported_dynamic_paths: set[Path] = set()
@@ -527,6 +567,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
         path: strip_cmake_comments(path.read_text(encoding="utf-8")) for path in cmake_files(root)
     }
     mutating_callables = target_mutating_callables(list(all_cmake.values()))
+    directory_link_callables = directory_scoped_link_callables(list(all_cmake.values()))
     owner_path = root / AUTHORITY_CMAKE
     core_path = root / CORE_CMAKE
     owner_cmake = all_cmake.get(owner_path)
@@ -557,9 +598,12 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
         ):
             continue
         for kind, dependency in include_dependencies(path.read_text(encoding="utf-8")):
-            if kind == "local" and not any(
-                dependency.startswith(prefix) if prefix.endswith("/") else dependency == prefix
-                for prefix in ALLOWED_INCLUDES
+            if kind == "local" and (
+                has_local_include_traversal(dependency)
+                or not any(
+                    dependency.startswith(prefix) if prefix.endswith("/") else dependency == prefix
+                    for prefix in ALLOWED_INCLUDES
+                )
             ):
                 violations.append(BoundaryViolation(path, dependency))
             elif kind == "system" and dependency not in ALLOWED_SYSTEM_INCLUDES:
@@ -572,6 +616,14 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
         reported_dynamic_paths.add(owner_path)
     if unsupported_owner_mutation(owner_cmake):
         violations.append(BoundaryViolation(owner_path, "unsupported-owner-target-mutation"))
+
+    for scope in (root, root / "core", root / AUTHORITY_PATH):
+        scope_path = scope / "CMakeLists.txt"
+        scope_cmake = all_cmake.get(scope_path)
+        if scope_cmake is not None and directory_scoped_link_mutation(
+            scope_cmake, directory_link_callables
+        ):
+            violations.append(BoundaryViolation(scope_path, "directory-scoped-link-mutation"))
 
     dependencies = cmake_tokens(
         cmake_call_bodies(owner_cmake, "target_link_libraries", TARGET, top_level=True)

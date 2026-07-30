@@ -1,6 +1,7 @@
 #include "chronos/core/portfolio/portfolio_construction.hpp"
 
 #include "chronos/contracts/digest.hpp"
+#include "chronos/contracts/value_objects.hpp"
 
 #include <algorithm>
 #include <array>
@@ -152,10 +153,7 @@ void append_context(std::vector<std::byte> &output,
 
 template <typename Id>
 Id id_from_canonical(const std::vector<std::byte> &canonical) {
-  const auto digest = contracts::sha256(canonical);
-  typename Id::bytes_type bytes{};
-  std::copy_n(digest.bytes.begin(), bytes.size(), bytes.begin());
-  return *Id::from_bytes(bytes);
+  return Id::from_sha256_digest(contracts::sha256(canonical));
 }
 
 bool valid_policy(const PortfolioConstructionPolicy &policy) {

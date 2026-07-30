@@ -1,5 +1,7 @@
 #include "chronos/contracts/value_objects.hpp"
 
+#include "chronos/contracts/digest.hpp"
+
 #include "microtest.hpp"
 
 #include <compare>
@@ -25,6 +27,31 @@ TEST_CASE("opaque IDs parse canonical UUIDs without business semantics") {
   CHECK(!EventId::parse("018f1f6e-7d3a-7c4b-8a91-0123456789a-").has_value());
   CHECK((!std::is_same_v<EventId, ListingId>));
   CHECK((!std::is_same_v<CanonicalInstrumentId, ListingId>));
+}
+
+TEST_CASE("opaque IDs derive totally from a SHA-256 digest prefix") {
+  Sha256Digest normal{};
+  normal.bytes = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                  0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+                  0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+                  0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20};
+  const auto normal_id = TradeRecommendationId::from_sha256_digest(normal);
+  CHECK(normal_id ==
+        TradeRecommendationId::parse("01020304-0506-0708-090a-0b0c0d0e0f10")
+            .value());
+
+  Sha256Digest zero_prefix{};
+  zero_prefix.bytes.back() = 0x7F;
+  const auto zero_prefix_id = TargetPositionId::from_sha256_digest(zero_prefix);
+  CHECK(
+      zero_prefix_id ==
+      TargetPositionId::parse("00000000-0000-0000-0000-000000000001").value());
+
+  const Sha256Digest full_zero{};
+  CHECK(PortfolioConstructionOutcomeId::from_sha256_digest(full_zero) ==
+        PortfolioConstructionOutcomeId::parse(
+            "00000000-0000-0000-0000-000000000001")
+            .value());
 }
 
 TEST_CASE("stream cursors distinguish origin from consumed sequence zero") {

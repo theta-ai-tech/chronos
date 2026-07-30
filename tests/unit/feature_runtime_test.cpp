@@ -2268,6 +2268,63 @@ TEST_CASE("M5 invalid and non-consumable features terminate at abstention") {
   }
 }
 
+TEST_CASE("portfolio invalid policies fail before obligation admission") {
+  std::vector<PortfolioPolicySpec> invalid_specs;
+
+  auto zero_capacity = PortfolioPolicySpec{};
+  zero_capacity.maximum_selected_recommendations = 0;
+  invalid_specs.push_back(std::move(zero_capacity));
+
+  auto excessive_capacity = PortfolioPolicySpec{};
+  excessive_capacity.maximum_selected_recommendations =
+      portfolio::PortfolioConstructionAuthority::kMaximumRecommendations + 1;
+  invalid_specs.push_back(std::move(excessive_capacity));
+
+  auto empty_assignments = PortfolioPolicySpec{};
+  empty_assignments.assigned_strategy_ids.clear();
+  invalid_specs.push_back(std::move(empty_assignments));
+
+  auto duplicate_assignments = PortfolioPolicySpec{};
+  duplicate_assignments.assigned_strategy_ids.push_back(
+      duplicate_assignments.assigned_strategy_ids.front());
+  invalid_specs.push_back(std::move(duplicate_assignments));
+
+  auto excessive_assignments = PortfolioPolicySpec{};
+  excessive_assignments.assigned_strategy_ids.clear();
+  for (std::size_t index = 0;
+       index <=
+       portfolio::PortfolioConstructionAuthority::kMaximumAssignedStrategies;
+       ++index) {
+    excessive_assignments.assigned_strategy_ids.push_back(
+        id<contracts::StrategyInstanceId>(
+            static_cast<std::uint8_t>(index + 1)));
+  }
+  invalid_specs.push_back(std::move(excessive_assignments));
+
+  auto negative_maximum_age = PortfolioPolicySpec{};
+  negative_maximum_age.recommendation_maximum_logical_age_nanoseconds = -1;
+  invalid_specs.push_back(std::move(negative_maximum_age));
+
+  auto zero_validity = PortfolioPolicySpec{};
+  zero_validity.target_validity_duration_nanoseconds = 0;
+  invalid_specs.push_back(std::move(zero_validity));
+
+  auto negative_validity = PortfolioPolicySpec{};
+  negative_validity.target_validity_duration_nanoseconds = -1;
+  invalid_specs.push_back(std::move(negative_validity));
+
+  const std::span<const recommendation::TradeRecommendation> no_recommendations;
+  for (auto &spec : invalid_specs) {
+    const auto result = portfolio::PortfolioConstructionAuthority::construct(
+        no_recommendations, portfolio_snapshot(0),
+        portfolio_policy(std::move(spec)), portfolio_cut());
+    CHECK(result.failure ==
+          portfolio::PortfolioConstructionFailure::InvalidPolicy);
+    CHECK(!result.terminal.has_value());
+    CHECK(!result.completed());
+  }
+}
+
 TEST_CASE("portfolio construction creates a positive absolute target") {
   const auto recommendation =
       recommendation_for({.bid_quantity = 3, .ask_quantity = 1});

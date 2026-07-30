@@ -38,9 +38,7 @@ void append_version(std::vector<std::byte> &output,
 
 template <typename Id>
 Id id_from_digest(const contracts::Sha256Digest &checksum) {
-  typename Id::bytes_type bytes{};
-  std::copy_n(checksum.bytes.begin(), bytes.size(), bytes.begin());
-  return *Id::from_bytes(bytes);
+  return Id::from_sha256_digest(checksum);
 }
 
 bool valid_factors(
