@@ -69,6 +69,18 @@ public:
   [[nodiscard]] contracts::StrategyEvaluationId evaluation_id() const noexcept {
     return evaluation_id_;
   }
+  [[nodiscard]] contracts::RunId run_id() const noexcept { return run_id_; }
+  [[nodiscard]] contracts::StrategyInstanceId
+  strategy_instance_id() const noexcept {
+    return strategy_instance_id_;
+  }
+  [[nodiscard]] contracts::ListingId listing_id() const noexcept {
+    return listing_id_;
+  }
+  [[nodiscard]] contracts::CanonicalInstrumentId
+  canonical_instrument_id() const noexcept {
+    return canonical_instrument_id_;
+  }
   [[nodiscard]] contracts::VersionRef policy_version() const noexcept {
     return policy_version_;
   }
@@ -118,6 +130,10 @@ private:
       contracts::TradeRecommendationId recommendation_id,
       contracts::StrategySignalId signal_id,
       contracts::StrategyEvaluationId evaluation_id,
+      contracts::RunId run_id,
+      contracts::StrategyInstanceId strategy_instance_id,
+      contracts::ListingId listing_id,
+      contracts::CanonicalInstrumentId canonical_instrument_id,
       const RecommendationPolicy &policy,
       chronos::strategies::sdk::StrategyDirection direction,
       std::int64_t horizon_nanoseconds, std::uint64_t issue_run_input_sequence,
@@ -125,7 +141,10 @@ private:
       RecommendationOutcome outcome,
       std::vector<chronos::strategies::sdk::ExplanationFactor> factors) noexcept
       : recommendation_id_(recommendation_id), signal_id_(signal_id),
-        evaluation_id_(evaluation_id), policy_version_(policy.policy_version),
+        evaluation_id_(evaluation_id), run_id_(run_id),
+        strategy_instance_id_(strategy_instance_id), listing_id_(listing_id),
+        canonical_instrument_id_(canonical_instrument_id),
+        policy_version_(policy.policy_version),
         schema_version_(policy.schema_version),
         authority_version_(policy.authority_version), direction_(direction),
         exposure_scale_(policy.scale),
@@ -137,6 +156,10 @@ private:
   contracts::TradeRecommendationId recommendation_id_;
   contracts::StrategySignalId signal_id_;
   contracts::StrategyEvaluationId evaluation_id_;
+  contracts::RunId run_id_;
+  contracts::StrategyInstanceId strategy_instance_id_;
+  contracts::ListingId listing_id_;
+  contracts::CanonicalInstrumentId canonical_instrument_id_;
   contracts::VersionRef policy_version_;
   contracts::VersionRef schema_version_;
   contracts::VersionRef authority_version_;

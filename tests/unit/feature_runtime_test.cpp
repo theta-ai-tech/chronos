@@ -1720,6 +1720,12 @@ TEST_CASE(
       evaluated.result.evaluation->terminal());
   CHECK(value.signal_id() == signal.signal_id());
   CHECK(value.evaluation_id() == evaluated.result.evaluation->evaluation_id());
+  CHECK(value.run_id() == evaluated.result.evaluation->run_id());
+  CHECK(value.strategy_instance_id() ==
+        evaluated.result.evaluation->strategy_instance_id());
+  CHECK(value.listing_id() == evaluated.result.evaluation->listing_id());
+  CHECK(value.canonical_instrument_id() ==
+        evaluated.result.evaluation->canonical_instrument_id());
   CHECK(value.actionable());
   CHECK(!value.hold());
   CHECK(value.downstream_target_eligible());

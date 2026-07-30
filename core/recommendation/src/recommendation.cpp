@@ -66,16 +66,21 @@ bool same_unique_signal_ids(
 }
 
 contracts::TradeRecommendationId
-recommendation_id(const runtime::strategies::StrategySignal &signal,
+recommendation_id(const runtime::strategies::StrategyEvaluation &evaluation,
+                  const runtime::strategies::StrategySignal &signal,
                   const RecommendationPolicy &policy,
                   const RecommendationOutcome &outcome) {
   std::vector<std::byte> canonical;
-  canonical.reserve(160);
-  constexpr std::string_view domain = "chronos.trade-recommendation.v1";
+  canonical.reserve(224);
+  constexpr std::string_view domain = "chronos.trade-recommendation.v2";
   for (const auto character : domain)
     canonical.push_back(static_cast<std::byte>(character));
   append_id(canonical, signal.signal_id());
   append_id(canonical, signal.evaluation_id());
+  append_id(canonical, evaluation.run_id());
+  append_id(canonical, evaluation.strategy_instance_id());
+  append_id(canonical, evaluation.listing_id());
+  append_id(canonical, evaluation.canonical_instrument_id());
   append_version(canonical, policy.policy_version);
   append_version(canonical, policy.schema_version);
   append_version(canonical, policy.authority_version);
@@ -129,10 +134,12 @@ RecommendationResult RecommendationAuthority::recommend(
   }
   std::vector<chronos::strategies::sdk::ExplanationFactor> factors(
       evaluation.factors().begin(), evaluation.factors().end());
-  const auto identity = recommendation_id(signal, policy, outcome);
+  const auto identity = recommendation_id(evaluation, signal, policy, outcome);
   RecommendationResult result;
   result.recommendation = TradeRecommendation(
-      identity, signal.signal_id(), evaluation.evaluation_id(), policy,
+      identity, signal.signal_id(), evaluation.evaluation_id(),
+      evaluation.run_id(), evaluation.strategy_instance_id(),
+      evaluation.listing_id(), evaluation.canonical_instrument_id(), policy,
       draft.direction, draft.horizon_nanoseconds,
       evaluation.run_input_sequence(), evaluation.logical_time_nanoseconds(),
       std::move(outcome), std::move(factors));
