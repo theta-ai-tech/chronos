@@ -4,8 +4,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-LOCAL_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.MULTILINE)
-SYSTEM_INCLUDE = re.compile(r"^\s*#\s*include\s+<([^>]+)>", re.MULTILINE)
+INCLUDE_DIRECTIVE = re.compile(r"^[ \t]*#[ \t]*include(?P<body>.*)$", re.MULTILINE)
+QUOTED_INCLUDE = re.compile(r'^"([^"]+)"$')
+SYSTEM_INCLUDE = re.compile(r"^<([^>]+)>$")
 NATIVE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
 CMAKE_TOKEN = re.compile(r"[A-Za-z0-9_./:+$<>{}-]+")
 
@@ -113,6 +114,62 @@ def strip_cmake_comments(text: str) -> str:
     return "".join(output)
 
 
+def strip_cpp_comments(text: str) -> str:
+    output: list[str] = []
+    index = 0
+    quote: str | None = None
+    while index < len(text):
+        character = text[index]
+        if quote is not None:
+            output.append(character)
+            if character == "\\" and index + 1 < len(text):
+                output.append(text[index + 1])
+                index += 2
+                continue
+            if character == quote:
+                quote = None
+            index += 1
+            continue
+        if character in {'"', "'"}:
+            quote = character
+            output.append(character)
+            index += 1
+            continue
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            if end == -1:
+                break
+            output.append("\n")
+            index = end + 1
+            continue
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            end = len(text) if end == -1 else end + 2
+            output.append("\n" * text[index:end].count("\n"))
+            index = end
+            continue
+        output.append(character)
+        index += 1
+    return "".join(output)
+
+
+def include_dependencies(text: str) -> list[tuple[str, str]]:
+    preprocessed = re.sub(r"\\\r?\n", "", text)
+    uncommented = strip_cpp_comments(preprocessed)
+    dependencies: list[tuple[str, str]] = []
+    for match in INCLUDE_DIRECTIVE.finditer(uncommented):
+        body = match.group("body").strip()
+        quoted = QUOTED_INCLUDE.fullmatch(body)
+        system = SYSTEM_INCLUDE.fullmatch(body)
+        if quoted:
+            dependencies.append(("local", quoted.group(1)))
+        elif system:
+            dependencies.append(("system", system.group(1)))
+        else:
+            dependencies.append(("nonliteral", "nonliteral-include"))
+    return dependencies
+
+
 def cmake_commands(text: str) -> list[tuple[str, list[str]]]:
     commands: list[tuple[str, list[str]]] = []
     command = re.compile(r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
@@ -151,10 +208,29 @@ def cmake_commands(text: str) -> list[tuple[str, list[str]]]:
     return commands
 
 
-def cmake_call_bodies(text: str, command: str, target: str) -> list[str]:
+def top_level_cmake_commands(text: str) -> list[tuple[str, list[str]]]:
+    commands: list[tuple[str, list[str]]] = []
+    block_depth = 0
+    block_starts = {"function", "macro", "if", "foreach", "while", "block"}
+    block_ends = {"endfunction", "endmacro", "endif", "endforeach", "endwhile", "endblock"}
+    for command, arguments in cmake_commands(text):
+        if command in block_ends:
+            block_depth = max(0, block_depth - 1)
+            continue
+        if block_depth == 0 and command not in block_starts:
+            commands.append((command, arguments))
+        if command in block_starts:
+            block_depth += 1
+    return commands
+
+
+def cmake_call_bodies(
+    text: str, command: str, target: str, *, top_level: bool = False
+) -> list[str]:
+    commands = top_level_cmake_commands(text) if top_level else cmake_commands(text)
     return [
         " ".join(arguments[1:])
-        for name, arguments in cmake_commands(text)
+        for name, arguments in commands
         if name == command.lower() and arguments and arguments[0] == target
     ]
 
@@ -163,8 +239,9 @@ def cmake_tokens(bodies: list[str]) -> list[str]:
     return [token for body in bodies for token in CMAKE_TOKEN.findall(body)]
 
 
-def property_mutates_target(text: str) -> bool:
-    for command, arguments in cmake_commands(text):
+def property_mutates_target(text: str, *, top_level: bool = False) -> bool:
+    commands = top_level_cmake_commands(text) if top_level else cmake_commands(text)
+    for command, arguments in commands:
         if (
             command == "set_property"
             and len(arguments) > 1
@@ -178,8 +255,8 @@ def property_mutates_target(text: str) -> bool:
 
 
 def unsupported_owner_mutation(text: str) -> bool:
-    return property_mutates_target(text) or any(
-        cmake_call_bodies(text, command, TARGET)
+    return property_mutates_target(text, top_level=True) or any(
+        cmake_call_bodies(text, command, TARGET, top_level=True)
         for command in CMAKE_TARGET_COMMANDS
         if command not in OWNER_ALLOWED_TARGET_COMMANDS
     )
@@ -205,6 +282,18 @@ def dynamically_mutates_target(text: str) -> bool:
     )
 
 
+def dynamically_composes_target(text: str) -> bool:
+    for command, arguments in cmake_commands(text):
+        if command == "string" and len(arguments) > 2 and arguments[0].upper() == "CONCAT":
+            if "".join(arguments[2:]) == TARGET:
+                return True
+        if command == "set" and len(arguments) > 1 and "".join(arguments[1:]) == TARGET:
+            return True
+        if command == "list" and len(arguments) > 2 and "".join(arguments[2:]) == TARGET:
+            return True
+    return False
+
+
 def protected_target_usage(text: str) -> str | None:
     for command, arguments in cmake_commands(text):
         target_positions = [index for index, argument in enumerate(arguments) if argument == TARGET]
@@ -220,6 +309,19 @@ def protected_target_usage(text: str) -> str | None:
             return "dynamic-target-mutation"
         return "protected-target-mutated-outside-owner"
     return None
+
+
+def target_declarations(text: str, *, top_level: bool = False) -> list[list[str]]:
+    commands = top_level_cmake_commands(text) if top_level else cmake_commands(text)
+    return [
+        arguments
+        for command, arguments in commands
+        if command == "add_library" and arguments and arguments[0] == TARGET
+    ]
+
+
+def has_callable_definition(text: str) -> bool:
+    return any(command in {"function", "macro"} for command, _ in cmake_commands(text))
 
 
 def cmake_files(root: Path) -> list[Path]:
@@ -244,6 +346,16 @@ def cmake_files(root: Path) -> list[Path]:
     return sorted(files)
 
 
+def is_generated_path(path: Path, root: Path) -> bool:
+    ancestor = path.parent
+    while True:
+        if (ancestor / "CMakeCache.txt").is_file():
+            return True
+        if ancestor == root:
+            return False
+        ancestor = ancestor.parent
+
+
 def within(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -255,7 +367,7 @@ def within(path: Path, root: Path) -> bool:
 def is_owner_registered(core_cmake: str) -> bool:
     return any(
         command == "add_subdirectory" and arguments and arguments[0] == "portfolio"
-        for command, arguments in cmake_commands(core_cmake)
+        for command, arguments in top_level_cmake_commands(core_cmake)
     )
 
 
@@ -274,18 +386,33 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     if core_cmake is None or not is_owner_registered(core_cmake):
         violations.append(BoundaryViolation(core_path, "authority-owner-not-registered"))
 
+    owner_declarations = target_declarations(owner_cmake, top_level=True)
+    if (
+        len(owner_declarations) != 1
+        or len(owner_declarations[0]) < 2
+        or owner_declarations[0][1].upper() != "STATIC"
+    ):
+        violations.append(BoundaryViolation(owner_path, "invalid-owner-target-declaration"))
+    if has_callable_definition(owner_cmake):
+        violations.append(BoundaryViolation(owner_path, "opaque-owner-target-mutation"))
+
     authority_path = root / AUTHORITY_PATH
     for path in sorted(authority_path.rglob("*")):
-        if not path.is_file() or path.suffix.lower() not in NATIVE_SUFFIXES:
+        if (
+            not path.is_file()
+            or path.suffix.lower() not in NATIVE_SUFFIXES
+            or is_generated_path(path, root)
+        ):
             continue
-        for dependency in LOCAL_INCLUDE.findall(path.read_text(encoding="utf-8")):
-            if not any(
+        for kind, dependency in include_dependencies(path.read_text(encoding="utf-8")):
+            if kind == "local" and not any(
                 dependency.startswith(prefix) if prefix.endswith("/") else dependency == prefix
                 for prefix in ALLOWED_INCLUDES
             ):
                 violations.append(BoundaryViolation(path, dependency))
-        for dependency in SYSTEM_INCLUDE.findall(path.read_text(encoding="utf-8")):
-            if dependency not in ALLOWED_SYSTEM_INCLUDES:
+            elif kind == "system" and dependency not in ALLOWED_SYSTEM_INCLUDES:
+                violations.append(BoundaryViolation(path, dependency))
+            elif kind == "nonliteral":
                 violations.append(BoundaryViolation(path, dependency))
 
     if dynamically_mutates_target(owner_cmake):
@@ -294,7 +421,9 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     if unsupported_owner_mutation(owner_cmake):
         violations.append(BoundaryViolation(owner_path, "unsupported-owner-target-mutation"))
 
-    dependencies = cmake_tokens(cmake_call_bodies(owner_cmake, "target_link_libraries", TARGET))
+    dependencies = cmake_tokens(
+        cmake_call_bodies(owner_cmake, "target_link_libraries", TARGET, top_level=True)
+    )
     for dependency in dependencies:
         if dependency not in CMAKE_LINK_KEYWORDS and dependency not in ALLOWED_TARGET_DEPENDENCIES:
             violations.append(BoundaryViolation(owner_path, dependency))
@@ -302,8 +431,14 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     for candidate, candidate_cmake in all_cmake.items():
         if candidate == owner_path:
             continue
+        if target_declarations(candidate_cmake):
+            violations.append(BoundaryViolation(candidate, "target-created-outside-owner"))
+            continue
         usage = protected_target_usage(candidate_cmake)
-        if dynamically_mutates_target(candidate_cmake) and candidate not in reported_dynamic_paths:
+        if (
+            dynamically_mutates_target(candidate_cmake)
+            or dynamically_composes_target(candidate_cmake)
+        ) and candidate not in reported_dynamic_paths:
             violations.append(BoundaryViolation(candidate, "dynamic-target-mutation"))
             reported_dynamic_paths.add(candidate)
         elif usage is not None:
@@ -312,8 +447,8 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     source_root = (root / AUTHORITY_SOURCE_ROOT).resolve()
     declared_sources: set[Path] = set()
     sources = cmake_tokens(
-        cmake_call_bodies(owner_cmake, "add_library", TARGET)
-        + cmake_call_bodies(owner_cmake, "target_sources", TARGET)
+        cmake_call_bodies(owner_cmake, "add_library", TARGET, top_level=True)
+        + cmake_call_bodies(owner_cmake, "target_sources", TARGET, top_level=True)
     )
     for source in sources:
         if "$" in source:
@@ -330,7 +465,11 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     actual_sources = {
         path.resolve()
         for path in source_root.rglob("*")
-        if path.is_file() and path.suffix.lower() in NATIVE_SUFFIXES
+        if (
+            path.is_file()
+            and path.suffix.lower() in NATIVE_SUFFIXES
+            and not is_generated_path(path, root)
+        )
     }
     if not actual_sources.issubset(declared_sources):
         violations.append(BoundaryViolation(owner_path, "authority-source-not-declared"))
