@@ -446,6 +446,7 @@ public:
   excluded_signal_ids() const noexcept {
     return excluded_signal_ids_;
   }
+  [[nodiscard]] bool downstream_risk_eligible() const noexcept { return false; }
   [[nodiscard]] bool executable() const noexcept { return false; }
 
   bool operator==(const PortfolioNoChange &) const = default;
@@ -550,6 +551,7 @@ public:
   [[nodiscard]] std::size_t omitted_evidence_count() const noexcept {
     return omitted_evidence_count_;
   }
+  [[nodiscard]] bool downstream_risk_eligible() const noexcept { return false; }
   [[nodiscard]] bool executable() const noexcept { return false; }
 
   bool operator==(const PortfolioConstructionRejected &) const = default;
