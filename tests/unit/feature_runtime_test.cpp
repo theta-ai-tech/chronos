@@ -1,4 +1,5 @@
 #include "chronos/core/features/feature_runtime.hpp"
+#include "chronos/core/portfolio/portfolio_construction.hpp"
 #include "chronos/core/recommendation/recommendation.hpp"
 #include "chronos/runtime/strategies/strategy_evaluation.hpp"
 #include "chronos/runtime/strategies/strategy_runtime.hpp"
@@ -20,6 +21,7 @@ namespace {
 namespace contracts = chronos::contracts;
 namespace dispatch = chronos::core::dispatch;
 namespace features = chronos::core::features;
+namespace portfolio = chronos::core::portfolio;
 namespace recommendation = chronos::core::recommendation;
 namespace market = chronos::core::market_state;
 namespace strategy_runtime = chronos::runtime::strategies;
@@ -782,6 +784,46 @@ ReferenceEvaluation evaluate_reference(
   captured.result = strategy_runtime::StrategyEvaluationAuthority::evaluate(
       config.definition, *invocation);
   return captured;
+}
+
+recommendation::TradeRecommendation recommendation_for(TopSpec spec) {
+  const auto evaluated = evaluate_reference(reference_threshold(), spec);
+  if (!evaluated.result.completed())
+    std::abort();
+  const auto recommended = recommendation::RecommendationAuthority::recommend(
+      *evaluated.result.evaluation, recommendation_policy(300000));
+  if (!recommended.completed())
+    std::abort();
+  return *recommended.recommendation;
+}
+
+portfolio::TargetKey portfolio_target_key() {
+  return portfolio::TargetKey(id<contracts::PortfolioId>(70),
+                              id<contracts::AccountId>(71),
+                              id<contracts::CanonicalInstrumentId>(42),
+                              id<contracts::ListingId>(1), version(72));
+}
+
+portfolio::PortfolioStateSnapshot
+portfolio_snapshot(contracts::AmountUnits current_exposure_units) {
+  return portfolio::PortfolioStateSnapshot(
+      id<contracts::PortfolioSnapshotId>(73), id<contracts::RunId>(30),
+      id<contracts::PortfolioId>(70), id<contracts::AccountId>(71),
+      id<contracts::CanonicalInstrumentId>(42), id<contracts::ListingId>(1),
+      current_exposure_units, *contracts::DecimalScale::from_exponent(6), 1,
+      100, 2, portfolio::PortfolioSnapshotDisposition::FreshComplete, true);
+}
+
+portfolio::PortfolioConstructionPolicy portfolio_policy() {
+  return portfolio::PortfolioConstructionPolicy(
+      version(74), version(75), version(76), version(77),
+      portfolio_target_key(), id<contracts::RunId>(30),
+      {id<contracts::StrategyInstanceId>(98)},
+      *contracts::DecimalScale::from_exponent(6), 4, 100, 50);
+}
+
+portfolio::PortfolioConstructionCut portfolio_cut() {
+  return portfolio::PortfolioConstructionCut(1, 100);
 }
 
 market::ListingViewPublisher publish_quality_state(
@@ -2082,4 +2124,90 @@ TEST_CASE("M5 invalid and non-consumable features terminate at abstention") {
                *result.evaluation, recommendation_policy(300000))
                .recommendation);
   }
+}
+
+TEST_CASE("portfolio construction creates a positive absolute target") {
+  const auto recommendation =
+      recommendation_for({.bid_quantity = 3, .ask_quantity = 1});
+  const std::array selected{recommendation};
+  const auto snapshot = portfolio_snapshot(100000);
+  const auto result = portfolio::PortfolioConstructionAuthority::construct(
+      selected, snapshot, portfolio_policy(), portfolio_cut());
+
+  CHECK(result.completed());
+  CHECK(result.failure == portfolio::PortfolioConstructionFailure::None);
+  CHECK(result.terminal.has_value());
+  CHECK(std::holds_alternative<portfolio::TargetPosition>(*result.terminal));
+  const auto &target = std::get<portfolio::TargetPosition>(*result.terminal);
+  CHECK(target.key() == portfolio_target_key());
+  CHECK(target.run_id() == id<contracts::RunId>(30));
+  CHECK(target.desired_exposure_units() == 500000);
+  CHECK(target.current_exposure_units() == 100000);
+  CHECK(target.explanatory_delta_units() == 400000);
+  CHECK(target.exposure_scale() == *contracts::DecimalScale::from_exponent(6));
+  CHECK(target.snapshot() == snapshot);
+  CHECK(target.target_schema_version() == version(74));
+  CHECK(target.sizing_policy_version() == version(75));
+  CHECK(target.aggregation_policy_version() == version(76));
+  CHECK(target.authority_version() == version(77));
+  CHECK(target.cut() == portfolio_cut());
+  CHECK(target.valid_until_logical_time_nanoseconds() == 150);
+  CHECK(target.source_recommendation_ids().size() == 1);
+  CHECK(target.source_recommendation_ids()[0] ==
+        recommendation.recommendation_id());
+  CHECK(target.source_signal_ids().size() == 1);
+  CHECK(target.source_signal_ids()[0] == recommendation.signal_id());
+  CHECK(target.excluded_recommendation_ids().empty());
+  CHECK(target.downstream_risk_eligible());
+  CHECK(!target.executable());
+}
+
+TEST_CASE("portfolio construction creates a negative absolute target") {
+  const auto recommendation =
+      recommendation_for({.bid_quantity = 1, .ask_quantity = 3});
+  const std::array selected{recommendation};
+  const auto result = portfolio::PortfolioConstructionAuthority::construct(
+      selected, portfolio_snapshot(100000), portfolio_policy(),
+      portfolio_cut());
+
+  CHECK(result.completed());
+  CHECK(result.terminal.has_value());
+  CHECK(std::holds_alternative<portfolio::TargetPosition>(*result.terminal));
+  const auto &target = std::get<portfolio::TargetPosition>(*result.terminal);
+  CHECK(target.desired_exposure_units() == -500000);
+  CHECK(target.current_exposure_units() == 100000);
+  CHECK(target.explanatory_delta_units() == -600000);
+  CHECK(target.source_recommendation_ids()[0] ==
+        recommendation.recommendation_id());
+  CHECK(target.source_signal_ids()[0] == recommendation.signal_id());
+  CHECK(target.downstream_risk_eligible());
+  CHECK(!target.executable());
+}
+
+TEST_CASE("portfolio construction reports an already-held desired exposure") {
+  const auto recommendation =
+      recommendation_for({.bid_quantity = 3, .ask_quantity = 1});
+  const std::array selected{recommendation};
+  const auto snapshot = portfolio_snapshot(500000);
+  const auto result = portfolio::PortfolioConstructionAuthority::construct(
+      selected, snapshot, portfolio_policy(), portfolio_cut());
+
+  CHECK(result.completed());
+  CHECK(result.terminal.has_value());
+  CHECK(std::holds_alternative<portfolio::PortfolioNoChange>(*result.terminal));
+  const auto &no_change =
+      std::get<portfolio::PortfolioNoChange>(*result.terminal);
+  CHECK(no_change.reason() ==
+        portfolio::PortfolioNoChangeReason::AlreadyAtDesiredExposure);
+  CHECK(no_change.key() == portfolio_target_key());
+  CHECK(no_change.run_id() == id<contracts::RunId>(30));
+  CHECK(no_change.snapshot() == snapshot);
+  CHECK(no_change.desired_exposure_units() == 500000);
+  CHECK(no_change.current_exposure_units() == 500000);
+  CHECK(no_change.source_recommendation_ids().size() == 1);
+  CHECK(no_change.source_recommendation_ids()[0] ==
+        recommendation.recommendation_id());
+  CHECK(no_change.source_signal_ids()[0] == recommendation.signal_id());
+  CHECK(no_change.cut() == portfolio_cut());
+  CHECK(!no_change.executable());
 }

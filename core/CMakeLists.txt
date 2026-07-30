@@ -42,3 +42,4 @@ target_link_libraries(chronos_boundary
   PRIVATE chronos_core chronos_warnings)
 
 add_subdirectory(features)
+add_subdirectory(portfolio)
