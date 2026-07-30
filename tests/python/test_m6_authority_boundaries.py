@@ -541,3 +541,98 @@ def test_root_cache_does_not_hide_tracked_portfolio_sources(tmp_path: Path) -> N
     violations = boundary.find_violations(tmp_path)
 
     assert {item.dependency for item in violations} == {"chronos/core/risk/risk_authority.hpp"}
+
+
+def test_owner_helper_invocation_in_conditional_is_rejected(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    helper = tmp_path / "cmake/PortfolioHelpers.cmake"
+    helper.parent.mkdir(parents=True)
+    helper.write_text(
+        "function(add_dep target dependency)\n"
+        "  target_link_libraries(${target} PRIVATE ${dependency})\n"
+        "endfunction()\n",
+        encoding="utf-8",
+    )
+    write_portfolio_owner(
+        tmp_path,
+        valid_owner_cmake() + "if(TRUE)\n  add_dep(chronos_portfolio chronos_risk)\nendif()\n",
+    )
+
+    violations = boundary.find_violations(tmp_path)
+
+    assert {item.dependency for item in violations} == {"opaque-owner-target-mutation"}
+
+
+def test_external_helper_invocation_in_conditional_is_rejected(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    (tmp_path / "CMakeLists.txt").write_text(
+        "function(add_dep target dependency)\n"
+        "  target_link_libraries(${target} PRIVATE ${dependency})\n"
+        "endfunction()\n"
+        "add_subdirectory(core)\n"
+        "if(TRUE)\n"
+        "  add_dep(chronos_portfolio chronos_risk)\n"
+        "endif()\n",
+        encoding="utf-8",
+    )
+
+    violations = boundary.find_violations(tmp_path)
+
+    assert {item.dependency for item in violations} == {"protected-target-mutated-outside-owner"}
+
+
+def test_transitive_composed_helper_invocation_in_loop_is_rejected(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    (tmp_path / "CMakeLists.txt").write_text(
+        "function(add_dep target dependency)\n"
+        "  target_link_libraries(${target} PRIVATE ${dependency})\n"
+        "endfunction()\n"
+        "function(wrap_dep target dependency)\n"
+        "  add_dep(${target} ${dependency})\n"
+        "endfunction()\n"
+        "add_subdirectory(core)\n"
+        "set(protected chronos_)\n"
+        "string(APPEND protected portfolio)\n"
+        "foreach(item IN ITEMS one)\n"
+        "  wrap_dep(${protected} chronos_risk)\n"
+        "endforeach()\n",
+        encoding="utf-8",
+    )
+
+    violations = boundary.find_violations(tmp_path)
+
+    assert {item.dependency for item in violations} == {"dynamic-target-mutation"}
+
+
+def test_fixed_unrelated_target_helper_is_accepted(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    (tmp_path / "CMakeLists.txt").write_text(
+        "function(configure_consumer)\n"
+        "  target_link_libraries(chronos_consumer PRIVATE chronos_portfolio)\n"
+        "endfunction()\n"
+        "add_subdirectory(core)\n"
+        "configure_consumer()\n",
+        encoding="utf-8",
+    )
+
+    assert boundary.find_violations(tmp_path) == []
+
+
+def test_fixed_portfolio_target_helper_is_rejected(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    (tmp_path / "CMakeLists.txt").write_text(
+        "function(configure_portfolio)\n"
+        "  target_link_libraries(chronos_portfolio PRIVATE chronos_risk)\n"
+        "endfunction()\n"
+        "add_subdirectory(core)\n"
+        "configure_portfolio()\n",
+        encoding="utf-8",
+    )
+
+    violations = boundary.find_violations(tmp_path)
+
+    assert {item.dependency for item in violations} == {"protected-target-mutated-outside-owner"}

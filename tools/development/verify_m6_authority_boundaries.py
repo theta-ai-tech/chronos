@@ -66,6 +66,13 @@ class BoundaryViolation:
     dependency: str
 
 
+@dataclass(frozen=True)
+class CallableTargetMutation:
+    positions: frozenset[int] = frozenset()
+    dynamic: bool = False
+    fixed_protected: bool = False
+
+
 def strip_cmake_comments(text: str) -> str:
     output: list[str] = []
     index = 0
@@ -224,6 +231,21 @@ def top_level_cmake_commands(text: str) -> list[tuple[str, list[str]]]:
     return commands
 
 
+def runtime_cmake_commands(text: str) -> list[tuple[str, list[str]]]:
+    commands: list[tuple[str, list[str]]] = []
+    callable_depth = 0
+    for command, arguments in cmake_commands(text):
+        if command in {"function", "macro"}:
+            callable_depth += 1
+            continue
+        if command in {"endfunction", "endmacro"}:
+            callable_depth = max(0, callable_depth - 1)
+            continue
+        if callable_depth == 0:
+            commands.append((command, arguments))
+    return commands
+
+
 def cmake_call_bodies(
     text: str, command: str, target: str, *, top_level: bool = False
 ) -> list[str]:
@@ -353,77 +375,98 @@ def parameter_position(value: str | None, parameters: list[str]) -> int | None:
         return None
 
 
+def target_mutation_from_value(value: str | None, parameters: list[str]) -> CallableTargetMutation:
+    if value == TARGET:
+        return CallableTargetMutation(fixed_protected=True)
+    if value is None or "$" not in value:
+        return CallableTargetMutation()
+    position = parameter_position(value, parameters)
+    if position is None:
+        return CallableTargetMutation(dynamic=True)
+    return CallableTargetMutation(positions=frozenset({position}))
+
+
+def combine_target_mutations(
+    first: CallableTargetMutation, second: CallableTargetMutation
+) -> CallableTargetMutation:
+    return CallableTargetMutation(
+        positions=first.positions | second.positions,
+        dynamic=first.dynamic or second.dynamic,
+        fixed_protected=first.fixed_protected or second.fixed_protected,
+    )
+
+
 def target_mutating_callables(
     cmake_texts: list[str],
-) -> dict[str, set[int] | None]:
+) -> dict[str, CallableTargetMutation]:
     definitions: dict[str, list[tuple[list[str], list[tuple[str, list[str]]]]]] = {}
     for text in cmake_texts:
         for name, bodies in callable_definitions(text).items():
             definitions.setdefault(name, []).extend(bodies)
 
-    mutating: dict[str, set[int] | None] = {}
+    mutating: dict[str, CallableTargetMutation] = {}
     for name, bodies in definitions.items():
-        positions: set[int] = set()
-        unknown = False
+        mutation = CallableTargetMutation()
         for parameters, body in bodies:
             for command, arguments in body:
                 argument = target_argument(command, arguments)
-                if argument is None:
-                    continue
-                position = parameter_position(argument, parameters)
-                if position is None:
-                    unknown = True
-                else:
-                    positions.add(position)
-        if positions or unknown:
-            mutating[name] = None if unknown else positions
+                mutation = combine_target_mutations(
+                    mutation, target_mutation_from_value(argument, parameters)
+                )
+        if mutation != CallableTargetMutation():
+            mutating[name] = mutation
 
     changed = True
     while changed:
         changed = False
         for name, bodies in definitions.items():
-            existing = mutating.get(name)
+            existing = mutating.get(name, CallableTargetMutation())
             known_mutating = name in mutating
-            positions = set() if existing is None else set(existing)
-            unknown = known_mutating and existing is None
+            mutation = existing
             found_mutation = known_mutating
             for parameters, body in bodies:
                 for command, arguments in body:
                     if command not in mutating:
                         continue
                     found_mutation = True
-                    callee_positions = mutating[command]
-                    if callee_positions is None:
-                        unknown = True
-                        continue
-                    for callee_position in callee_positions:
+                    callee_mutation = mutating[command]
+                    mutation = combine_target_mutations(
+                        mutation,
+                        CallableTargetMutation(
+                            dynamic=callee_mutation.dynamic,
+                            fixed_protected=callee_mutation.fixed_protected,
+                        ),
+                    )
+                    for callee_position in callee_mutation.positions:
                         if callee_position >= len(arguments):
-                            unknown = True
+                            mutation = combine_target_mutations(
+                                mutation, CallableTargetMutation(dynamic=True)
+                            )
                             continue
-                        position = parameter_position(arguments[callee_position], parameters)
-                        if position is None:
-                            unknown = True
-                        else:
-                            positions.add(position)
+                        mutation = combine_target_mutations(
+                            mutation,
+                            target_mutation_from_value(arguments[callee_position], parameters),
+                        )
             if not found_mutation:
                 continue
-            updated = None if unknown else positions
-            if not known_mutating or updated != existing:
-                mutating[name] = updated
+            if not known_mutating or mutation != existing:
+                mutating[name] = mutation
                 changed = True
     return mutating
 
 
 def target_mutating_helper_invocation(
-    text: str, mutating_callables: dict[str, set[int] | None]
+    text: str, mutating_callables: dict[str, CallableTargetMutation]
 ) -> str | None:
-    for command, arguments in top_level_cmake_commands(text):
+    for command, arguments in runtime_cmake_commands(text):
         if command not in mutating_callables:
             continue
-        positions = mutating_callables[command]
-        if positions is None:
+        mutation = mutating_callables[command]
+        if mutation.fixed_protected:
+            return "protected-target-mutated-outside-owner"
+        if mutation.dynamic:
             return "dynamic-target-mutation"
-        for position in positions:
+        for position in mutation.positions:
             if position >= len(arguments) or "$" in arguments[position]:
                 return "dynamic-target-mutation"
             if arguments[position] == TARGET:
@@ -502,7 +545,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
         violations.append(BoundaryViolation(owner_path, "invalid-owner-target-declaration"))
     if has_callable_definition(owner_cmake):
         violations.append(BoundaryViolation(owner_path, "opaque-owner-target-mutation"))
-    if any(command in mutating_callables for command, _ in top_level_cmake_commands(owner_cmake)):
+    if any(command in mutating_callables for command, _ in runtime_cmake_commands(owner_cmake)):
         violations.append(BoundaryViolation(owner_path, "opaque-owner-target-mutation"))
 
     authority_path = root / AUTHORITY_PATH
