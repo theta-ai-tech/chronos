@@ -2342,9 +2342,13 @@ TEST_CASE("portfolio rejection precedence is recommendation-order invariant") {
     return;
   CHECK(first_rejected->reason() == second_rejected->reason());
   CHECK(first_rejected->outcome_id() == second_rejected->outcome_id());
+  CHECK(first_rejected->full_input_evidence_digest() ==
+        second_rejected->full_input_evidence_digest());
+  CHECK(first_rejected->omitted_evidence_count() == 0);
+  CHECK(second_rejected->omitted_evidence_count() == 0);
 }
 
-TEST_CASE("portfolio capacity rejection retains complete canonical evidence") {
+TEST_CASE("portfolio capacity rejection retains bounded canonical evidence") {
   std::vector<recommendation::TradeRecommendation> recommendations;
   recommendations.reserve(66);
   for (contracts::AmountUnits offset = 0; offset < 66; ++offset) {
@@ -2381,17 +2385,65 @@ TEST_CASE("portfolio capacity rejection retains complete canonical evidence") {
         portfolio::PortfolioConstructionRejectionReason::
             RecommendationCapacityExceeded);
   CHECK(second_rejected->reason() == first_rejected->reason());
-  CHECK(first_rejected->source_recommendation_ids().size() == 65);
-  CHECK(first_rejected->source_signal_ids().size() == 65);
+  CHECK(first_rejected->source_recommendation_ids().size() == 64);
+  CHECK(first_rejected->source_signal_ids().size() == 64);
   CHECK(first_rejected->excluded_recommendation_ids().empty());
-  CHECK(second_rejected->source_recommendation_ids().size() == 65);
-  CHECK(second_rejected->source_signal_ids().size() == 65);
+  CHECK(second_rejected->source_recommendation_ids().size() == 64);
+  CHECK(second_rejected->source_signal_ids().size() == 64);
   CHECK(second_rejected->excluded_recommendation_ids().empty());
+  CHECK(first_rejected->omitted_evidence_count() == 1);
+  CHECK(second_rejected->omitted_evidence_count() == 1);
   CHECK(std::is_sorted(first_rejected->source_recommendation_ids().begin(),
                        first_rejected->source_recommendation_ids().end()));
   CHECK(std::is_sorted(second_rejected->source_recommendation_ids().begin(),
                        second_rejected->source_recommendation_ids().end()));
+  CHECK(first_rejected->full_input_evidence_digest() !=
+        second_rejected->full_input_evidence_digest());
   CHECK(first_rejected->outcome_id() != second_rejected->outcome_id());
+}
+
+TEST_CASE("portfolio capacity rejection bounds materially larger input") {
+  const auto actionable =
+      recommendation_for({.bid_quantity = 3, .ask_quantity = 1});
+  const auto hold = recommendation_for({.bid_quantity = 5, .ask_quantity = 3});
+  std::vector<recommendation::TradeRecommendation> selected;
+  selected.reserve(4096);
+  for (std::size_t index = 0; index < 4096; ++index)
+    selected.push_back(index % 2 == 0 ? actionable : hold);
+  auto reversed = selected;
+  std::reverse(reversed.begin(), reversed.end());
+
+  const auto first = portfolio::PortfolioConstructionAuthority::construct(
+      selected, portfolio_snapshot(0), portfolio_policy(64), portfolio_cut());
+  const auto second = portfolio::PortfolioConstructionAuthority::construct(
+      reversed, portfolio_snapshot(0), portfolio_policy(64), portfolio_cut());
+  const auto *first_rejected =
+      first.terminal ? std::get_if<portfolio::PortfolioConstructionRejected>(
+                           &*first.terminal)
+                     : nullptr;
+  const auto *second_rejected =
+      second.terminal ? std::get_if<portfolio::PortfolioConstructionRejected>(
+                            &*second.terminal)
+                      : nullptr;
+  CHECK(first_rejected != nullptr);
+  CHECK(second_rejected != nullptr);
+  if (!first_rejected || !second_rejected)
+    return;
+  CHECK(first_rejected->reason() ==
+        portfolio::PortfolioConstructionRejectionReason::
+            RecommendationCapacityExceeded);
+  CHECK(second_rejected->reason() == first_rejected->reason());
+  CHECK(first_rejected->source_recommendation_ids().size() +
+            first_rejected->excluded_recommendation_ids().size() ==
+        portfolio::PortfolioConstructionAuthority::kMaximumRecommendations);
+  CHECK(first_rejected->source_signal_ids().size() +
+            first_rejected->excluded_signal_ids().size() ==
+        portfolio::PortfolioConstructionAuthority::kMaximumRecommendations);
+  CHECK(first_rejected->omitted_evidence_count() == 4096 - 64);
+  CHECK(second_rejected->omitted_evidence_count() == 4096 - 64);
+  CHECK(first_rejected->full_input_evidence_digest() ==
+        second_rejected->full_input_evidence_digest());
+  CHECK(first_rejected->outcome_id() == second_rejected->outcome_id());
 }
 
 TEST_CASE("portfolio early rejection retains holds as excluded evidence") {
@@ -2411,6 +2463,7 @@ TEST_CASE("portfolio early rejection retains holds as excluded evidence") {
     return;
   CHECK(rejected->reason() ==
         portfolio::PortfolioConstructionRejectionReason::UnassignedStrategy);
+  CHECK(rejected->omitted_evidence_count() == 0);
   CHECK(rejected->source_recommendation_ids().size() == 1);
   CHECK(rejected->source_signal_ids().size() == 1);
   CHECK(rejected->excluded_recommendation_ids().size() == 1);

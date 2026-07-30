@@ -1,5 +1,6 @@
 #pragma once
 
+#include "chronos/contracts/digest.hpp"
 #include "chronos/contracts/fixed_point.hpp"
 #include "chronos/core/recommendation/recommendation.hpp"
 
@@ -542,6 +543,13 @@ public:
   excluded_signal_ids() const noexcept {
     return excluded_signal_ids_;
   }
+  [[nodiscard]] const contracts::Sha256Digest &
+  full_input_evidence_digest() const noexcept {
+    return full_input_evidence_digest_;
+  }
+  [[nodiscard]] std::size_t omitted_evidence_count() const noexcept {
+    return omitted_evidence_count_;
+  }
   [[nodiscard]] bool executable() const noexcept { return false; }
 
   bool operator==(const PortfolioConstructionRejected &) const = default;
@@ -555,7 +563,9 @@ private:
       std::vector<contracts::TradeRecommendationId> source_recommendation_ids,
       std::vector<contracts::StrategySignalId> source_signal_ids,
       std::vector<contracts::TradeRecommendationId> excluded_recommendation_ids,
-      std::vector<contracts::StrategySignalId> excluded_signal_ids)
+      std::vector<contracts::StrategySignalId> excluded_signal_ids,
+      contracts::Sha256Digest full_input_evidence_digest,
+      std::size_t omitted_evidence_count)
       : outcome_id_(outcome_id), reason_(reason), key_(std::move(key)),
         run_id_(run_id), snapshot_(std::move(snapshot)),
         target_schema_version_(policy.target_schema_version()),
@@ -565,7 +575,9 @@ private:
         source_recommendation_ids_(std::move(source_recommendation_ids)),
         source_signal_ids_(std::move(source_signal_ids)),
         excluded_recommendation_ids_(std::move(excluded_recommendation_ids)),
-        excluded_signal_ids_(std::move(excluded_signal_ids)) {}
+        excluded_signal_ids_(std::move(excluded_signal_ids)),
+        full_input_evidence_digest_(full_input_evidence_digest),
+        omitted_evidence_count_(omitted_evidence_count) {}
 
   contracts::PortfolioConstructionOutcomeId outcome_id_;
   PortfolioConstructionRejectionReason reason_{
@@ -582,6 +594,8 @@ private:
   std::vector<contracts::StrategySignalId> source_signal_ids_;
   std::vector<contracts::TradeRecommendationId> excluded_recommendation_ids_;
   std::vector<contracts::StrategySignalId> excluded_signal_ids_;
+  contracts::Sha256Digest full_input_evidence_digest_;
+  std::size_t omitted_evidence_count_{};
 
   friend class PortfolioConstructionAuthority;
 };

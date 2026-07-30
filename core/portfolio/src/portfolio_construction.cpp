@@ -3,6 +3,7 @@
 #include "chronos/contracts/digest.hpp"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <string_view>
 #include <type_traits>
@@ -14,6 +15,12 @@ namespace {
 template <typename Id>
 void append_id(std::vector<std::byte> &output, const Id &value) {
   for (const auto byte : value.bytes())
+    output.push_back(static_cast<std::byte>(byte));
+}
+
+void append_digest(std::vector<std::byte> &output,
+                   const contracts::Sha256Digest &value) {
+  for (const auto byte : value.bytes)
     output.push_back(static_cast<std::byte>(byte));
 }
 
@@ -103,10 +110,15 @@ struct CanonicalEvidence final {
   std::vector<contracts::StrategySignalId> source_signal_ids;
   std::vector<contracts::TradeRecommendationId> excluded_recommendation_ids;
   std::vector<contracts::StrategySignalId> excluded_signal_ids;
+  contracts::Sha256Digest full_input_evidence_digest;
+  std::size_t omitted_evidence_count{};
 };
 
 void append_evidence(std::vector<std::byte> &output,
                      const CanonicalEvidence &evidence) {
+  append_digest(output, evidence.full_input_evidence_digest);
+  append_integer(output,
+                 static_cast<std::uint64_t>(evidence.omitted_evidence_count));
   append_integer(output, static_cast<std::uint64_t>(
                              evidence.source_recommendation_ids.size()));
   for (const auto value : evidence.source_recommendation_ids)
@@ -195,28 +207,123 @@ snapshot_rejection(const PortfolioStateSnapshot &snapshot,
   return PortfolioConstructionRejectionReason::InvalidSnapshot;
 }
 
-std::vector<const recommendation::TradeRecommendation *>
-canonical_recommendations(
+contracts::Sha256Digest
+evidence_pair_digest(const recommendation::TradeRecommendation &value) {
+  std::array<std::byte, 96> canonical{};
+  std::size_t size{};
+  constexpr std::string_view domain = "chronos.portfolio-evidence-pair.v1";
+  for (const auto character : domain)
+    canonical[size++] = static_cast<std::byte>(character);
+  for (const auto byte : value.recommendation_id().bytes())
+    canonical[size++] = static_cast<std::byte>(byte);
+  for (const auto byte : value.signal_id().bytes())
+    canonical[size++] = static_cast<std::byte>(byte);
+  return contracts::sha256(std::span(canonical).first(size));
+}
+
+// Domain-hashed pairs feed commutative count, sum, square-sum, and XOR lanes.
+// Hashing those fixed-size lanes preserves order independence and multiplicity.
+class FullEvidenceAccumulator final {
+public:
+  void add(const recommendation::TradeRecommendation &value) noexcept {
+    const auto pair_digest = evidence_pair_digest(value);
+    ++count_;
+    for (std::size_t lane = 0; lane < sums_.size(); ++lane) {
+      std::uint64_t word{};
+      for (std::size_t byte = 0; byte < sizeof(word); ++byte) {
+        word = (word << 8U) | pair_digest.bytes[lane * sizeof(word) + byte];
+      }
+      sums_[lane] += word;
+      square_sums_[lane] += word * word;
+      xors_[lane] ^= word;
+    }
+  }
+
+  [[nodiscard]] contracts::Sha256Digest digest() const noexcept {
+    std::array<std::byte, 160> canonical{};
+    std::size_t size{};
+    constexpr std::string_view domain = "chronos.portfolio-full-evidence.v1";
+    for (const auto character : domain)
+      canonical[size++] = static_cast<std::byte>(character);
+    const auto append_u64 = [&](std::uint64_t value) {
+      for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+        const auto shift = (sizeof(value) - byte - 1) * 8U;
+        canonical[size++] = static_cast<std::byte>((value >> shift) & 0xFFU);
+      }
+    };
+    append_u64(count_);
+    for (const auto value : sums_)
+      append_u64(value);
+    for (const auto value : square_sums_)
+      append_u64(value);
+    for (const auto value : xors_)
+      append_u64(value);
+    return contracts::sha256(std::span(canonical).first(size));
+  }
+
+private:
+  std::uint64_t count_{};
+  std::array<std::uint64_t, 4> sums_{};
+  std::array<std::uint64_t, 4> square_sums_{};
+  std::array<std::uint64_t, 4> xors_{};
+};
+
+bool evidence_pair_less(const recommendation::TradeRecommendation *left,
+                        const recommendation::TradeRecommendation *right) {
+  if (left->recommendation_id() != right->recommendation_id())
+    return left->recommendation_id() < right->recommendation_id();
+  return left->signal_id() < right->signal_id();
+}
+
+struct BoundedRecommendationSelection final {
+  std::array<const recommendation::TradeRecommendation *,
+             PortfolioConstructionAuthority::kMaximumRecommendations>
+      retained{};
+  std::size_t retained_count{};
+  contracts::Sha256Digest full_input_evidence_digest;
+  std::size_t omitted_evidence_count{};
+};
+
+BoundedRecommendationSelection bounded_recommendations(
     std::span<const recommendation::TradeRecommendation> recommendations) {
-  std::vector<const recommendation::TradeRecommendation *> ordered;
-  ordered.reserve(recommendations.size());
-  for (const auto &value : recommendations)
-    ordered.push_back(&value);
-  std::sort(ordered.begin(), ordered.end(),
-            [](const auto *left, const auto *right) {
-              return left->recommendation_id() < right->recommendation_id();
-            });
-  return ordered;
+  BoundedRecommendationSelection result;
+  FullEvidenceAccumulator accumulator;
+  for (const auto &value : recommendations) {
+    accumulator.add(value);
+    const auto *candidate = &value;
+    const auto begin = result.retained.begin();
+    const auto end = begin + result.retained_count;
+    const auto position =
+        std::lower_bound(begin, end, candidate, evidence_pair_less);
+    const auto index = static_cast<std::size_t>(position - begin);
+    if (result.retained_count < result.retained.size()) {
+      for (std::size_t move = result.retained_count; move > index; --move)
+        result.retained[move] = result.retained[move - 1];
+      result.retained[index] = candidate;
+      ++result.retained_count;
+    } else if (index < result.retained.size()) {
+      for (std::size_t move = result.retained.size() - 1; move > index; --move)
+        result.retained[move] = result.retained[move - 1];
+      result.retained[index] = candidate;
+    }
+  }
+  result.full_input_evidence_digest = accumulator.digest();
+  result.omitted_evidence_count =
+      recommendations.size() - result.retained_count;
+  return result;
 }
 
 CanonicalEvidence canonical_partitioned_evidence(
-    const std::vector<const recommendation::TradeRecommendation *> &ordered) {
+    const BoundedRecommendationSelection &selection) {
   CanonicalEvidence evidence;
-  evidence.source_recommendation_ids.reserve(ordered.size());
-  evidence.source_signal_ids.reserve(ordered.size());
-  evidence.excluded_recommendation_ids.reserve(ordered.size());
-  evidence.excluded_signal_ids.reserve(ordered.size());
-  for (const auto *value : ordered) {
+  evidence.source_recommendation_ids.reserve(selection.retained_count);
+  evidence.source_signal_ids.reserve(selection.retained_count);
+  evidence.excluded_recommendation_ids.reserve(selection.retained_count);
+  evidence.excluded_signal_ids.reserve(selection.retained_count);
+  evidence.full_input_evidence_digest = selection.full_input_evidence_digest;
+  evidence.omitted_evidence_count = selection.omitted_evidence_count;
+  for (std::size_t index = 0; index < selection.retained_count; ++index) {
+    const auto *value = selection.retained[index];
     if (value->hold()) {
       evidence.excluded_recommendation_ids.push_back(
           value->recommendation_id());
@@ -307,8 +414,8 @@ PortfolioConstructionResult PortfolioConstructionAuthority::construct(
     return {.failure = PortfolioConstructionFailure::InvalidPolicy};
 
   const auto selected_count = recommendations.size();
-  const auto ordered = canonical_recommendations(recommendations);
-  const auto evidence = canonical_partitioned_evidence(ordered);
+  const auto selection = bounded_recommendations(recommendations);
+  const auto evidence = canonical_partitioned_evidence(selection);
 
   const auto rejected = [&](PortfolioConstructionRejectionReason reason) {
     const auto identity =
@@ -318,7 +425,8 @@ PortfolioConstructionResult PortfolioConstructionAuthority::construct(
         identity, reason, policy.target_key(), policy.run_id(), snapshot,
         policy, cut, evidence.source_recommendation_ids,
         evidence.source_signal_ids, evidence.excluded_recommendation_ids,
-        evidence.excluded_signal_ids));
+        evidence.excluded_signal_ids, evidence.full_input_evidence_digest,
+        evidence.omitted_evidence_count));
     return result;
   };
 
@@ -329,13 +437,15 @@ PortfolioConstructionResult PortfolioConstructionAuthority::construct(
     return rejected(
         PortfolioConstructionRejectionReason::RecommendationCapacityExceeded);
 
-  for (std::size_t index = 0; index < ordered.size(); ++index) {
-    const auto &candidate = *ordered[index];
-    for (std::size_t other = index + 1; other < ordered.size(); ++other) {
-      if (candidate.recommendation_id() == ordered[other]->recommendation_id())
+  for (std::size_t index = 0; index < selection.retained_count; ++index) {
+    const auto &candidate = *selection.retained[index];
+    for (std::size_t other = index + 1; other < selection.retained_count;
+         ++other) {
+      if (candidate.recommendation_id() ==
+          selection.retained[other]->recommendation_id())
         return rejected(
             PortfolioConstructionRejectionReason::DuplicateRecommendationId);
-      if (candidate.signal_id() == ordered[other]->signal_id())
+      if (candidate.signal_id() == selection.retained[other]->signal_id())
         return rejected(
             PortfolioConstructionRejectionReason::DuplicateSignalId);
     }
@@ -343,8 +453,8 @@ PortfolioConstructionResult PortfolioConstructionAuthority::construct(
 
   std::size_t actionable_count{};
   __int128 aggregate_exposure_units{};
-  for (const auto *candidate_pointer : ordered) {
-    const auto &candidate = *candidate_pointer;
+  for (std::size_t index = 0; index < selection.retained_count; ++index) {
+    const auto &candidate = *selection.retained[index];
     if (candidate.run_id() != policy.run_id() ||
         candidate.listing_id() != policy.target_key().listing_id() ||
         candidate.canonical_instrument_id() !=
