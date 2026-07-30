@@ -129,8 +129,7 @@ private:
   TradeRecommendation(
       contracts::TradeRecommendationId recommendation_id,
       contracts::StrategySignalId signal_id,
-      contracts::StrategyEvaluationId evaluation_id,
-      contracts::RunId run_id,
+      contracts::StrategyEvaluationId evaluation_id, contracts::RunId run_id,
       contracts::StrategyInstanceId strategy_instance_id,
       contracts::ListingId listing_id,
       contracts::CanonicalInstrumentId canonical_instrument_id,
