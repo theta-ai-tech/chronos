@@ -3,6 +3,7 @@
 #include "chronos/contracts/digest.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <string_view>
 #include <type_traits>
 #include <vector>
@@ -194,7 +195,8 @@ snapshot_rejection(const PortfolioStateSnapshot &snapshot,
   return PortfolioConstructionRejectionReason::InvalidSnapshot;
 }
 
-CanonicalEvidence canonical_selected_evidence(
+std::vector<const recommendation::TradeRecommendation *>
+canonical_recommendations(
     std::span<const recommendation::TradeRecommendation> recommendations) {
   std::vector<const recommendation::TradeRecommendation *> ordered;
   ordered.reserve(recommendations.size());
@@ -204,12 +206,25 @@ CanonicalEvidence canonical_selected_evidence(
             [](const auto *left, const auto *right) {
               return left->recommendation_id() < right->recommendation_id();
             });
+  return ordered;
+}
+
+CanonicalEvidence canonical_partitioned_evidence(
+    const std::vector<const recommendation::TradeRecommendation *> &ordered) {
   CanonicalEvidence evidence;
   evidence.source_recommendation_ids.reserve(ordered.size());
   evidence.source_signal_ids.reserve(ordered.size());
+  evidence.excluded_recommendation_ids.reserve(ordered.size());
+  evidence.excluded_signal_ids.reserve(ordered.size());
   for (const auto *value : ordered) {
-    evidence.source_recommendation_ids.push_back(value->recommendation_id());
-    evidence.source_signal_ids.push_back(value->signal_id());
+    if (value->hold()) {
+      evidence.excluded_recommendation_ids.push_back(
+          value->recommendation_id());
+      evidence.excluded_signal_ids.push_back(value->signal_id());
+    } else {
+      evidence.source_recommendation_ids.push_back(value->recommendation_id());
+      evidence.source_signal_ids.push_back(value->signal_id());
+    }
   }
   return evidence;
 }
@@ -292,9 +307,8 @@ PortfolioConstructionResult PortfolioConstructionAuthority::construct(
     return {.failure = PortfolioConstructionFailure::InvalidPolicy};
 
   const auto selected_count = recommendations.size();
-  CanonicalEvidence evidence;
-  if (selected_count <= kMaximumRecommendations)
-    evidence = canonical_selected_evidence(recommendations);
+  const auto ordered = canonical_recommendations(recommendations);
+  const auto evidence = canonical_partitioned_evidence(ordered);
 
   const auto rejected = [&](PortfolioConstructionRejectionReason reason) {
     const auto identity =
@@ -315,26 +329,22 @@ PortfolioConstructionResult PortfolioConstructionAuthority::construct(
     return rejected(
         PortfolioConstructionRejectionReason::RecommendationCapacityExceeded);
 
-  for (std::size_t index = 0; index < recommendations.size(); ++index) {
-    const auto &candidate = recommendations[index];
-    for (std::size_t other = index + 1; other < recommendations.size();
-         ++other) {
-      if (candidate.recommendation_id() ==
-          recommendations[other].recommendation_id())
+  for (std::size_t index = 0; index < ordered.size(); ++index) {
+    const auto &candidate = *ordered[index];
+    for (std::size_t other = index + 1; other < ordered.size(); ++other) {
+      if (candidate.recommendation_id() == ordered[other]->recommendation_id())
         return rejected(
             PortfolioConstructionRejectionReason::DuplicateRecommendationId);
-      if (candidate.signal_id() == recommendations[other].signal_id())
+      if (candidate.signal_id() == ordered[other]->signal_id())
         return rejected(
             PortfolioConstructionRejectionReason::DuplicateSignalId);
     }
   }
 
-  std::vector<const recommendation::TradeRecommendation *> actionable;
-  std::vector<const recommendation::TradeRecommendation *> excluded;
-  actionable.reserve(recommendations.size());
-  excluded.reserve(recommendations.size());
-  contracts::AmountUnits desired_exposure_units{};
-  for (const auto &candidate : recommendations) {
+  std::size_t actionable_count{};
+  __int128 aggregate_exposure_units{};
+  for (const auto *candidate_pointer : ordered) {
+    const auto &candidate = *candidate_pointer;
     if (candidate.run_id() != policy.run_id() ||
         candidate.listing_id() != policy.target_key().listing_id() ||
         candidate.canonical_instrument_id() !=
@@ -369,50 +379,22 @@ PortfolioConstructionResult PortfolioConstructionAuthority::construct(
           PortfolioConstructionRejectionReason::ExpiredRecommendation);
 
     if (candidate.hold()) {
-      excluded.push_back(&candidate);
       continue;
     }
-    actionable.push_back(&candidate);
+    ++actionable_count;
     const auto units =
         std::get<recommendation::ActionableRecommendation>(candidate.outcome())
             .indicative_exposure_units;
-    contracts::AmountUnits contribution{};
+    __int128 contribution = units;
     switch (candidate.direction()) {
     case chronos::strategies::sdk::StrategyDirection::Positive:
-      contribution = units;
       break;
     case chronos::strategies::sdk::StrategyDirection::Negative:
-      if (__builtin_sub_overflow(contracts::AmountUnits{0}, units,
-                                 &contribution))
-        return rejected(
-            PortfolioConstructionRejectionReason::ArithmeticOverflow);
+      contribution = -contribution;
       break;
     }
-    if (__builtin_add_overflow(desired_exposure_units, contribution,
-                               &desired_exposure_units))
-      return rejected(PortfolioConstructionRejectionReason::ArithmeticOverflow);
+    aggregate_exposure_units += contribution;
   }
-
-  const auto canonicalize_partition = [](const auto &values, auto &ids,
-                                         auto &signal_ids) {
-    auto ordered = values;
-    std::sort(ordered.begin(), ordered.end(),
-              [](const auto *left, const auto *right) {
-                return left->recommendation_id() < right->recommendation_id();
-              });
-    ids.clear();
-    signal_ids.clear();
-    ids.reserve(ordered.size());
-    signal_ids.reserve(ordered.size());
-    for (const auto *value : ordered) {
-      ids.push_back(value->recommendation_id());
-      signal_ids.push_back(value->signal_id());
-    }
-  };
-  canonicalize_partition(actionable, evidence.source_recommendation_ids,
-                         evidence.source_signal_ids);
-  canonicalize_partition(excluded, evidence.excluded_recommendation_ids,
-                         evidence.excluded_signal_ids);
 
   const auto no_change = [&](PortfolioNoChangeReason reason,
                              contracts::AmountUnits desired) {
@@ -429,12 +411,19 @@ PortfolioConstructionResult PortfolioConstructionAuthority::construct(
     return result;
   };
 
-  if (actionable.empty())
+  if (actionable_count == 0)
     return no_change(PortfolioNoChangeReason::NoActionableRecommendations,
                      snapshot.current_exposure_units());
-  if (desired_exposure_units == 0)
+  if (aggregate_exposure_units == 0)
     return no_change(PortfolioNoChangeReason::ContributionsCancelled,
                      snapshot.current_exposure_units());
+  if (aggregate_exposure_units <
+          std::numeric_limits<contracts::AmountUnits>::min() ||
+      aggregate_exposure_units >
+          std::numeric_limits<contracts::AmountUnits>::max())
+    return rejected(PortfolioConstructionRejectionReason::ArithmeticOverflow);
+  const auto desired_exposure_units =
+      static_cast<contracts::AmountUnits>(aggregate_exposure_units);
 
   contracts::AmountUnits delta{};
   if (__builtin_sub_overflow(desired_exposure_units,

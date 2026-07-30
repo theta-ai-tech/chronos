@@ -797,6 +797,39 @@ recommendation::TradeRecommendation recommendation_for(TopSpec spec) {
   return *recommended.recommendation;
 }
 
+recommendation::TradeRecommendation host_recommendation_for(TopSpec spec) {
+  const auto config = host_runtime_config_base(threshold_parameters()[0]);
+  const auto evaluated_features = accepted_features_for_strategy(config, spec);
+  const auto runtime = activate_runtime(config);
+  if (!runtime)
+    std::abort();
+  const auto invocation = runtime->admit(*evaluated_features.accepted_cut());
+  if (!invocation)
+    std::abort();
+  const auto evaluated =
+      strategy_runtime::StrategyEvaluationAuthority::evaluate(config.definition,
+                                                              *invocation);
+  if (!evaluated.completed())
+    std::abort();
+  const auto recommended = recommendation::RecommendationAuthority::recommend(
+      *evaluated.evaluation, config.recommendation_policy);
+  if (!recommended.completed())
+    std::abort();
+  return *recommended.recommendation;
+}
+
+void set_indicative_exposure(
+    recommendation::TradeRecommendation &recommendation,
+    contracts::AmountUnits units) {
+  auto &outcome = const_cast<recommendation::RecommendationOutcome &>(
+      recommendation.outcome());
+  auto *actionable =
+      std::get_if<recommendation::ActionableRecommendation>(&outcome);
+  if (!actionable)
+    std::abort();
+  actionable->indicative_exposure_units = units;
+}
+
 portfolio::TargetKey portfolio_target_key() {
   return portfolio::TargetKey(id<contracts::PortfolioId>(70),
                               id<contracts::AccountId>(71),
@@ -814,12 +847,14 @@ portfolio_snapshot(contracts::AmountUnits current_exposure_units) {
       100, 2, portfolio::PortfolioSnapshotDisposition::FreshComplete, true);
 }
 
-portfolio::PortfolioConstructionPolicy portfolio_policy() {
+portfolio::PortfolioConstructionPolicy
+portfolio_policy(std::size_t maximum_selected_recommendations = 4) {
   return portfolio::PortfolioConstructionPolicy(
       version(74), version(75), version(76), version(77),
       portfolio_target_key(), id<contracts::RunId>(30),
       {id<contracts::StrategyInstanceId>(98)},
-      *contracts::DecimalScale::from_exponent(6), 4, 100, 50);
+      *contracts::DecimalScale::from_exponent(6),
+      maximum_selected_recommendations, 100, 50);
 }
 
 portfolio::PortfolioConstructionCut portfolio_cut() {
@@ -2210,4 +2245,184 @@ TEST_CASE("portfolio construction reports an already-held desired exposure") {
   CHECK(no_change.source_signal_ids()[0] == recommendation.signal_id());
   CHECK(no_change.cut() == portfolio_cut());
   CHECK(!no_change.executable());
+}
+
+TEST_CASE(
+    "portfolio cancellation is invariant to grouped and interleaved input") {
+  constexpr auto large_contribution =
+      std::numeric_limits<contracts::AmountUnits>::max() / 16;
+  std::vector<recommendation::TradeRecommendation> positive;
+  std::vector<recommendation::TradeRecommendation> negative;
+  positive.reserve(32);
+  negative.reserve(32);
+  for (contracts::AmountUnits offset = 0; offset < 32; ++offset) {
+    positive.push_back(
+        recommendation_for({.bid_quantity = 3 + offset, .ask_quantity = 1}));
+    negative.push_back(
+        recommendation_for({.bid_quantity = 1, .ask_quantity = 3 + offset}));
+    set_indicative_exposure(positive.back(), large_contribution);
+    set_indicative_exposure(negative.back(), large_contribution);
+  }
+
+  std::vector<recommendation::TradeRecommendation> grouped;
+  std::vector<recommendation::TradeRecommendation> interleaved;
+  grouped.reserve(64);
+  interleaved.reserve(64);
+  grouped.insert(grouped.end(), positive.begin(), positive.end());
+  grouped.insert(grouped.end(), negative.begin(), negative.end());
+  for (std::size_t index = 0; index < positive.size(); ++index) {
+    interleaved.push_back(positive[index]);
+    interleaved.push_back(negative[index]);
+  }
+  auto reversed = grouped;
+  std::reverse(reversed.begin(), reversed.end());
+
+  const auto snapshot = portfolio_snapshot(123);
+  const auto policy = portfolio_policy(64);
+  const auto grouped_result =
+      portfolio::PortfolioConstructionAuthority::construct(
+          grouped, snapshot, policy, portfolio_cut());
+  const auto interleaved_result =
+      portfolio::PortfolioConstructionAuthority::construct(
+          interleaved, snapshot, policy, portfolio_cut());
+  const auto reversed_result =
+      portfolio::PortfolioConstructionAuthority::construct(
+          reversed, snapshot, policy, portfolio_cut());
+
+  const auto *grouped_no_change =
+      grouped_result.terminal
+          ? std::get_if<portfolio::PortfolioNoChange>(&*grouped_result.terminal)
+          : nullptr;
+  const auto *interleaved_no_change =
+      interleaved_result.terminal ? std::get_if<portfolio::PortfolioNoChange>(
+                                        &*interleaved_result.terminal)
+                                  : nullptr;
+  const auto *reversed_no_change =
+      reversed_result.terminal ? std::get_if<portfolio::PortfolioNoChange>(
+                                     &*reversed_result.terminal)
+                               : nullptr;
+  CHECK(grouped_no_change != nullptr);
+  CHECK(interleaved_no_change != nullptr);
+  CHECK(reversed_no_change != nullptr);
+  if (!grouped_no_change || !interleaved_no_change || !reversed_no_change)
+    return;
+  CHECK(grouped_no_change->reason() ==
+        portfolio::PortfolioNoChangeReason::ContributionsCancelled);
+  CHECK(interleaved_no_change->reason() == grouped_no_change->reason());
+  CHECK(reversed_no_change->reason() == grouped_no_change->reason());
+  CHECK(interleaved_no_change->outcome_id() == grouped_no_change->outcome_id());
+  CHECK(reversed_no_change->outcome_id() == grouped_no_change->outcome_id());
+  CHECK(grouped_no_change->source_recommendation_ids().size() == 64);
+}
+
+TEST_CASE("portfolio rejection precedence is recommendation-order invariant") {
+  const auto expired =
+      recommendation_for({.bid_quantity = 3, .ask_quantity = 1});
+  const auto unassigned =
+      host_recommendation_for({.bid_quantity = 3, .ask_quantity = 1});
+  const std::array first_order{expired, unassigned};
+  const std::array second_order{unassigned, expired};
+  const portfolio::PortfolioConstructionCut late_cut(1, 2'000'000'000);
+
+  const auto first = portfolio::PortfolioConstructionAuthority::construct(
+      first_order, portfolio_snapshot(0), portfolio_policy(), late_cut);
+  const auto second = portfolio::PortfolioConstructionAuthority::construct(
+      second_order, portfolio_snapshot(0), portfolio_policy(), late_cut);
+  const auto *first_rejected =
+      first.terminal ? std::get_if<portfolio::PortfolioConstructionRejected>(
+                           &*first.terminal)
+                     : nullptr;
+  const auto *second_rejected =
+      second.terminal ? std::get_if<portfolio::PortfolioConstructionRejected>(
+                            &*second.terminal)
+                      : nullptr;
+  CHECK(first_rejected != nullptr);
+  CHECK(second_rejected != nullptr);
+  if (!first_rejected || !second_rejected)
+    return;
+  CHECK(first_rejected->reason() == second_rejected->reason());
+  CHECK(first_rejected->outcome_id() == second_rejected->outcome_id());
+}
+
+TEST_CASE("portfolio capacity rejection retains complete canonical evidence") {
+  std::vector<recommendation::TradeRecommendation> recommendations;
+  recommendations.reserve(66);
+  for (contracts::AmountUnits offset = 0; offset < 66; ++offset) {
+    recommendations.push_back(
+        recommendation_for({.bid_quantity = 3 + offset, .ask_quantity = 1}));
+  }
+  std::vector<recommendation::TradeRecommendation> first(
+      recommendations.begin(), recommendations.begin() + 65);
+  std::vector<recommendation::TradeRecommendation> second(
+      recommendations.begin(), recommendations.begin() + 64);
+  second.push_back(recommendations[65]);
+
+  const auto first_result =
+      portfolio::PortfolioConstructionAuthority::construct(
+          first, portfolio_snapshot(0), portfolio_policy(64), portfolio_cut());
+  const auto second_result =
+      portfolio::PortfolioConstructionAuthority::construct(
+          second, portfolio_snapshot(0), portfolio_policy(64), portfolio_cut());
+  const auto *first_rejected =
+      first_result.terminal
+          ? std::get_if<portfolio::PortfolioConstructionRejected>(
+                &*first_result.terminal)
+          : nullptr;
+  const auto *second_rejected =
+      second_result.terminal
+          ? std::get_if<portfolio::PortfolioConstructionRejected>(
+                &*second_result.terminal)
+          : nullptr;
+  CHECK(first_rejected != nullptr);
+  CHECK(second_rejected != nullptr);
+  if (!first_rejected || !second_rejected)
+    return;
+  CHECK(first_rejected->reason() ==
+        portfolio::PortfolioConstructionRejectionReason::
+            RecommendationCapacityExceeded);
+  CHECK(second_rejected->reason() == first_rejected->reason());
+  CHECK(first_rejected->source_recommendation_ids().size() == 65);
+  CHECK(first_rejected->source_signal_ids().size() == 65);
+  CHECK(first_rejected->excluded_recommendation_ids().empty());
+  CHECK(second_rejected->source_recommendation_ids().size() == 65);
+  CHECK(second_rejected->source_signal_ids().size() == 65);
+  CHECK(second_rejected->excluded_recommendation_ids().empty());
+  CHECK(std::is_sorted(first_rejected->source_recommendation_ids().begin(),
+                       first_rejected->source_recommendation_ids().end()));
+  CHECK(std::is_sorted(second_rejected->source_recommendation_ids().begin(),
+                       second_rejected->source_recommendation_ids().end()));
+  CHECK(first_rejected->outcome_id() != second_rejected->outcome_id());
+}
+
+TEST_CASE("portfolio early rejection retains holds as excluded evidence") {
+  const auto hold = recommendation_for({.bid_quantity = 5, .ask_quantity = 3});
+  const auto unassigned_actionable =
+      host_recommendation_for({.bid_quantity = 3, .ask_quantity = 1});
+  const std::array selected{hold, unassigned_actionable};
+
+  const auto result = portfolio::PortfolioConstructionAuthority::construct(
+      selected, portfolio_snapshot(0), portfolio_policy(), portfolio_cut());
+  const auto *rejected =
+      result.terminal ? std::get_if<portfolio::PortfolioConstructionRejected>(
+                            &*result.terminal)
+                      : nullptr;
+  CHECK(rejected != nullptr);
+  if (!rejected)
+    return;
+  CHECK(rejected->reason() ==
+        portfolio::PortfolioConstructionRejectionReason::UnassignedStrategy);
+  CHECK(rejected->source_recommendation_ids().size() == 1);
+  CHECK(rejected->source_signal_ids().size() == 1);
+  CHECK(rejected->excluded_recommendation_ids().size() == 1);
+  CHECK(rejected->excluded_signal_ids().size() == 1);
+  if (rejected->source_recommendation_ids().size() != 1 ||
+      rejected->source_signal_ids().size() != 1 ||
+      rejected->excluded_recommendation_ids().size() != 1 ||
+      rejected->excluded_signal_ids().size() != 1)
+    return;
+  CHECK(rejected->source_recommendation_ids()[0] ==
+        unassigned_actionable.recommendation_id());
+  CHECK(rejected->source_signal_ids()[0] == unassigned_actionable.signal_id());
+  CHECK(rejected->excluded_recommendation_ids()[0] == hold.recommendation_id());
+  CHECK(rejected->excluded_signal_ids()[0] == hold.signal_id());
 }
