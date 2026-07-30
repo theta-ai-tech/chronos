@@ -214,9 +214,11 @@ evidence_pair_digest(const recommendation::TradeRecommendation &value) {
   constexpr std::string_view domain = "chronos.portfolio-evidence-pair.v1";
   for (const auto character : domain)
     canonical[size++] = static_cast<std::byte>(character);
-  for (const auto byte : value.recommendation_id().bytes())
+  const auto recommendation_id = value.recommendation_id();
+  for (const auto byte : recommendation_id.bytes())
     canonical[size++] = static_cast<std::byte>(byte);
-  for (const auto byte : value.signal_id().bytes())
+  const auto signal_id = value.signal_id();
+  for (const auto byte : signal_id.bytes())
     canonical[size++] = static_cast<std::byte>(byte);
   return contracts::sha256(std::span(canonical).first(size));
 }
