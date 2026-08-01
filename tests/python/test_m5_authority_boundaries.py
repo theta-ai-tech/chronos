@@ -174,6 +174,98 @@ def test_protected_target_cannot_be_mutated_outside_owner(tmp_path: Path) -> Non
     assert {item.dependency for item in violations} == {"dynamic-target-mutation"}
 
 
+def test_portfolio_guard_expected_links_are_read_only_declarations(tmp_path: Path) -> None:
+    write_feature_owner(
+        tmp_path,
+        "add_library(chronos_features STATIC)\n"
+        "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
+    )
+    write_other_authorities(tmp_path)
+    portfolio = tmp_path / "core/portfolio/CMakeLists.txt"
+    portfolio.parent.mkdir(parents=True)
+    portfolio.write_text(
+        "target_link_libraries(chronos_portfolio PUBLIC chronos_recommendation)\n",
+        encoding="utf-8",
+    )
+    assertion = tmp_path / "core/portfolio/AssertTargetBoundary.cmake"
+    assertion.write_text(
+        "set(_chronos_portfolio_expected_link_libraries chronos_contracts "
+        "chronos_recommendation chronos_options chronos_warnings)\n"
+        "set(_chronos_portfolio_expected_interface_link_libraries "
+        "chronos_contracts chronos_recommendation $<LINK_ONLY:chronos_options> "
+        "$<LINK_ONLY:chronos_warnings>)\n"
+        'if(NOT "${actual}" STREQUAL '
+        '"${_chronos_portfolio_expected_link_libraries}")\n'
+        '  message(STATUS "${_chronos_portfolio_expected_link_libraries}")\n'
+        "endif()\n",
+        encoding="utf-8",
+    )
+
+    assert boundary.find_violations(tmp_path) == []
+
+
+def test_portfolio_guard_expected_links_reject_reassignment_and_helper_use(
+    tmp_path: Path,
+) -> None:
+    canonical = (
+        "set(_chronos_portfolio_expected_link_libraries chronos_contracts "
+        "chronos_recommendation chronos_options chronos_warnings)\n"
+        "set(_chronos_portfolio_expected_interface_link_libraries "
+        "chronos_contracts chronos_recommendation $<LINK_ONLY:chronos_options> "
+        "$<LINK_ONLY:chronos_warnings>)\n"
+    )
+    invalid_suffixes = (
+        "set(_chronos_portfolio_expected_link_libraries chronos_recommendation)\n",
+        "function(mutate target)\n"
+        "  target_link_libraries(${target} PRIVATE chronos_risk)\n"
+        "endfunction()\n"
+        "mutate(${_chronos_portfolio_expected_link_libraries})\n",
+    )
+    for index, suffix in enumerate(invalid_suffixes):
+        root = tmp_path / str(index)
+        write_feature_owner(
+            root,
+            "add_library(chronos_features STATIC)\n"
+            "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
+        )
+        write_other_authorities(root)
+        portfolio = root / "core/portfolio/CMakeLists.txt"
+        portfolio.parent.mkdir(parents=True)
+        portfolio.write_text("", encoding="utf-8")
+        assertion = root / "core/portfolio/AssertTargetBoundary.cmake"
+        assertion.write_text(canonical + suffix, encoding="utf-8")
+
+        assert "dynamic-target-mutation" in {
+            item.dependency for item in boundary.find_violations(root)
+        }
+
+
+def test_portfolio_guard_cannot_mutate_m5_protected_target(tmp_path: Path) -> None:
+    write_feature_owner(
+        tmp_path,
+        "add_library(chronos_features STATIC)\n"
+        "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
+    )
+    write_other_authorities(tmp_path)
+    portfolio = tmp_path / "core/portfolio/CMakeLists.txt"
+    portfolio.parent.mkdir(parents=True)
+    portfolio.write_text("", encoding="utf-8")
+    assertion = tmp_path / "core/portfolio/AssertTargetBoundary.cmake"
+    assertion.write_text(
+        "set(_chronos_portfolio_expected_link_libraries chronos_contracts "
+        "chronos_recommendation chronos_options chronos_warnings)\n"
+        "set(_chronos_portfolio_expected_interface_link_libraries "
+        "chronos_contracts chronos_recommendation $<LINK_ONLY:chronos_options> "
+        "$<LINK_ONLY:chronos_warnings>)\n"
+        "target_link_libraries(chronos_recommendation PRIVATE chronos_risk)\n",
+        encoding="utf-8",
+    )
+
+    assert "protected-target-mutated-outside-owner" in {
+        item.dependency for item in boundary.find_violations(tmp_path)
+    }
+
+
 def test_invoked_helper_cannot_mutate_protected_target(tmp_path: Path) -> None:
     write_feature_owner(
         tmp_path,

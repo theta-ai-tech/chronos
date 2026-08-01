@@ -1,5 +1,7 @@
 #pragma once
 
+#include "chronos/contracts/digest.hpp"
+
 #include <array>
 #include <charconv>
 #include <compare>
@@ -24,6 +26,20 @@ public:
     if (!nonzero) {
       return std::nullopt;
     }
+    return OpaqueId(bytes);
+  }
+
+  [[nodiscard]] static constexpr OpaqueId
+  from_sha256_digest(const Sha256Digest &digest) noexcept {
+    bytes_type bytes{};
+    bool nonzero = false;
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+      bytes[index] = digest.bytes[index];
+      nonzero = nonzero || bytes[index] != 0;
+    }
+    // The all-zero value is reserved as invalid; use one stable fallback ID.
+    if (!nonzero)
+      bytes.back() = 1;
     return OpaqueId(bytes);
   }
 
@@ -126,6 +142,11 @@ struct StrategyInstanceIdTag;
 struct StrategyEvaluationIdTag;
 struct StrategySignalIdTag;
 struct TradeRecommendationIdTag;
+struct PortfolioIdTag;
+struct AccountIdTag;
+struct PortfolioSnapshotIdTag;
+struct TargetPositionIdTag;
+struct PortfolioConstructionOutcomeIdTag;
 struct PublicationAttemptIdTag;
 struct ConsumerBoundaryIdTag;
 struct CapturePartitionIdTag;
@@ -155,6 +176,12 @@ using StrategyInstanceId = OpaqueId<StrategyInstanceIdTag>;
 using StrategyEvaluationId = OpaqueId<StrategyEvaluationIdTag>;
 using StrategySignalId = OpaqueId<StrategySignalIdTag>;
 using TradeRecommendationId = OpaqueId<TradeRecommendationIdTag>;
+using PortfolioId = OpaqueId<PortfolioIdTag>;
+using AccountId = OpaqueId<AccountIdTag>;
+using PortfolioSnapshotId = OpaqueId<PortfolioSnapshotIdTag>;
+using TargetPositionId = OpaqueId<TargetPositionIdTag>;
+using PortfolioConstructionOutcomeId =
+    OpaqueId<PortfolioConstructionOutcomeIdTag>;
 using PublicationAttemptId = OpaqueId<PublicationAttemptIdTag>;
 using ConsumerBoundaryId = OpaqueId<ConsumerBoundaryIdTag>;
 using CapturePartitionId = OpaqueId<CapturePartitionIdTag>;
