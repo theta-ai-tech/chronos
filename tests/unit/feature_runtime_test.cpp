@@ -7,6 +7,7 @@
 #include "chronos/strategies/sdk/strategy_host.hpp"
 
 #include "microtest.hpp"
+#include "portfolio_runtime_fixture.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1077,6 +1078,14 @@ market::ListingViewPublisher publish_exhausted_top() {
 }
 
 } // namespace
+
+chronos::core::recommendation::TradeRecommendation
+chronos::test_support::positive_portfolio_recommendation_40() {
+  auto recommendation =
+      recommendation_for({.bid_quantity = 3, .ask_quantity = 1});
+  corrupt_indicative_exposure(recommendation, 40);
+  return recommendation;
+}
 
 TEST_CASE("top features are deterministic and carry authority provenance") {
   auto publisher = publish_initial();

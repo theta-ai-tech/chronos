@@ -38,6 +38,7 @@ target_link_libraries(chronos_unit_tests
           chronos_features
           chronos_portfolio
           chronos_recommendation
+          chronos_risk
           chronos_reference_strategies chronos_replay_providers
           chronos_strategy_runtime chronos_strategy_conformance_pack
           chronos_strategy_sdk
