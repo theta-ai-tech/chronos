@@ -39,9 +39,11 @@ a structural violation even if `project()` is also removed.
 For a structurally valid repository, the verifier runs a temporary out-of-source
 CMake configure with expanded JSON tracing. The trace makes executed command
 overrides visible even when they came from an external module selected through a
-callable-local `CMAKE_MODULE_PATH`. Overrides of assertion-critical commands are
-reported as `configured-target-property:COMMAND_OVERRIDE`; no Python include-graph
-interpreter remains. Temporary configure artifacts are removed automatically.
+callable-local `CMAKE_MODULE_PATH`. It also requires an assertion-complete marker
+and rejects target or canonical-source mutations that execute afterward through
+`cmake_language(DEFER)`. Overrides of assertion-critical commands are reported as
+`configured-target-property:COMMAND_OVERRIDE`; no Python include-graph interpreter
+remains. Temporary configure artifacts are removed automatically.
 
 The M5 verifier has a narrow compatibility rule for the two canonical expected-link
 declarations in the assertion module. M6 remains responsible for validating the
@@ -56,18 +58,19 @@ of `project()` plus tail registration.
 
 The final real-CMake fixtures also cover root/core/owner included mutations,
 `cmake_language(CALL)`, callable-local module selection, escaped parentheses,
-unquoted list expansion, after-core target mutation, canonical-source properties,
-guard deletion/inert/reorder, exact valid construction, and direct consumer linkage.
+unquoted list expansion, after-core and deferred target/source mutations, skipped
+guard execution, canonical-source properties, guard deletion/inert/reorder, exact
+valid construction, and direct consumer linkage.
 
 ## Final Gates
 
 - `uv run pytest tests/python/test_m5_authority_boundaries.py tests/python/test_m6_authority_boundaries.py -q`
-  - passed: 83 tests
+  - passed: 86 tests
 - `python3 tools/development/verify_m6_authority_boundaries.py`
   - passed: `[OK] M6 portfolio authority has no forbidden dependencies`
 - `make m0-check`
   - passed: native configure/build and CTest 1/1; Python distribution validation;
-    155 Python tests; repository-wide Ruff lint and format checks
+    158 Python tests; repository-wide Ruff lint and format checks
 - `make cpp-profiles-check`
   - passed: Debug, Release, Benchmark, sanitizer, and Ninja Multi-Config
     Debug/Release/Benchmark configure, build, and CTest runs

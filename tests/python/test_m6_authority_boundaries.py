@@ -359,6 +359,52 @@ def test_deferred_guard_cancellation_cannot_disable_assertion(tmp_path: Path) ->
     assert configured_properties(tmp_path, configure_directly=True) == {"LINK_LIBRARIES"}
 
 
+def test_deferred_mutations_after_guard_are_rejected(tmp_path: Path) -> None:
+    source = tmp_path / "core/portfolio/src/portfolio_construction.cpp"
+    write_native_cmake_project(
+        tmp_path,
+        root_before_core=(
+            "add_library(chronos_risk INTERFACE)\n"
+            "target_compile_definitions(chronos_risk INTERFACE DEFERRED_RISK_CAPABILITY)\n"
+        ),
+        root_after_core=(
+            "set(late_target chronos_portfol)\n"
+            "string(APPEND late_target io)\n"
+            f'set(late_source "{source}")\n'
+            "cmake_language(DEFER CALL target_link_libraries "
+            "${late_target} PRIVATE chronos_risk)\n"
+            "cmake_language(DEFER CALL set_source_files_properties\n"
+            '  "${late_source}"\n'
+            '  TARGET_DIRECTORY "${late_target}"\n'
+            "  PROPERTIES COMPILE_DEFINITIONS DEFERRED_SOURCE_CAPABILITY)\n"
+        ),
+    )
+
+    assert configured_properties(tmp_path) == {
+        "LINK_LIBRARIES",
+        "SOURCE_COMPILE_DEFINITIONS",
+    }
+
+
+def test_successful_configure_requires_guard_execution(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        root_before_core=(
+            "add_library(chronos_risk INTERFACE)\n"
+            "target_compile_definitions(chronos_risk INTERFACE RETURN_BYPASS_CAPABILITY)\n"
+        ),
+        root_after_core=(
+            "set(return_target chronos_portfol)\n"
+            "string(APPEND return_target io)\n"
+            "cmake_language(CALL target_link_libraries "
+            "${return_target} PRIVATE chronos_risk)\n"
+            "return()\n"
+        ),
+    )
+
+    assert configured_properties(tmp_path) == {"GUARD_NOT_EXECUTED"}
+
+
 def test_generator_specific_source_mutations_are_rejected(tmp_path: Path) -> None:
     mutations = (
         ("VS_SETTINGS", "ExcludedFromBuild=true"),

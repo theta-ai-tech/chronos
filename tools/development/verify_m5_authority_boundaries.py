@@ -440,8 +440,6 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
                 continue
             candidate_cmake = all_cmake[candidate]
             relative_candidate = candidate.relative_to(root)
-            if relative_candidate in READ_ONLY_TARGET_LIST_DECLARATIONS:
-                continue
             usage = protected_target_usage(
                 candidate_cmake,
                 target,

@@ -54,6 +54,7 @@ CMAKE_TARGET_COMMANDS = (
     "target_compile_features",
     "target_compile_options",
     "target_include_directories",
+    "target_link_directories",
     "target_link_libraries",
     "target_link_options",
     "target_precompile_headers",
@@ -132,6 +133,8 @@ NATIVE_GUARD_PROPERTY_VARIABLE = "_chronos_portfolio_property"
 NATIVE_GUARD_PROPERTY_LIST = "_chronos_portfolio_empty_properties"
 NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE = "_chronos_portfolio_source_property"
 NATIVE_GUARD_SOURCE_PROPERTY_LIST = "_chronos_portfolio_empty_source_properties"
+NATIVE_GUARD_TRACE_SENTINEL_VARIABLE = "_chronos_m6_boundary_assertion_complete"
+NATIVE_GUARD_TRACE_SENTINEL_VALUE = "TRUE"
 NATIVE_GUARD_EMPTY_SOURCE_PROPERTIES = (
     "COMPILE_DEFINITIONS",
     "COMPILE_FLAGS",
@@ -182,6 +185,18 @@ GUARD_CRITICAL_COMMANDS = {
     "get_source_file_property",
     "list",
     "string",
+}
+POST_GUARD_TARGET_PROPERTIES = {
+    "add_dependencies": "ADD_DEPENDENCIES",
+    "target_compile_definitions": "COMPILE_DEFINITIONS",
+    "target_compile_features": "COMPILE_FEATURES",
+    "target_compile_options": "COMPILE_OPTIONS",
+    "target_include_directories": "INCLUDE_DIRECTORIES",
+    "target_link_directories": "LINK_DIRECTORIES",
+    "target_link_libraries": "LINK_LIBRARIES",
+    "target_link_options": "LINK_OPTIONS",
+    "target_precompile_headers": "PRECOMPILE_HEADERS",
+    "target_sources": "SOURCES",
 }
 
 
@@ -975,9 +990,18 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
             ]
         )
         index += 1
-        for command, expected_depth in (("endif", 2), ("endforeach", 1), ("endfunction", 0)):
+        for command, expected_depth in (("endif", 2), ("endforeach", 1)):
             valid = valid and matches(index, command, [], expected_depth)
             index += 1
+        valid = valid and matches(
+            index,
+            "set",
+            [NATIVE_GUARD_TRACE_SENTINEL_VARIABLE, NATIVE_GUARD_TRACE_SENTINEL_VALUE],
+            1,
+        )
+        index += 1
+        valid = valid and matches(index, "endfunction", [], 0)
+        index += 1
         if not valid:
             continue
 
@@ -998,6 +1022,90 @@ def is_configurable_cmake_project(root_cmake: str | None) -> bool:
         re.search(rf"(?im)^[ \t]*{command}[ \t]*\(", root_cmake)
         for command in ("cmake_minimum_required", "project")
     )
+
+
+def trace_entries(output: str) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    for line in output.splitlines():
+        try:
+            trace = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(trace, dict) and "cmd" in trace:
+            entries.append(trace)
+    return entries
+
+
+def trace_arguments(trace: dict[str, object]) -> list[str]:
+    arguments = trace.get("args", [])
+    if not isinstance(arguments, list):
+        return []
+    return [str(argument) for argument in arguments]
+
+
+def trace_source_matches(value: str, source: Path) -> bool:
+    candidate = Path(value)
+    if candidate.is_absolute():
+        return candidate.resolve() == source
+    normalized = value.replace("\\", "/")
+    return normalized in {
+        "src/portfolio_construction.cpp",
+        "core/portfolio/src/portfolio_construction.cpp",
+    }
+
+
+def properties_after_marker(arguments: list[str], marker: str) -> list[str]:
+    try:
+        index = arguments.index(marker)
+    except ValueError:
+        return []
+    return [arguments[position].upper() for position in range(index + 1, len(arguments), 2)]
+
+
+def post_guard_mutation_properties(trace: dict[str, object], source: Path) -> list[str]:
+    command = str(trace.get("cmd", "")).lower()
+    arguments = trace_arguments(trace)
+    if command in POST_GUARD_TARGET_PROPERTIES and arguments and arguments[0] == TARGET:
+        return [POST_GUARD_TARGET_PROPERTIES[command]]
+    if command == "add_custom_command" and len(arguments) > 1:
+        if arguments[0].upper() == "TARGET" and arguments[1] == TARGET:
+            return ["CUSTOM_COMMAND"]
+    if command == "set_target_properties":
+        try:
+            marker = arguments.index("PROPERTIES")
+        except ValueError:
+            return []
+        if TARGET in arguments[:marker]:
+            return properties_after_marker(arguments, "PROPERTIES")
+    if command == "set_property" and arguments:
+        scope = arguments[0].upper()
+        try:
+            marker = arguments.index("PROPERTY")
+        except ValueError:
+            return []
+        if scope == "TARGET" and TARGET in arguments[1:marker]:
+            return [arguments[marker + 1].upper()] if marker + 1 < len(arguments) else []
+        if scope == "SOURCE" and any(
+            trace_source_matches(value, source)
+            for value in arguments[1:marker]
+            if value not in {"DIRECTORY", "TARGET_DIRECTORY", TARGET}
+        ):
+            return (
+                [f"SOURCE_{arguments[marker + 1].upper()}"] if marker + 1 < len(arguments) else []
+            )
+    if command == "set_source_files_properties":
+        markers = [
+            index
+            for index, value in enumerate(arguments)
+            if value in {"DIRECTORY", "TARGET_DIRECTORY", "PROPERTIES"}
+        ]
+        source_end = min(markers, default=len(arguments))
+        if any(trace_source_matches(value, source) for value in arguments[:source_end]):
+            return [
+                f"SOURCE_{property_name}"
+                for property_name in properties_after_marker(arguments, "PROPERTIES")
+            ]
+    return []
 
 
 def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
@@ -1025,14 +1133,11 @@ def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
     except (OSError, subprocess.TimeoutExpired) as error:
         return [BoundaryViolation(owner_path, "cmake-configure-unavailable", str(error))]
 
-    for line in result.stdout.splitlines():
-        try:
-            trace = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    traces = trace_entries(result.stdout)
+    for trace in traces:
         if trace.get("cmd") not in {"function", "macro"}:
             continue
-        arguments = trace.get("args", [])
+        arguments = trace_arguments(trace)
         if arguments and str(arguments[0]).lower().lstrip("_") in GUARD_CRITICAL_COMMANDS:
             return [
                 BoundaryViolation(
@@ -1043,7 +1148,35 @@ def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
             ]
 
     if result.returncode == 0:
-        return []
+        guard_path = (root / AUTHORITY_GUARD_CMAKE).resolve()
+        sentinel_indices = [
+            index
+            for index, trace in enumerate(traces)
+            if Path(str(trace.get("file", ""))).resolve() == guard_path
+            and str(trace.get("cmd", "")).lower() == "set"
+            and trace_arguments(trace)
+            == [NATIVE_GUARD_TRACE_SENTINEL_VARIABLE, NATIVE_GUARD_TRACE_SENTINEL_VALUE]
+        ]
+        if not sentinel_indices:
+            return [
+                BoundaryViolation(
+                    root / AUTHORITY_GUARD_CMAKE,
+                    "configured-target-property:GUARD_NOT_EXECUTED",
+                    result.stdout.strip(),
+                )
+            ]
+        source = (root / AUTHORITY_SOURCE_ROOT / "portfolio_construction.cpp").resolve()
+        post_guard_violations: list[BoundaryViolation] = []
+        for trace in traces[sentinel_indices[-1] + 1 :]:
+            for property_name in post_guard_mutation_properties(trace, source):
+                post_guard_violations.append(
+                    BoundaryViolation(
+                        Path(str(trace.get("file", owner_path))),
+                        f"configured-target-property:{property_name}",
+                        result.stdout.strip(),
+                    )
+                )
+        return list(dict.fromkeys(post_guard_violations))
 
     properties = list(
         dict.fromkeys(

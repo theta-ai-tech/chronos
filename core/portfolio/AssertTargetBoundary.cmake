@@ -196,3 +196,5 @@ foreach(_chronos_portfolio_source_property
       "`${_chronos_portfolio_source_property_value}`")
   endif()
 endforeach()
+
+set(_chronos_m6_boundary_assertion_complete TRUE)

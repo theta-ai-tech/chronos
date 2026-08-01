@@ -240,6 +240,32 @@ def test_portfolio_guard_expected_links_reject_reassignment_and_helper_use(
         }
 
 
+def test_portfolio_guard_cannot_mutate_m5_protected_target(tmp_path: Path) -> None:
+    write_feature_owner(
+        tmp_path,
+        "add_library(chronos_features STATIC)\n"
+        "target_link_libraries(chronos_features PUBLIC chronos_contracts)\n",
+    )
+    write_other_authorities(tmp_path)
+    portfolio = tmp_path / "core/portfolio/CMakeLists.txt"
+    portfolio.parent.mkdir(parents=True)
+    portfolio.write_text("", encoding="utf-8")
+    assertion = tmp_path / "core/portfolio/AssertTargetBoundary.cmake"
+    assertion.write_text(
+        "set(_chronos_portfolio_expected_link_libraries chronos_contracts "
+        "chronos_recommendation chronos_options chronos_warnings)\n"
+        "set(_chronos_portfolio_expected_interface_link_libraries "
+        "chronos_contracts chronos_recommendation $<LINK_ONLY:chronos_options> "
+        "$<LINK_ONLY:chronos_warnings>)\n"
+        "target_link_libraries(chronos_recommendation PRIVATE chronos_risk)\n",
+        encoding="utf-8",
+    )
+
+    assert "protected-target-mutated-outside-owner" in {
+        item.dependency for item in boundary.find_violations(tmp_path)
+    }
+
+
 def test_invoked_helper_cannot_mutate_protected_target(tmp_path: Path) -> None:
     write_feature_owner(
         tmp_path,
