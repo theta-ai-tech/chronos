@@ -133,6 +133,22 @@ OWNER_ALLOWED_TARGET_COMMANDS = {
     "target_link_libraries",
     "target_sources",
 }
+READ_ONLY_TARGET_LIST_DECLARATIONS = {
+    Path("core/portfolio/CMakeLists.txt"): {
+        "_chronos_portfolio_expected_link_libraries": (
+            "chronos_contracts",
+            "chronos_recommendation",
+            "chronos_options",
+            "chronos_warnings",
+        ),
+        "_chronos_portfolio_expected_interface_link_libraries": (
+            "chronos_contracts",
+            "chronos_recommendation",
+            "$<LINK_ONLY:chronos_options>",
+            "$<LINK_ONLY:chronos_warnings>",
+        ),
+    }
+}
 
 
 @dataclass(frozen=True)
@@ -283,13 +299,24 @@ def cmake_commands(text: str) -> list[tuple[str, list[str]]]:
     return commands
 
 
-def protected_target_usage(text: str, target: str) -> str | None:
+def protected_target_usage(
+    text: str,
+    target: str,
+    read_only_list_variables: dict[str, tuple[str, ...]] | None = None,
+) -> str | None:
     # Outside its owner, a protected target may only be named as a dependency
     # of a built-in command. Passing it to an opaque helper is intentionally
     # forbidden so this gate never has to interpret arbitrary CMake code.
     for command, arguments in cmake_commands(text):
         target_positions = [index for index, argument in enumerate(arguments) if argument == target]
         if not target_positions:
+            continue
+        if (
+            command == "set"
+            and arguments[0] in (read_only_list_variables or set())
+            and tuple(arguments[1:]) == (read_only_list_variables or {})[arguments[0]]
+            and all(index > 0 for index in target_positions)
+        ):
             continue
         if command in {"target_link_libraries", "add_dependencies"} and all(
             index > 0 for index in target_positions
@@ -301,6 +328,27 @@ def protected_target_usage(text: str, target: str) -> str | None:
             return "dynamic-target-mutation"
         return "protected-target-mutated-outside-owner"
     return None
+
+
+def has_only_canonical_read_only_declarations(
+    text: str, declarations: dict[str, tuple[str, ...]]
+) -> bool:
+    commands = cmake_commands(text)
+    for variable, expected_values in declarations.items():
+        assignments = [
+            arguments
+            for command, arguments in commands
+            if command == "set" and arguments and arguments[0] == variable
+        ]
+        if assignments != [[variable, *expected_values]]:
+            return False
+        reference = "${" + variable + "}"
+        if any(
+            reference in arguments and command not in {"if", "message"}
+            for command, arguments in commands
+        ):
+            return False
+    return True
 
 
 def cmake_files(root: Path) -> list[Path]:
@@ -342,6 +390,15 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     all_cmake = {
         path: strip_cmake_comments(path.read_text(encoding="utf-8")) for path in cmake_files(root)
     }
+    invalid_read_only_paths: set[Path] = set()
+    for relative_path, declarations in READ_ONLY_TARGET_LIST_DECLARATIONS.items():
+        path = root / relative_path
+        if path in all_cmake and not has_only_canonical_read_only_declarations(
+            all_cmake[path], declarations
+        ):
+            violations.append(BoundaryViolation(path, "dynamic-target-mutation"))
+            invalid_read_only_paths.add(path)
+            reported_dynamic_paths.add(path)
     for authority, allowed in ALLOWED_INCLUDES.items():
         source_paths: list[Path] = []
         for relative_path in AUTHORITY_PATHS[authority]:
@@ -379,8 +436,15 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
         for candidate in all_cmake:
             if candidate == cmake_path:
                 continue
+            if candidate in invalid_read_only_paths:
+                continue
             candidate_cmake = all_cmake[candidate]
-            usage = protected_target_usage(candidate_cmake, target)
+            relative_candidate = candidate.relative_to(root)
+            usage = protected_target_usage(
+                candidate_cmake,
+                target,
+                READ_ONLY_TARGET_LIST_DECLARATIONS.get(relative_candidate),
+            )
             if (
                 dynamically_mutates_target(candidate_cmake)
                 and candidate not in reported_dynamic_paths
