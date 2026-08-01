@@ -23,10 +23,12 @@ add_executable(chronos_unit_tests
   unit/state_lineage_test.cpp
   unit/serialization_test.cpp
   unit/value_objects_test.cpp
+  unit/risk_decision_test.cpp
   unit/version_test.cpp)
 
 target_include_directories(chronos_unit_tests
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/support)
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/support
+          ${PROJECT_SOURCE_DIR}/core/risk/include)
 
 target_compile_definitions(chronos_unit_tests
   PRIVATE CHRONOS_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
