@@ -7,6 +7,7 @@ DONE_WITH_CONCERNS
 ## Commits
 
 - `07476b9 feat: add minimal risk decision authority (#35)`
+- `4833e09 fix: preserve risk proof rejection reasons (#35)`
 
 ## Changed Files
 
@@ -23,7 +24,71 @@ The support header and narrow function in `feature_runtime_test.cpp` expose one
 authority-produced actionable recommendation. `risk_decision_test.cpp` passes
 that recommendation through `PortfolioConstructionAuthority` itself and
 asserts that the returned real `TargetPosition` has lineage current position
-`10` and target `40`.
+`10` and target `40`. Fix round 1 replaces the old post-construction payload
+mutation with an explicit maximum-exposure authority input, so the actionable
+payload and deterministic recommendation ID are derived from the same policy.
+
+## Fix Round 1 RED Evidence
+
+The proof-failure and simultaneous-trigger assertions were added before the
+implementation was changed.
+
+Executed:
+
+```sh
+cmake --build build
+build/tests/chronos_unit_tests
+```
+
+Result: the build exited 0; the direct suite exited 1 with
+`RESULT FAIL: 234 case(s), 4 failed check(s)`. The two new proof-failure cases
+failed because both returned `ModifiedTargetWouldNotChangeExposure` as the
+binding reason. The strengthened simultaneous-trigger case already passed with
+all five findings in the required order.
+
+The fixture API was then changed to accept the desired authority exposure and
+an identity-consistency case was added before changing its implementation.
+
+Executed:
+
+```sh
+cmake --build build
+```
+
+Result: exit 1 at link time because the new
+`positive_portfolio_recommendation(AmountUnits)` fixture declaration had no
+definition. This was the expected fixture RED condition.
+
+An initial GREEN attempt exposed that using the small maximum as the minimum
+for every call changed the established default strategy threshold. The direct
+suite exited 139. The root cause was corrected by preserving the default
+minimum as `min(300000, maximum_indicative_exposure)`, which is `300000` for
+existing tests and `40` or `41` only for the explicit small-exposure fixture.
+
+## Fix Round 1 GREEN Evidence
+
+Executed after the correction:
+
+```sh
+uv run clang-format -i \
+  core/risk/src/risk_decision.cpp \
+  tests/support/portfolio_runtime_fixture.hpp \
+  tests/unit/feature_runtime_test.cpp \
+  tests/unit/risk_decision_test.cpp
+cmake --build build
+set -o pipefail; build/tests/chronos_unit_tests 2>&1 | tail -n 1
+ctest --test-dir build --output-on-failure
+uv run clang-format --dry-run --Werror \
+  core/risk/src/risk_decision.cpp \
+  tests/support/portfolio_runtime_fixture.hpp \
+  tests/unit/feature_runtime_test.cpp \
+  tests/unit/risk_decision_test.cpp
+git diff --check
+```
+
+Result: exit 0 throughout. The direct suite reported
+`RESULT OK: 235 case(s), 0 failed check(s)`; CTest passed 1/1; the format and
+diff checks produced no output.
 
 ## RED Evidence
 
@@ -135,6 +200,17 @@ modification, and modification-disabled rejection.
 - Modification is accepted only when projected exposure is strictly reduced
   to at most the limit, movement does not increase, movement is sign-preserving
   or zero, and the solved target changes the authoritative account position.
+- Fix round 1 zero-movement proof failure starts from account `10`, target `40`,
+  projected-before `100`, and limit `100`: requested delta is `30`, requested
+  projected exposure is `130`, and the clamp solves delta `0`. The rejection
+  retains `ProjectedExposureLimitExceeded` first and appends the truthful
+  `ModifiedTargetWouldNotChangeExposure` finding.
+- Fix round 1 movement-increase proof failure starts from account `10`, target
+  `40`, projected-before `-150`, and limit `100`: requested delta is `30`,
+  requested projected exposure is `-120`, and the clamp solves movement `50`.
+  The rejection retains only the binding
+  `ProjectedExposureLimitExceeded` finding because the modified target would
+  change exposure and no other existing reason is truthful.
 - Semantic findings are collected in fixed order: kill switch, account
   disabled, market non-tradeable, target already satisfied, then exposure
   limit. The first finding is the binding reason.
@@ -160,6 +236,11 @@ modification, and modification-disabled rejection.
   obligation plus complete semantic inputs and result fields.
 - The evaluator copies the projected-exposure snapshot's `risk_sequence`
   unchanged. No input or sequence is mutated.
+- The shared positive recommendation fixture now passes its requested maximum
+  exposure through `StrategyRuntimeConfig` and `RecommendationAuthority`.
+  Repeated exposure `40` inputs produce the same ID; exposure `40` and `41`
+  produce different payloads and IDs. The fixture contains no mutation,
+  cached object, or cross-translation-unit mutable state.
 
 ## CMake Wiring
 
@@ -179,6 +260,14 @@ modification, and modification-disabled rejection.
   outcome domain rather than projecting their terminal domains directly.
 - Confirmed approved and modified decisions alone retain authorized values;
   every semantic rejection has a decision ID and no authorized target or proof.
+- Confirmed over-limit proof failures preserve the original exposure-limit
+  decision and finding; no-change is appended only for an actual zero-movement
+  clamp, while movement-increase is not mislabeled.
+- Confirmed simultaneous safety evidence is exactly kill switch, account,
+  market, already-satisfied, and exposure-limit order.
+- Confirmed the risk fixture constructs its recommendation through runtime and
+  recommendation authorities with one explicit policy value governing both
+  canonical payload and identity; it no longer calls the corruption helper.
 - Confirmed no reservation, executable output, `risk_sequence` mutation,
   Python boundary gate, or exhaustive Task 3 test matrix was added.
 
