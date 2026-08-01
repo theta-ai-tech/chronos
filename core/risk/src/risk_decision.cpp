@@ -796,8 +796,12 @@ RiskEvaluationResult MinimalRiskAuthority::evaluate(
         solved_target != account.current_position_units();
     if (!reduction_proven) {
       disposition = RiskDecisionDisposition::Rejected;
-      binding_reason = RiskDecisionReason::ModifiedTargetWouldNotChangeExposure;
+      binding_reason = RiskDecisionReason::ProjectedExposureLimitExceeded;
       findings.emplace_back(binding_reason);
+      if (solved_delta == 0 ||
+          solved_target == account.current_position_units())
+        findings.emplace_back(
+            RiskDecisionReason::ModifiedTargetWouldNotChangeExposure);
     } else {
       disposition = RiskDecisionDisposition::Modified;
       binding_reason = RiskDecisionReason::ClampedToProjectedExposureLimit;

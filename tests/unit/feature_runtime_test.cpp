@@ -734,8 +734,12 @@ reference_threshold(contracts::AmountUnits units = 250000) {
 strategy_runtime::StrategyRuntimeConfig reference_strategy_config(
     std::optional<sdk::StrategyParameter> parameter,
     std::optional<std::int64_t> deadline_offset = std::nullopt,
-    std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations) {
-  const auto policy = recommendation_policy(300000);
+    std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations,
+    contracts::AmountUnits maximum_indicative_exposure = 750000) {
+  const auto minimum_actionable_strength =
+      std::min<contracts::AmountUnits>(300000, maximum_indicative_exposure);
+  const auto policy = recommendation_policy(minimum_actionable_strength,
+                                            maximum_indicative_exposure);
   return {
       .strategy_instance_id = id<contracts::StrategyInstanceId>(98),
       .listing_id = id<contracts::ListingId>(1),
@@ -807,9 +811,10 @@ struct ReferenceEvaluation final {
 
 ReferenceEvaluation evaluate_reference(
     std::optional<sdk::StrategyParameter> parameter, TopSpec spec = {},
-    std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations) {
-  auto config =
-      reference_strategy_config(parameter, std::nullopt, maximum_operations);
+    std::uint64_t maximum_operations = sdk::kMaximumEvaluationOperations,
+    contracts::AmountUnits maximum_indicative_exposure = 750000) {
+  auto config = reference_strategy_config(
+      parameter, std::nullopt, maximum_operations, maximum_indicative_exposure);
   const auto feature_config = reference_runtime_config();
   ReferenceEvaluation captured;
   captured.features =
@@ -823,12 +828,18 @@ ReferenceEvaluation evaluate_reference(
   return captured;
 }
 
-recommendation::TradeRecommendation recommendation_for(TopSpec spec) {
-  const auto evaluated = evaluate_reference(reference_threshold(), spec);
+recommendation::TradeRecommendation recommendation_for(
+    TopSpec spec, contracts::AmountUnits maximum_indicative_exposure = 750000) {
+  const auto evaluated = evaluate_reference(reference_threshold(), spec,
+                                            sdk::kMaximumEvaluationOperations,
+                                            maximum_indicative_exposure);
   if (!evaluated.result.completed())
     std::abort();
   const auto recommended = recommendation::RecommendationAuthority::recommend(
-      *evaluated.result.evaluation, recommendation_policy(300000));
+      *evaluated.result.evaluation,
+      recommendation_policy(
+          std::min<contracts::AmountUnits>(300000, maximum_indicative_exposure),
+          maximum_indicative_exposure));
   if (!recommended.completed())
     std::abort();
   return *recommended.recommendation;
@@ -1080,11 +1091,10 @@ market::ListingViewPublisher publish_exhausted_top() {
 } // namespace
 
 chronos::core::recommendation::TradeRecommendation
-chronos::test_support::positive_portfolio_recommendation_40() {
-  auto recommendation =
-      recommendation_for({.bid_quantity = 3, .ask_quantity = 1});
-  corrupt_indicative_exposure(recommendation, 40);
-  return recommendation;
+chronos::test_support::positive_portfolio_recommendation(
+    contracts::AmountUnits maximum_indicative_exposure) {
+  return recommendation_for({.bid_quantity = 3, .ask_quantity = 1},
+                            maximum_indicative_exposure);
 }
 
 TEST_CASE("top features are deterministic and carry authority provenance") {

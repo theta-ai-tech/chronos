@@ -110,7 +110,7 @@ portfolio::TargetPosition target_position() {
       exposure_scale(), 4, 100, 50);
   const portfolio::PortfolioConstructionCut cut(1, 100);
   const std::array recommendations{
-      chronos::test_support::positive_portfolio_recommendation_40()};
+      chronos::test_support::positive_portfolio_recommendation(40)};
   auto result = portfolio::PortfolioConstructionAuthority::construct(
       recommendations, snapshot, policy, cut);
   if (!result.completed() || !result.terminal ||
@@ -219,6 +219,26 @@ TEST_CASE("risk decision contract preserves distinct terminal types") {
   CHECK(!risk::RiskEvaluationResult{}.completed());
 }
 
+TEST_CASE("portfolio runtime fixture keeps payload and identity consistent") {
+  const auto first =
+      chronos::test_support::positive_portfolio_recommendation(40);
+  const auto repeated =
+      chronos::test_support::positive_portfolio_recommendation(40);
+  const auto different =
+      chronos::test_support::positive_portfolio_recommendation(41);
+  const auto &first_action =
+      std::get<chronos::core::recommendation::ActionableRecommendation>(
+          first.outcome());
+  const auto &different_action =
+      std::get<chronos::core::recommendation::ActionableRecommendation>(
+          different.outcome());
+
+  CHECK(first_action.indicative_exposure_units == 40);
+  CHECK(different_action.indicative_exposure_units == 41);
+  CHECK(first.recommendation_id() == repeated.recommendation_id());
+  CHECK(first.recommendation_id() != different.recommendation_id());
+}
+
 TEST_CASE("risk authority approves a complete in-limit target") {
   const auto target = target_position();
   CHECK(target.current_exposure_units() == 10);
@@ -301,6 +321,7 @@ TEST_CASE("risk authority rejects each known semantic safety state") {
 TEST_CASE("risk authority retains all simultaneous findings in policy order") {
   const auto target = target_position();
   const EvaluationSpec spec{.account_current_position = 40,
+                            .projected_exposure_before_target = 130,
                             .trading_enabled = false,
                             .market_tradeable = false,
                             .kill_switch_enabled = true};
@@ -317,12 +338,58 @@ TEST_CASE("risk authority retains all simultaneous findings in policy order") {
       risk::RiskDecisionReason::AccountTradingDisabled,
       risk::RiskDecisionReason::MarketNotTradeable,
       risk::RiskDecisionReason::TargetAlreadySatisfied,
+      risk::RiskDecisionReason::ProjectedExposureLimitExceeded,
   };
   CHECK(rejected->rule_findings().size() == expected.size());
   if (rejected->rule_findings().size() != expected.size())
     return;
   for (std::size_t index = 0; index < expected.size(); ++index)
     CHECK(rejected->rule_findings()[index].reason() == expected[index]);
+}
+
+TEST_CASE("risk authority retains exposure limit before clamp no movement") {
+  const auto target = target_position();
+  const EvaluationSpec spec{.projected_exposure_before_target = 100};
+  const auto result = evaluate(target, spec);
+  const auto *rejected = decision(result);
+  CHECK(rejected != nullptr);
+  if (!rejected)
+    return;
+
+  check_rejected(*rejected,
+                 risk::RiskDecisionReason::ProjectedExposureLimitExceeded,
+                 mt_fail_count);
+  CHECK(rejected->requested_delta_units() == 30);
+  CHECK(rejected->requested_projected_exposure_units() == 130);
+  const std::array expected{
+      risk::RiskDecisionReason::ProjectedExposureLimitExceeded,
+      risk::RiskDecisionReason::ModifiedTargetWouldNotChangeExposure,
+  };
+  CHECK(rejected->rule_findings().size() == expected.size());
+  if (rejected->rule_findings().size() != expected.size())
+    return;
+  for (std::size_t index = 0; index < expected.size(); ++index)
+    CHECK(rejected->rule_findings()[index].reason() == expected[index]);
+}
+
+TEST_CASE("risk authority keeps exposure reason when clamp grows movement") {
+  const auto target = target_position();
+  const EvaluationSpec spec{.projected_exposure_before_target = -150};
+  const auto result = evaluate(target, spec);
+  const auto *rejected = decision(result);
+  CHECK(rejected != nullptr);
+  if (!rejected)
+    return;
+
+  check_rejected(*rejected,
+                 risk::RiskDecisionReason::ProjectedExposureLimitExceeded,
+                 mt_fail_count);
+  CHECK(rejected->requested_delta_units() == 30);
+  CHECK(rejected->requested_projected_exposure_units() == -120);
+  CHECK(rejected->rule_findings().size() == 1);
+  if (rejected->rule_findings().size() == 1)
+    CHECK(rejected->rule_findings()[0].reason() ==
+          risk::RiskDecisionReason::ProjectedExposureLimitExceeded);
 }
 
 TEST_CASE("risk authority proof-checks positive exposure modification") {

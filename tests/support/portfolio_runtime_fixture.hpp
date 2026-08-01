@@ -5,6 +5,7 @@
 namespace chronos::test_support {
 
 [[nodiscard]] core::recommendation::TradeRecommendation
-positive_portfolio_recommendation_40();
+positive_portfolio_recommendation(
+    contracts::AmountUnits maximum_indicative_exposure);
 
 } // namespace chronos::test_support
