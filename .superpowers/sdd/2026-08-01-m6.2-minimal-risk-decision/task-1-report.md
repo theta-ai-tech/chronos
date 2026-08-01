@@ -7,6 +7,7 @@ DONE_WITH_CONCERNS
 ## Commits
 
 - `ec7e587 feat: define M6.2 risk decision contract (#35)`
+- `e2321e7 fix: retain replay evidence in risk decisions (#35)`
 
 ## Changed Files
 
@@ -94,6 +95,48 @@ Result: exit 0; no formatting or whitespace errors.
 - Confirmed no Task 2 risk library registration, implementation source,
   `MinimalRiskAuthority::evaluate` definition, reservation path, or executable
   output was introduced.
+
+## Fix Round 1
+
+### Reviewer Finding
+
+`RiskDecision` retained the run-manifest identity but dropped the mandatory
+`RunRiskContext::replay_evidence_id`, while `RiskObligationUnavailable`
+retained it.
+
+### TDD Evidence
+
+1. Added the `CompletedDecisionRetainsReplayEvidence` compile-time contract
+   assertion for `RiskDecision`.
+2. Ran `cmake --build build`.
+
+   Result: expected compilation failure because `RiskDecision` had no
+   `replay_evidence_id()` member.
+3. Added the mandatory `contracts::IntegrityId replay_evidence_id` parameter to
+   the authority-only `RiskDecision` constructor, persisted it in private
+   state, and exposed a non-optional accessor. Defaulted equality now includes
+   the retained identity.
+4. Ran `cmake --build build && ctest --test-dir build --output-on-failure`.
+
+   Result: exit 0; `chronos_unit_tests` passed; 1/1 CTest test passed with 0
+   failures.
+
+### Fix-Round Verification
+
+Executed:
+
+```sh
+cmake -S . -B build -G Ninja
+cmake --build build
+ctest --test-dir build --output-on-failure
+uv run clang-format --dry-run --Werror \
+  core/risk/include/chronos/core/risk/risk_decision.hpp \
+  tests/unit/risk_decision_test.cpp
+git diff --check
+```
+
+Result: all commands exited 0; the native suite passed 1/1 CTest tests, and
+formatting and whitespace checks were clean.
 
 ## Concerns
 
