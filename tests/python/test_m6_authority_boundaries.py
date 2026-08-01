@@ -52,6 +52,15 @@ def test_current_m6_portfolio_authority_has_no_forbidden_dependencies() -> None:
     assert boundary.find_violations(root) == []
 
 
+def test_relative_repository_root_is_supported(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "repository"
+    write_portfolio_source(root)
+    write_portfolio_owner(root, valid_owner_cmake())
+    monkeypatch.chdir(tmp_path)
+
+    assert boundary.find_violations(Path("repository")) == []
+
+
 def test_forbidden_portfolio_include_is_rejected(tmp_path: Path) -> None:
     write_portfolio_source(tmp_path, '#include "chronos/core/risk/risk_authority.hpp"\n')
     write_portfolio_owner(tmp_path, valid_owner_cmake())
@@ -167,6 +176,308 @@ def test_root_ancestor_directory_scoped_link_helper_is_rejected(
     violations = boundary.find_violations(tmp_path)
 
     assert {item.dependency for item in violations} == {"directory-scoped-link-mutation"}
+
+
+def test_owner_included_module_directory_scoped_link_mutations_are_rejected(
+    tmp_path: Path,
+) -> None:
+    mutations = (
+        "link_libraries(chronos_risk)\n",
+        "link_directories(${CMAKE_SOURCE_DIR}/risk)\n",
+        "add_link_options(-Wl,--whole-archive)\n",
+    )
+    for index, mutation in enumerate(mutations):
+        root = tmp_path / str(index)
+        write_portfolio_source(root)
+        module = root / "core/portfolio/cmake/OwnerLinks.cmake"
+        module.parent.mkdir(parents=True)
+        module.write_text(mutation, encoding="utf-8")
+        write_portfolio_owner(
+            root,
+            'include("cmake/OwnerLinks.cmake")\n' + valid_owner_cmake(),
+        )
+
+        violations = boundary.find_violations(root)
+
+        assert {(item.path, item.dependency) for item in violations} == {
+            (module, "directory-scoped-link-mutation")
+        }
+
+
+def test_core_transitively_included_module_directory_scoped_link_mutations_are_rejected(
+    tmp_path: Path,
+) -> None:
+    mutations = (
+        "link_libraries(chronos_risk)\n",
+        "link_directories(${CMAKE_SOURCE_DIR}/risk)\n",
+        "add_link_options(-Wl,--whole-archive)\n",
+    )
+    for index, mutation in enumerate(mutations):
+        root = tmp_path / str(index)
+        write_portfolio_source(root)
+        write_portfolio_owner(root, valid_owner_cmake())
+        entry = root / "core/cmake/CoreLinks.cmake"
+        nested = root / "core/cmake/nested/ScopedLinks.cmake"
+        nested.parent.mkdir(parents=True)
+        entry.write_text(
+            'include("${CMAKE_CURRENT_LIST_DIR}/nested/ScopedLinks.cmake")\n',
+            encoding="utf-8",
+        )
+        nested.write_text(mutation, encoding="utf-8")
+        (root / "core/CMakeLists.txt").write_text(
+            "include(cmake/CoreLinks.cmake)\nadd_subdirectory(portfolio)\n",
+            encoding="utf-8",
+        )
+
+        violations = boundary.find_violations(root)
+
+        assert {(item.path, item.dependency) for item in violations} == {
+            (nested, "directory-scoped-link-mutation")
+        }
+
+
+def test_root_conditionally_included_module_directory_scoped_link_mutations_are_rejected(
+    tmp_path: Path,
+) -> None:
+    mutations = (
+        "link_libraries(chronos_risk)\n",
+        "link_directories(${CMAKE_SOURCE_DIR}/risk)\n",
+        "add_link_options(-Wl,--whole-archive)\n",
+    )
+    for index, mutation in enumerate(mutations):
+        root = tmp_path / str(index)
+        write_portfolio_source(root)
+        write_portfolio_owner(root, valid_owner_cmake())
+        module = root / "cmake/RootLinks.cmake"
+        module.parent.mkdir(parents=True)
+        module.write_text(mutation, encoding="utf-8")
+        (root / "CMakeLists.txt").write_text(
+            "if(TRUE)\n  include([=[cmake/RootLinks.cmake]=])\nendif()\nadd_subdirectory(core)\n",
+            encoding="utf-8",
+        )
+
+        violations = boundary.find_violations(root)
+
+        assert {(item.path, item.dependency) for item in violations} == {
+            (module, "directory-scoped-link-mutation")
+        }
+
+
+def test_dynamic_includes_in_protected_scopes_are_rejected(tmp_path: Path) -> None:
+    scope_paths = (
+        Path("CMakeLists.txt"),
+        Path("core/CMakeLists.txt"),
+        Path("core/portfolio/CMakeLists.txt"),
+    )
+    for index, scope_path in enumerate(scope_paths):
+        root = tmp_path / str(index)
+        write_portfolio_source(root)
+        write_portfolio_owner(root, valid_owner_cmake())
+        path = root / scope_path
+        existing = path.read_text(encoding="utf-8")
+        path.write_text("include(${SCOPED_MODULE})\n" + existing, encoding="utf-8")
+
+        violations = boundary.find_violations(root)
+
+        assert {(item.path, item.dependency) for item in violations} == {
+            (path, "dynamic-include-path")
+        }
+
+
+def test_relative_include_from_module_uses_protected_directory_scope(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    entry = tmp_path / "cmake/Entry.cmake"
+    decoy = tmp_path / "cmake/ScopedLinks.cmake"
+    executed = tmp_path / "ScopedLinks.cmake"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("include(ScopedLinks.cmake)\n", encoding="utf-8")
+    decoy.write_text("message(STATUS safe)\n", encoding="utf-8")
+    executed.write_text("link_libraries(chronos_risk)\n", encoding="utf-8")
+    (tmp_path / "CMakeLists.txt").write_text(
+        "include(cmake/Entry.cmake)\nadd_subdirectory(core)\n",
+        encoding="utf-8",
+    )
+
+    violations = boundary.find_violations(tmp_path)
+
+    assert {(item.path, item.dependency) for item in violations} == {
+        (executed, "directory-scoped-link-mutation")
+    }
+
+
+def test_module_name_include_resolves_unique_repository_module(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    module = tmp_path / "modules/ScopedLinks.cmake"
+    module.parent.mkdir(parents=True)
+    module.write_text("link_libraries(chronos_risk)\n", encoding="utf-8")
+    (tmp_path / "CMakeLists.txt").write_text(
+        "list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/modules)\n"
+        "include(ScopedLinks)\n"
+        "add_subdirectory(core)\n",
+        encoding="utf-8",
+    )
+
+    violations = boundary.find_violations(tmp_path)
+
+    assert {(item.path, item.dependency) for item in violations} == {
+        (module, "directory-scoped-link-mutation")
+    }
+
+
+def test_external_cmake_module_path_cannot_select_uninspected_module(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    decoy = tmp_path / "cmake/ScopedLinks.cmake"
+    decoy.parent.mkdir(parents=True)
+    decoy.write_text("message(STATUS safe)\n", encoding="utf-8")
+    external = tmp_path.parent / f"{tmp_path.name}-external"
+    external.mkdir()
+    (external / "ScopedLinks.cmake").write_text(
+        "link_libraries(chronos_risk)\n",
+        encoding="utf-8",
+    )
+    root_cmake = tmp_path / "CMakeLists.txt"
+    root_cmake.write_text(
+        f'list(PREPEND CMAKE_MODULE_PATH "{external}" '
+        '"${CMAKE_CURRENT_SOURCE_DIR}/cmake")\nadd_subdirectory(core)\n',
+        encoding="utf-8",
+    )
+    core_cmake = tmp_path / "core/CMakeLists.txt"
+    core_cmake.write_text(
+        "include(ScopedLinks)\nadd_subdirectory(portfolio)\n",
+        encoding="utf-8",
+    )
+
+    violations = boundary.find_violations(tmp_path)
+
+    assert {(item.path, item.dependency) for item in violations} == {
+        (core_cmake, "unresolved-include-path")
+    }
+
+
+def test_cmake_language_dispatched_includes_fail_closed(tmp_path: Path) -> None:
+    dispatches = (
+        "cmake_language(CALL include cmake/ScopedLinks.cmake)\n",
+        'cmake_language(EVAL CODE "include(cmake/ScopedLinks.cmake)")\n',
+    )
+    for index, dispatch in enumerate(dispatches):
+        root = tmp_path / str(index)
+        write_portfolio_source(root)
+        write_portfolio_owner(root, valid_owner_cmake())
+        module = root / "cmake/ScopedLinks.cmake"
+        module.parent.mkdir(parents=True)
+        module.write_text("link_libraries(chronos_risk)\n", encoding="utf-8")
+        root_cmake = root / "CMakeLists.txt"
+        root_cmake.write_text(dispatch + "add_subdirectory(core)\n", encoding="utf-8")
+
+        violations = boundary.find_violations(root)
+
+        assert {(item.path, item.dependency) for item in violations} == {
+            (root_cmake, "dynamic-include-path")
+        }
+
+
+def test_invoked_callable_literal_include_inherits_protected_scope(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    module = tmp_path / "cmake/ScopedLinks.cmake"
+    module.parent.mkdir(parents=True)
+    module.write_text("link_libraries(chronos_risk)\n", encoding="utf-8")
+    (tmp_path / "CMakeLists.txt").write_text(
+        "function(load_scoped_links)\n"
+        "  include(cmake/ScopedLinks.cmake)\n"
+        "endfunction()\n"
+        "load_scoped_links()\n"
+        "add_subdirectory(core)\n",
+        encoding="utf-8",
+    )
+
+    violations = boundary.find_violations(tmp_path)
+
+    assert {(item.path, item.dependency) for item in violations} == {
+        (module, "directory-scoped-link-mutation")
+    }
+
+
+def test_invoked_callable_dynamic_include_fails_closed(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    root_cmake = tmp_path / "CMakeLists.txt"
+    root_cmake.write_text(
+        "function(load_scoped_links module)\n"
+        "  include(${module})\n"
+        "endfunction()\n"
+        "load_scoped_links(${SCOPED_MODULE})\n"
+        "add_subdirectory(core)\n",
+        encoding="utf-8",
+    )
+
+    violations = boundary.find_violations(tmp_path)
+
+    assert {(item.path, item.dependency) for item in violations} == {
+        (root_cmake, "dynamic-include-path")
+    }
+
+
+def test_included_module_cycles_and_repeated_includes_report_once(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    first = tmp_path / "cmake/First.cmake"
+    second = tmp_path / "cmake/Second.cmake"
+    first.parent.mkdir(parents=True)
+    first.write_text(
+        "include(${CMAKE_CURRENT_LIST_DIR}/Second.cmake)\n",
+        encoding="utf-8",
+    )
+    second.write_text(
+        "include(${CMAKE_CURRENT_LIST_DIR}/First.cmake)\nlink_libraries(chronos_risk)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "CMakeLists.txt").write_text(
+        "include(cmake/First.cmake)\ninclude(cmake/First.cmake)\nadd_subdirectory(core)\n",
+        encoding="utf-8",
+    )
+
+    violations = boundary.find_violations(tmp_path)
+
+    assert [(item.path, item.dependency) for item in violations] == [
+        (second, "directory-scoped-link-mutation")
+    ]
+
+
+def test_unreachable_cmake_module_does_not_inherit_protected_scope(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    module = tmp_path / "cmake/UnusedLinks.cmake"
+    module.parent.mkdir(parents=True)
+    module.write_text("link_libraries(chronos_risk)\n", encoding="utf-8")
+
+    assert boundary.find_violations(tmp_path) == []
+
+
+def test_unreachable_mutating_callable_name_does_not_taint_reachable_callable(
+    tmp_path: Path,
+) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    (tmp_path / "CMakeLists.txt").write_text(
+        "function(configure_links)\n"
+        "  message(STATUS safe)\n"
+        "endfunction()\n"
+        "configure_links()\n"
+        "add_subdirectory(core)\n",
+        encoding="utf-8",
+    )
+    unused = tmp_path / "cmake/UnusedLinks.cmake"
+    unused.parent.mkdir(parents=True)
+    unused.write_text(
+        "function(configure_links)\n  link_libraries(chronos_risk)\nendfunction()\n",
+        encoding="utf-8",
+    )
+
+    assert boundary.find_violations(tmp_path) == []
 
 
 def test_portfolio_source_outside_owner_directory_is_rejected(tmp_path: Path) -> None:

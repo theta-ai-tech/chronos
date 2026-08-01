@@ -79,6 +79,13 @@ class CallableTargetMutation:
     fixed_protected: bool = False
 
 
+@dataclass(frozen=True)
+class CMakeIncludeCall:
+    source_path: Path
+    current_list_path: Path
+    argument: str | None
+
+
 def strip_cmake_comments(text: str) -> str:
     output: list[str] = []
     index = 0
@@ -187,8 +194,8 @@ def has_local_include_traversal(dependency: str) -> bool:
     return any(component in {".", ".."} for component in dependency.split("/"))
 
 
-def cmake_commands(text: str) -> list[tuple[str, list[str]]]:
-    commands: list[tuple[str, list[str]]] = []
+def cmake_command_bodies(text: str) -> list[tuple[str, str]]:
+    commands: list[tuple[str, str]] = []
     command = re.compile(r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
     position = 0
     while match := command.search(text, position):
@@ -220,9 +227,13 @@ def cmake_commands(text: str) -> list[tuple[str, list[str]]]:
         if depth != 0:
             break
         body = text[match.end() : index - 1]
-        commands.append((match.group("name").lower(), CMAKE_TOKEN.findall(body)))
+        commands.append((match.group("name").lower(), body))
         position = index
     return commands
+
+
+def cmake_commands(text: str) -> list[tuple[str, list[str]]]:
+    return [(command, CMAKE_TOKEN.findall(body)) for command, body in cmake_command_bodies(text)]
 
 
 def top_level_cmake_commands(text: str) -> list[tuple[str, list[str]]]:
@@ -254,6 +265,69 @@ def runtime_cmake_commands(text: str) -> list[tuple[str, list[str]]]:
         if callable_depth == 0:
             commands.append((command, arguments))
     return commands
+
+
+def runtime_cmake_command_bodies(text: str) -> list[tuple[str, str]]:
+    commands: list[tuple[str, str]] = []
+    callable_depth = 0
+    for command, body in cmake_command_bodies(text):
+        if command in {"function", "macro"}:
+            callable_depth += 1
+            continue
+        if command in {"endfunction", "endmacro"}:
+            callable_depth = max(0, callable_depth - 1)
+            continue
+        if callable_depth == 0:
+            commands.append((command, body))
+    return commands
+
+
+def cmake_arguments(body: str) -> list[str]:
+    arguments: list[str] = []
+    index = 0
+    while index < len(body):
+        while index < len(body) and body[index].isspace():
+            index += 1
+        if index == len(body):
+            break
+        if body[index] == '"':
+            output: list[str] = []
+            index += 1
+            while index < len(body):
+                if body[index] == "\\" and index + 1 < len(body):
+                    output.append(body[index + 1])
+                    index += 2
+                    continue
+                if body[index] == '"':
+                    index += 1
+                    arguments.append("".join(output))
+                    break
+                output.append(body[index])
+                index += 1
+            else:
+                return arguments
+            continue
+        bracket = re.match(r"\[(=*)\[", body[index:])
+        if bracket:
+            closing = "]" + bracket.group(1) + "]"
+            start = index + len(bracket.group(0))
+            end = body.find(closing, start)
+            if end == -1:
+                return arguments
+            arguments.append(body[start:end])
+            index = end + len(closing)
+            continue
+        match = re.match(r"[^\s]+", body[index:])
+        if match is None:
+            break
+        arguments.append(match.group(0))
+        index += len(match.group(0))
+    return arguments
+
+
+def cmake_first_argument(body: str) -> str | None:
+    arguments = cmake_arguments(body)
+    return arguments[0] if arguments else None
 
 
 def cmake_call_bodies(
@@ -560,14 +634,275 @@ def directory_scoped_link_mutation(text: str, mutating_callables: set[str]) -> b
     )
 
 
+def raw_callable_definitions(
+    cmake_texts: dict[Path, str],
+) -> dict[str, list[tuple[Path, list[str], list[tuple[str, str]]]]]:
+    definitions: dict[str, list[tuple[Path, list[str], list[tuple[str, str]]]]] = {}
+    for path, text in cmake_texts.items():
+        active: list[tuple[str, list[str], list[tuple[str, str]]]] = []
+        for command, body in cmake_command_bodies(text):
+            arguments = cmake_arguments(body)
+            if command in {"function", "macro"} and arguments:
+                active.append((arguments[0].lower(), arguments[1:], []))
+                continue
+            if command in {"endfunction", "endmacro"}:
+                if active:
+                    name, parameters, commands = active.pop()
+                    definitions.setdefault(name, []).append((path, parameters, commands))
+                continue
+            if active:
+                active[-1][2].append((command, body))
+    return definitions
+
+
+def substitute_cmake_bindings(value: str, bindings: dict[str, str]) -> str:
+    for variable, replacement in bindings.items():
+        value = value.replace("${" + variable + "}", replacement)
+    return value
+
+
+def executed_cmake_includes(
+    path: Path,
+    text: str,
+    definitions: dict[str, list[tuple[Path, list[str], list[tuple[str, str]]]]],
+) -> list[CMakeIncludeCall]:
+    includes: list[CMakeIncludeCall] = []
+
+    def execute(
+        commands: list[tuple[str, str]],
+        source_path: Path,
+        current_list_path: Path,
+        bindings: dict[str, str],
+        active: frozenset[str],
+    ) -> None:
+        for command, body in commands:
+            if command == "include":
+                argument = cmake_first_argument(body)
+                includes.append(
+                    CMakeIncludeCall(
+                        source_path,
+                        current_list_path,
+                        substitute_cmake_bindings(argument, bindings)
+                        if argument is not None
+                        else None,
+                    )
+                )
+                continue
+            if command == "cmake_language":
+                arguments = cmake_arguments(body)
+                dispatched = len(arguments) > 1 and arguments[0].upper() == "CALL"
+                if arguments and (
+                    arguments[0].upper() == "EVAL"
+                    or (
+                        dispatched
+                        and arguments[1].lower() in DIRECTORY_SCOPED_LINK_COMMANDS | {"include"}
+                    )
+                ):
+                    includes.append(CMakeIncludeCall(source_path, current_list_path, None))
+                continue
+            if command not in definitions or command in active:
+                continue
+            invocation_arguments = [
+                substitute_cmake_bindings(argument, bindings) for argument in cmake_arguments(body)
+            ]
+            for definition_path, parameters, definition_body in definitions[command]:
+                callable_bindings = {
+                    parameter: invocation_arguments[index]
+                    for index, parameter in enumerate(parameters)
+                    if index < len(invocation_arguments)
+                }
+                callable_bindings.update(
+                    {
+                        f"ARGV{index}": argument
+                        for index, argument in enumerate(invocation_arguments)
+                    }
+                )
+                execute(
+                    definition_body,
+                    definition_path,
+                    current_list_path,
+                    callable_bindings,
+                    active | {command},
+                )
+
+    execute(
+        runtime_cmake_command_bodies(text),
+        path,
+        path,
+        {},
+        frozenset(),
+    )
+    return includes
+
+
+def cmake_module_directories(
+    root: Path,
+    directory_scope: Path,
+    paths: list[Path],
+    all_cmake: dict[Path, str],
+    inherited: set[Path],
+    inherited_unsafe: bool,
+) -> tuple[set[Path], bool]:
+    directories = set(inherited)
+    unsafe = inherited_unsafe
+    for path in paths:
+        text = all_cmake.get(path)
+        if text is None:
+            continue
+        for command, body in runtime_cmake_command_bodies(text):
+            arguments = cmake_arguments(body)
+            values: list[str] | None = None
+            if (
+                command == "list"
+                and len(arguments) > 2
+                and arguments[0].upper() in {"APPEND", "PREPEND"}
+                and arguments[1] == "CMAKE_MODULE_PATH"
+            ):
+                values = arguments[2:]
+            elif command == "set" and arguments and arguments[0] == "CMAKE_MODULE_PATH":
+                values = arguments[1:]
+            elif "CMAKE_MODULE_PATH" in arguments:
+                unsafe = True
+            if values is None:
+                continue
+            for value in values:
+                expanded = value
+                for variable, replacement in {
+                    "${CMAKE_CURRENT_LIST_DIR}": str(path.parent),
+                    "${CMAKE_CURRENT_SOURCE_DIR}": str(directory_scope),
+                    "${CMAKE_SOURCE_DIR}": str(root),
+                    "${PROJECT_SOURCE_DIR}": str(root),
+                }.items():
+                    expanded = expanded.replace(variable, replacement)
+                resolved = Path(expanded).resolve()
+                if "$" in expanded or not within(resolved, root):
+                    unsafe = True
+                else:
+                    directories.add(resolved)
+    return directories, unsafe
+
+
+def resolve_cmake_include(
+    root: Path,
+    current_list_path: Path,
+    directory_scope: Path,
+    argument: str,
+    all_cmake: dict[Path, str],
+    module_directories: set[Path],
+    unsafe_module_path: bool,
+) -> Path | None:
+    substitutions = {
+        "${CMAKE_CURRENT_LIST_DIR}": str(current_list_path.parent),
+        "${CMAKE_CURRENT_SOURCE_DIR}": str(directory_scope),
+        "${CMAKE_SOURCE_DIR}": str(root),
+        "${PROJECT_SOURCE_DIR}": str(root),
+    }
+    expanded = argument
+    for variable, value in substitutions.items():
+        expanded = expanded.replace(variable, value)
+    if "$" in expanded:
+        return None
+
+    include_path = Path(expanded)
+    module_form = (
+        not include_path.is_absolute()
+        and "/" not in expanded
+        and "\\" not in expanded
+        and include_path.suffix.lower() != ".cmake"
+    )
+    if module_form:
+        if unsafe_module_path:
+            return None
+        matches = [
+            (directory / (expanded + ".cmake")).resolve()
+            for directory in module_directories
+            if (directory / (expanded + ".cmake")).resolve() in all_cmake
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    if include_path.is_absolute():
+        candidate = include_path
+    else:
+        candidate = directory_scope / include_path
+    resolved = candidate.resolve()
+    return resolved if within(resolved, root) and resolved in all_cmake else None
+
+
+def protected_scope_include_graph(
+    root: Path,
+    scope_path: Path,
+    all_cmake: dict[Path, str],
+    inherited_paths: list[Path],
+    inherited_module_directories: set[Path],
+    inherited_unsafe_module_path: bool,
+) -> tuple[list[Path], list[BoundaryViolation], set[Path], bool]:
+    directory_scope = scope_path.parent
+    reachable = [scope_path]
+    visited = {scope_path}
+    violations: list[BoundaryViolation] = []
+    changed = True
+    while changed:
+        changed = False
+        available_paths = list(dict.fromkeys(inherited_paths + reachable))
+        module_directories, unsafe_module_path = cmake_module_directories(
+            root,
+            directory_scope,
+            reachable,
+            all_cmake,
+            inherited_module_directories,
+            inherited_unsafe_module_path,
+        )
+        definitions = raw_callable_definitions(
+            {path: all_cmake[path] for path in available_paths if path in all_cmake}
+        )
+        for path in list(reachable):
+            cmake = all_cmake.get(path)
+            if cmake is None:
+                continue
+            for include in executed_cmake_includes(path, cmake, definitions):
+                argument = include.argument
+                included_path = (
+                    resolve_cmake_include(
+                        root,
+                        include.current_list_path,
+                        directory_scope,
+                        argument,
+                        all_cmake,
+                        module_directories,
+                        unsafe_module_path,
+                    )
+                    if argument is not None
+                    else None
+                )
+                if included_path is None:
+                    dependency = (
+                        "dynamic-include-path"
+                        if argument is None or "$" in argument
+                        else "unresolved-include-path"
+                    )
+                    violations.append(BoundaryViolation(include.source_path, dependency))
+                    continue
+                if included_path not in visited:
+                    visited.add(included_path)
+                    reachable.append(included_path)
+                    changed = True
+    return (
+        reachable,
+        list(dict.fromkeys(violations)),
+        module_directories,
+        unsafe_module_path,
+    )
+
+
 def find_violations(root: Path) -> list[BoundaryViolation]:
+    root = root.resolve()
     violations: list[BoundaryViolation] = []
     reported_dynamic_paths: set[Path] = set()
     all_cmake = {
-        path: strip_cmake_comments(path.read_text(encoding="utf-8")) for path in cmake_files(root)
+        path.resolve(): strip_cmake_comments(path.read_text(encoding="utf-8"))
+        for path in cmake_files(root)
     }
     mutating_callables = target_mutating_callables(list(all_cmake.values()))
-    directory_link_callables = directory_scoped_link_callables(list(all_cmake.values()))
     owner_path = root / AUTHORITY_CMAKE
     core_path = root / CORE_CMAKE
     owner_cmake = all_cmake.get(owner_path)
@@ -617,13 +952,36 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     if unsupported_owner_mutation(owner_cmake):
         violations.append(BoundaryViolation(owner_path, "unsupported-owner-target-mutation"))
 
-    for scope in (root, root / "core", root / AUTHORITY_PATH):
-        scope_path = scope / "CMakeLists.txt"
-        scope_cmake = all_cmake.get(scope_path)
-        if scope_cmake is not None and directory_scoped_link_mutation(
-            scope_cmake, directory_link_callables
-        ):
-            violations.append(BoundaryViolation(scope_path, "directory-scoped-link-mutation"))
+    inherited_paths: list[Path] = []
+    inherited_module_directories: set[Path] = set()
+    inherited_unsafe_module_path = False
+    for scope_path in (root / "CMakeLists.txt", core_path, owner_path):
+        (
+            reachable,
+            include_violations,
+            module_directories,
+            unsafe_module_path,
+        ) = protected_scope_include_graph(
+            root,
+            scope_path,
+            all_cmake,
+            inherited_paths,
+            inherited_module_directories,
+            inherited_unsafe_module_path,
+        )
+        violations.extend(include_violations)
+        available_paths = list(dict.fromkeys(inherited_paths + reachable))
+        directory_link_callables = directory_scoped_link_callables(
+            [all_cmake[path] for path in available_paths if path in all_cmake]
+        )
+        for path in reachable:
+            if path in all_cmake and directory_scoped_link_mutation(
+                all_cmake[path], directory_link_callables
+            ):
+                violations.append(BoundaryViolation(path, "directory-scoped-link-mutation"))
+        inherited_paths = available_paths
+        inherited_module_directories = module_directories
+        inherited_unsafe_module_path = unsafe_module_path
 
     dependencies = cmake_tokens(
         cmake_call_bodies(owner_cmake, "target_link_libraries", TARGET, top_level=True)
@@ -678,7 +1036,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     }
     if not actual_sources.issubset(declared_sources):
         violations.append(BoundaryViolation(owner_path, "authority-source-not-declared"))
-    return violations
+    return list(dict.fromkeys(violations))
 
 
 def main() -> int:
