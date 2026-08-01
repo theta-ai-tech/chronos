@@ -1064,6 +1064,9 @@ public:
   run_manifest_integrity_id() const noexcept {
     return run_manifest_integrity_id_;
   }
+  [[nodiscard]] contracts::IntegrityId replay_evidence_id() const noexcept {
+    return replay_evidence_id_;
+  }
   [[nodiscard]] contracts::EventId policy_activation_event_id() const noexcept {
     return policy_activation_event_id_;
   }
@@ -1130,6 +1133,7 @@ private:
       std::optional<contracts::AmountUnits> authorized_projected_exposure_units,
       const MinimalRiskPolicy &policy,
       contracts::IntegrityId run_manifest_integrity_id,
+      contracts::IntegrityId replay_evidence_id,
       contracts::EventId policy_activation_event_id,
       contracts::StateViewId account_state_view_id,
       contracts::StateViewId market_state_view_id,
@@ -1162,6 +1166,7 @@ private:
         authority_version_(policy.authority_version()),
         target_schema_version_(policy.target_schema_version()),
         run_manifest_integrity_id_(run_manifest_integrity_id),
+        replay_evidence_id_(replay_evidence_id),
         policy_activation_event_id_(policy_activation_event_id),
         account_state_view_id_(account_state_view_id),
         market_state_view_id_(market_state_view_id),
@@ -1195,6 +1200,7 @@ private:
   contracts::VersionRef authority_version_;
   contracts::VersionRef target_schema_version_;
   contracts::IntegrityId run_manifest_integrity_id_;
+  contracts::IntegrityId replay_evidence_id_;
   contracts::EventId policy_activation_event_id_;
   contracts::StateViewId account_state_view_id_;
   contracts::StateViewId market_state_view_id_;

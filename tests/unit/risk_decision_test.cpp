@@ -34,6 +34,11 @@ concept RetainsTargetSchemaVersion = requires(const Value &value) {
 };
 
 template <typename Value>
+concept CompletedDecisionRetainsReplayEvidence = requires(const Value &value) {
+  { value.replay_evidence_id() } -> std::same_as<contracts::IntegrityId>;
+};
+
+template <typename Value>
 concept NonExecutableTerminal = requires(const Value &value) {
   { value.executable() } -> std::same_as<bool>;
 };
@@ -59,6 +64,7 @@ static_assert(HasObligationId<risk::RiskObligationUnavailable>);
 static_assert(!HasObligationId<risk::RiskAdmissionRejected>);
 static_assert(RetainsTargetSchemaVersion<risk::RiskDecision>);
 static_assert(RetainsTargetSchemaVersion<risk::RiskObligationUnavailable>);
+static_assert(CompletedDecisionRetainsReplayEvidence<risk::RiskDecision>);
 static_assert(NonExecutableTerminal<risk::RiskDecision>);
 static_assert(NonExecutableTerminal<risk::RiskObligationUnavailable>);
 static_assert(NonExecutableTerminal<risk::RiskAdmissionRejected>);
