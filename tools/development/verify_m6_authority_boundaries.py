@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import tempfile
@@ -15,7 +16,9 @@ CMAKE_TOKEN = re.compile(r"[A-Za-z0-9_./:+$<>{}-]+")
 AUTHORITY_PATH = Path("core/portfolio")
 AUTHORITY_SOURCE_ROOT = Path("core/portfolio/src")
 AUTHORITY_CMAKE = Path("core/portfolio/CMakeLists.txt")
+AUTHORITY_GUARD_CMAKE = Path("core/portfolio/AssertTargetBoundary.cmake")
 CORE_CMAKE = Path("core/CMakeLists.txt")
+ROOT_CMAKE = Path("CMakeLists.txt")
 TARGET = "chronos_portfolio"
 ALLOWED_INCLUDES = (
     "chronos/core/portfolio/",
@@ -67,6 +70,8 @@ DIRECTORY_SCOPED_LINK_COMMANDS = {
     "link_libraries",
 }
 NATIVE_GUARD_SENTINEL = "CHRONOS_M6_BOUNDARY_VIOLATION:"
+NATIVE_GUARD_INCLUDE = "core/portfolio/AssertTargetBoundary.cmake"
+NATIVE_GUARD_SYNTHETIC_FUNCTION = "_chronos_assert_portfolio_boundary"
 NATIVE_GUARD_EXACT_CHECKS = (
     (
         "LINK_LIBRARIES",
@@ -95,7 +100,7 @@ NATIVE_GUARD_EXACT_CHECKS = (
         "INCLUDE_DIRECTORIES",
         "_chronos_portfolio_include_directories",
         "_chronos_portfolio_expected_include_directories",
-        ("${CMAKE_CURRENT_SOURCE_DIR}/include",),
+        ("${CMAKE_CURRENT_LIST_DIR}/include",),
     ),
     (
         "INTERFACE_INCLUDE_DIRECTORIES",
@@ -125,6 +130,59 @@ NATIVE_GUARD_EMPTY_PROPERTIES = (
 )
 NATIVE_GUARD_PROPERTY_VARIABLE = "_chronos_portfolio_property"
 NATIVE_GUARD_PROPERTY_LIST = "_chronos_portfolio_empty_properties"
+NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE = "_chronos_portfolio_source_property"
+NATIVE_GUARD_SOURCE_PROPERTY_LIST = "_chronos_portfolio_empty_source_properties"
+NATIVE_GUARD_EMPTY_SOURCE_PROPERTIES = (
+    "COMPILE_DEFINITIONS",
+    "COMPILE_FLAGS",
+    "COMPILE_OPTIONS",
+    "INCLUDE_DIRECTORIES",
+    "HEADER_FILE_ONLY",
+    "EXTERNAL_OBJECT",
+    "KEEP_EXTENSION",
+    "MACOSX_PACKAGE_LOCATION",
+    "OBJECT_DEPENDS",
+    "OBJECT_OUTPUTS",
+    "SKIP_AUTOGEN",
+    "SKIP_AUTOMOC",
+    "SKIP_AUTORCC",
+    "SKIP_AUTOUIC",
+    "SKIP_LINTING",
+    "SKIP_PRECOMPILE_HEADERS",
+    "SKIP_UNITY_BUILD_INCLUSION",
+    "SYMBOLIC",
+    "UNITY_GROUP",
+    "VS_COPY_TO_OUT_DIR",
+    "VS_DEPLOYMENT_CONTENT",
+    "VS_DEPLOYMENT_LOCATION",
+    "VS_SETTINGS",
+    "VS_SOURCE_SETTINGS_CXX",
+    "VS_TOOL_OVERRIDE",
+    "XCODE_EXPLICIT_FILE_TYPE",
+    "XCODE_FILE_ATTRIBUTES",
+    "XCODE_LAST_KNOWN_FILE_TYPE",
+    "CXX_SCAN_FOR_MODULES",
+)
+NATIVE_GUARD_CONFIGURATIONS = (
+    "Debug",
+    "Release",
+    "Benchmark",
+    "RelWithDebInfo",
+    "MinSizeRel",
+    "${CMAKE_BUILD_TYPE}",
+    "${CMAKE_CONFIGURATION_TYPES}",
+)
+GUARD_CRITICAL_COMMANDS = {
+    "include",
+    "message",
+    "set",
+    "set_property",
+    "get_property",
+    "get_target_property",
+    "get_source_file_property",
+    "list",
+    "string",
+}
 
 
 @dataclass(frozen=True)
@@ -402,8 +460,21 @@ def target_declarations(text: str, *, top_level: bool = False) -> list[list[str]
     ]
 
 
-def has_callable_definition(text: str) -> bool:
-    return any(command in {"function", "macro"} for command, _ in cmake_commands(text))
+def has_callable_definition(text: str, allowed: set[str] | None = None) -> bool:
+    allowed = {name.lower() for name in (allowed or set())}
+    return any(
+        command in {"function", "macro"} and arguments and arguments[0].lower() not in allowed
+        for command, arguments in cmake_commands(text)
+    )
+
+
+def intercepts_guard_command(text: str) -> bool:
+    return any(
+        command in {"function", "macro"}
+        and arguments
+        and arguments[0].lower().lstrip("_") in GUARD_CRITICAL_COMMANDS
+        for command, arguments in cmake_commands(text)
+    )
 
 
 def callable_definitions(
@@ -592,8 +663,24 @@ def is_owner_registered(core_cmake: str) -> bool:
     )
 
 
-def has_native_target_guard(owner_cmake: str) -> bool:
-    commands = cmake_commands(owner_cmake)
+def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str | None) -> bool:
+    if guard_cmake is None:
+        return False
+    stripped_root = strip_cmake_comments(root_cmake)
+    tail = re.search(
+        rf"(?is)include\s*\(\s*{re.escape(NATIVE_GUARD_INCLUDE)}\s*\)\s*\Z",
+        stripped_root,
+    )
+    if tail is None or not re.search(
+        r"(?im)^\s*add_subdirectory\s*\(\s*core\s*\)", stripped_root[: tail.start()]
+    ):
+        return False
+    if has_callable_definition(guard_cmake):
+        return False
+
+    commands = cmake_commands(
+        f"function(_chronos_assert_portfolio_boundary)\n{guard_cmake}\nendfunction()"
+    )
     block_starts = {"function", "macro", "if", "foreach", "while", "block"}
     block_ends = {"endfunction", "endmacro", "endif", "endforeach", "endwhile", "endblock"}
     entries: list[tuple[str, list[str], int]] = []
@@ -609,21 +696,49 @@ def has_native_target_guard(owner_cmake: str) -> bool:
         return index < len(entries) and entries[index] == (command, arguments, depth)
 
     for start in range(len(entries)):
-        index = start
-        valid = True
+        if entries[start] != ("function", [NATIVE_GUARD_SYNTHETIC_FUNCTION], 0):
+            continue
+        index = start + 1
+        valid = matches(index, "if", ["COMMAND", "_message"], 1)
+        index += 1
+        valid = valid and index < len(entries)
+        if valid:
+            command, arguments, message_depth = entries[index]
+            valid = (
+                command == "message"
+                and message_depth == 2
+                and arguments[:2] == ["FATAL_ERROR", f"{NATIVE_GUARD_SENTINEL}COMMAND_OVERRIDE:"]
+            )
+        index += 1
+        valid = valid and matches(
+            index,
+            "set_property",
+            [
+                "TARGET",
+                "__chronos_m6_command_override_is_forbidden",
+                "PROPERTY",
+                "TYPE",
+                "STATIC_LIBRARY",
+            ],
+            2,
+        )
+        index += 1
+        valid = valid and matches(index, "endif", [], 1)
+        index += 1
+
         for property_name, actual, expected, expected_values in NATIVE_GUARD_EXACT_CHECKS:
             if expected_values is not None:
-                valid = valid and matches(index, "set", [expected, *expected_values], 0)
+                valid = valid and matches(index, "set", [expected, *expected_values], 1)
                 index += 1
             valid = valid and matches(
-                index, "get_target_property", [actual, TARGET, property_name], 0
+                index, "get_target_property", [actual, TARGET, property_name], 1
             )
             index += 1
             valid = valid and matches(
                 index,
                 "if",
                 ["NOT", "${" + actual + "}", "STREQUAL", "${" + expected + "}"],
-                0,
+                1,
             )
             index += 1
             valid = valid and index < len(entries)
@@ -631,11 +746,11 @@ def has_native_target_guard(owner_cmake: str) -> bool:
                 command, arguments, message_depth = entries[index]
                 valid = (
                     command == "message"
-                    and message_depth == 1
+                    and message_depth == 2
                     and arguments[:2] == ["FATAL_ERROR", f"{NATIVE_GUARD_SENTINEL}{property_name}:"]
                 )
             index += 1
-            valid = valid and matches(index, "endif", [], 0)
+            valid = valid and matches(index, "endif", [], 1)
             index += 1
             if not valid:
                 break
@@ -643,11 +758,11 @@ def has_native_target_guard(owner_cmake: str) -> bool:
             continue
 
         empty_sequence = (
-            ("set", [NATIVE_GUARD_PROPERTY_LIST, *NATIVE_GUARD_EMPTY_PROPERTIES], 0),
+            ("set", [NATIVE_GUARD_PROPERTY_LIST, *NATIVE_GUARD_EMPTY_PROPERTIES], 1),
             (
                 "foreach",
                 [NATIVE_GUARD_PROPERTY_VARIABLE, "IN", "LISTS", NATIVE_GUARD_PROPERTY_LIST],
-                0,
+                1,
             ),
             (
                 "get_property",
@@ -659,9 +774,9 @@ def has_native_target_guard(owner_cmake: str) -> bool:
                     "${" + NATIVE_GUARD_PROPERTY_VARIABLE + "}",
                     "SET",
                 ],
-                1,
+                2,
             ),
-            ("if", ["_chronos_portfolio_property_is_set"], 1),
+            ("if", ["_chronos_portfolio_property_is_set"], 2),
             (
                 "get_target_property",
                 [
@@ -669,11 +784,182 @@ def has_native_target_guard(owner_cmake: str) -> bool:
                     TARGET,
                     "${" + NATIVE_GUARD_PROPERTY_VARIABLE + "}",
                 ],
-                2,
+                3,
             ),
-            ("if", ["NOT", "${_chronos_portfolio_property_value}", "STREQUAL"], 2),
+            ("if", ["NOT", "${_chronos_portfolio_property_value}", "STREQUAL"], 3),
         )
         for command, arguments, expected_depth in empty_sequence:
+            valid = valid and matches(index, command, arguments, expected_depth)
+            index += 1
+        if not valid or index >= len(entries):
+            continue
+        command, arguments, message_depth = entries[index]
+        valid = (
+            command == "message"
+            and message_depth == 4
+            and arguments[:2]
+            == [
+                "FATAL_ERROR",
+                f"{NATIVE_GUARD_SENTINEL}${{{NATIVE_GUARD_PROPERTY_VARIABLE}}}:",
+            ]
+        )
+        index += 1
+        for command, expected_depth in (("endif", 3), ("endif", 2), ("endforeach", 1)):
+            valid = valid and matches(index, command, [], expected_depth)
+            index += 1
+        if not valid:
+            continue
+
+        source_sequence = (
+            (
+                "set",
+                [
+                    "_chronos_portfolio_source",
+                    "${CMAKE_CURRENT_LIST_DIR}/src/portfolio_construction.cpp",
+                ],
+                1,
+            ),
+            (
+                "get_source_file_property",
+                [
+                    "_chronos_portfolio_source_language",
+                    "${_chronos_portfolio_source}",
+                    "TARGET_DIRECTORY",
+                    TARGET,
+                    "LANGUAGE",
+                ],
+                1,
+            ),
+            (
+                "if",
+                ["NOT", "${_chronos_portfolio_source_language}", "STREQUAL", "CXX"],
+                1,
+            ),
+            (
+                "message",
+                [
+                    "FATAL_ERROR",
+                    f"{NATIVE_GUARD_SENTINEL}SOURCE_LANGUAGE:",
+                    "expected",
+                    "CXX",
+                    "got",
+                    "${_chronos_portfolio_source_language}",
+                ],
+                2,
+            ),
+            ("endif", [], 1),
+            (
+                "get_source_file_property",
+                [
+                    "_chronos_portfolio_source_generated",
+                    "${_chronos_portfolio_source}",
+                    "TARGET_DIRECTORY",
+                    TARGET,
+                    "GENERATED",
+                ],
+                1,
+            ),
+            (
+                "if",
+                ["NOT", "${_chronos_portfolio_source_generated}", "STREQUAL", "0"],
+                1,
+            ),
+            (
+                "message",
+                [
+                    "FATAL_ERROR",
+                    f"{NATIVE_GUARD_SENTINEL}SOURCE_GENERATED:",
+                    "expected",
+                    "0",
+                    "got",
+                    "${_chronos_portfolio_source_generated}",
+                ],
+                2,
+            ),
+            ("endif", [], 1),
+            (
+                "set",
+                [NATIVE_GUARD_SOURCE_PROPERTY_LIST, *NATIVE_GUARD_EMPTY_SOURCE_PROPERTIES],
+                1,
+            ),
+            (
+                "set",
+                ["_chronos_portfolio_configurations", *NATIVE_GUARD_CONFIGURATIONS],
+                1,
+            ),
+            (
+                "list",
+                ["REMOVE_DUPLICATES", "_chronos_portfolio_configurations"],
+                1,
+            ),
+            (
+                "foreach",
+                [
+                    "_chronos_portfolio_configuration",
+                    "IN",
+                    "LISTS",
+                    "_chronos_portfolio_configurations",
+                ],
+                1,
+            ),
+            (
+                "if",
+                ["NOT", "${_chronos_portfolio_configuration}", "STREQUAL"],
+                2,
+            ),
+            (
+                "string",
+                [
+                    "TOUPPER",
+                    "${_chronos_portfolio_configuration}",
+                    "_chronos_portfolio_configuration",
+                ],
+                3,
+            ),
+            (
+                "list",
+                [
+                    "APPEND",
+                    NATIVE_GUARD_SOURCE_PROPERTY_LIST,
+                    "COMPILE_DEFINITIONS_${_chronos_portfolio_configuration}",
+                ],
+                3,
+            ),
+            ("endif", [], 2),
+            ("endforeach", [], 1),
+            (
+                "foreach",
+                [
+                    NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE,
+                    "IN",
+                    "LISTS",
+                    NATIVE_GUARD_SOURCE_PROPERTY_LIST,
+                ],
+                1,
+            ),
+            (
+                "get_source_file_property",
+                [
+                    "_chronos_portfolio_source_property_value",
+                    "${_chronos_portfolio_source}",
+                    "TARGET_DIRECTORY",
+                    TARGET,
+                    "${" + NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE + "}",
+                ],
+                2,
+            ),
+            (
+                "if",
+                [
+                    "NOT",
+                    "${_chronos_portfolio_source_property_value}",
+                    "STREQUAL",
+                    "NOTFOUND",
+                ],
+                2,
+            ),
+        )
+        for command, arguments, expected_depth in source_sequence:
             valid = valid and matches(index, command, arguments, expected_depth)
             index += 1
         if not valid or index >= len(entries):
@@ -685,27 +971,23 @@ def has_native_target_guard(owner_cmake: str) -> bool:
             and arguments[:2]
             == [
                 "FATAL_ERROR",
-                f"{NATIVE_GUARD_SENTINEL}${{{NATIVE_GUARD_PROPERTY_VARIABLE}}}:",
+                f"{NATIVE_GUARD_SENTINEL}SOURCE_${{{NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE}}}:",
             ]
         )
         index += 1
-        for command, expected_depth in (("endif", 2), ("endif", 1), ("endforeach", 0)):
+        for command, expected_depth in (("endif", 2), ("endforeach", 1), ("endfunction", 0)):
             valid = valid and matches(index, command, [], expected_depth)
             index += 1
         if not valid:
             continue
 
-        target_configuration_index = max(
-            (
-                command_index
-                for command_index, (command, arguments, _) in enumerate(entries[:start])
-                if arguments
-                and arguments[0] == TARGET
-                and command in OWNER_ALLOWED_TARGET_COMMANDS | {"add_library"}
-            ),
-            default=-1,
+        owner_commands = cmake_commands(owner_cmake)
+        return index == len(entries) and any(
+            command in OWNER_ALLOWED_TARGET_COMMANDS | {"add_library"}
+            and arguments
+            and arguments[0] == TARGET
+            for command, arguments in owner_commands
         )
-        return target_configuration_index >= 0 and start > target_configuration_index
     return False
 
 
@@ -726,6 +1008,8 @@ def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
             result = subprocess.run(
                 [
                     "cmake",
+                    "--trace-expand",
+                    "--trace-format=json-v1",
                     "-S",
                     str(root),
                     "-B",
@@ -740,6 +1024,23 @@ def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
             )
     except (OSError, subprocess.TimeoutExpired) as error:
         return [BoundaryViolation(owner_path, "cmake-configure-unavailable", str(error))]
+
+    for line in result.stdout.splitlines():
+        try:
+            trace = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if trace.get("cmd") not in {"function", "macro"}:
+            continue
+        arguments = trace.get("args", [])
+        if arguments and str(arguments[0]).lower().lstrip("_") in GUARD_CRITICAL_COMMANDS:
+            return [
+                BoundaryViolation(
+                    Path(str(trace.get("file", owner_path))),
+                    "configured-target-property:COMMAND_OVERRIDE",
+                    result.stdout.strip(),
+                )
+            ]
 
     if result.returncode == 0:
         return []
@@ -809,9 +1110,13 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     mutating_callables = target_mutating_callables(list(all_cmake.values()))
     directory_link_callables = directory_scoped_link_callables(list(all_cmake.values()))
     owner_path = root / AUTHORITY_CMAKE
+    guard_path = root / AUTHORITY_GUARD_CMAKE
     core_path = root / CORE_CMAKE
+    root_path = root / ROOT_CMAKE
     owner_cmake = all_cmake.get(owner_path)
+    guard_cmake = all_cmake.get(guard_path)
     core_cmake = all_cmake.get(core_path)
+    root_cmake = all_cmake.get(root_path)
     if owner_cmake is None:
         return [BoundaryViolation(owner_path, "authority-owner-not-registered")]
     if core_cmake is None or not is_owner_registered(core_cmake):
@@ -824,12 +1129,15 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
         or owner_declarations[0][1].upper() != "STATIC"
     ):
         violations.append(BoundaryViolation(owner_path, "invalid-owner-target-declaration"))
-    if not has_native_target_guard(owner_cmake):
+    if root_cmake is None or not has_native_target_guard(owner_cmake, root_cmake, guard_cmake):
         violations.append(BoundaryViolation(owner_path, "missing-native-boundary-guard"))
     if has_callable_definition(owner_cmake):
         violations.append(BoundaryViolation(owner_path, "opaque-owner-target-mutation"))
     if any(command in mutating_callables for command, _ in runtime_cmake_commands(owner_cmake)):
         violations.append(BoundaryViolation(owner_path, "opaque-owner-target-mutation"))
+    for candidate, candidate_cmake in all_cmake.items():
+        if intercepts_guard_command(candidate_cmake):
+            violations.append(BoundaryViolation(candidate, "fatal-command-interception"))
 
     authority_path = root / AUTHORITY_PATH
     for path in sorted(authority_path.rglob("*")):
@@ -875,7 +1183,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
             violations.append(BoundaryViolation(owner_path, dependency))
 
     for candidate, candidate_cmake in all_cmake.items():
-        if candidate == owner_path:
+        if candidate in {owner_path, guard_path}:
             continue
         if target_declarations(candidate_cmake):
             violations.append(BoundaryViolation(candidate, "target-created-outside-owner"))
@@ -921,7 +1229,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     if not actual_sources.issubset(declared_sources):
         violations.append(BoundaryViolation(owner_path, "authority-source-not-declared"))
     violations = list(dict.fromkeys(violations))
-    if not violations and is_configurable_cmake_project(all_cmake.get(root / "CMakeLists.txt")):
+    if not violations and is_configurable_cmake_project(root_cmake):
         violations.extend(configured_graph_violations(root))
     return violations
 

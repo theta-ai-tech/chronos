@@ -19,7 +19,8 @@ def load_tool():
 boundary = load_tool()
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-NATIVE_GUARD_MARKER = "# --- M6 portfolio target boundary"
+NATIVE_GUARD_PATH = Path("core/portfolio/AssertTargetBoundary.cmake")
+NATIVE_GUARD_TAIL = "include(core/portfolio/AssertTargetBoundary.cmake)\n"
 
 
 def write_portfolio_owner(root: Path, cmake: str) -> None:
@@ -28,17 +29,16 @@ def write_portfolio_owner(root: Path, cmake: str) -> None:
     header.write_text("#pragma once\n", encoding="utf-8")
     owner = root / "core/portfolio/CMakeLists.txt"
     owner.parent.mkdir(parents=True, exist_ok=True)
-    if NATIVE_GUARD_MARKER not in cmake:
-        repository_owner = (REPOSITORY_ROOT / "core/portfolio/CMakeLists.txt").read_text(
-            encoding="utf-8"
-        )
-        marker, separator, guard = repository_owner.partition(NATIVE_GUARD_MARKER)
-        assert separator, "the repository owner must define the native M6 guard"
-        del marker
-        cmake += separator + guard
     owner.write_text(cmake, encoding="utf-8")
+    guard = root / NATIVE_GUARD_PATH
+    guard.write_text(
+        (REPOSITORY_ROOT / NATIVE_GUARD_PATH).read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     (root / "core/CMakeLists.txt").write_text("add_subdirectory(portfolio)\n", encoding="utf-8")
-    (root / "CMakeLists.txt").write_text("add_subdirectory(core)\n", encoding="utf-8")
+    (root / "CMakeLists.txt").write_text(
+        "add_subdirectory(core)\n" + NATIVE_GUARD_TAIL, encoding="utf-8"
+    )
 
 
 def write_portfolio_source(root: Path, contents: str = "") -> None:
@@ -70,16 +70,7 @@ def write_native_cmake_project(
 ) -> None:
     write_portfolio_source(root)
     owner_cmake = (REPOSITORY_ROOT / "core/portfolio/CMakeLists.txt").read_text(encoding="utf-8")
-    if owner_before_guard:
-        if NATIVE_GUARD_MARKER in owner_cmake:
-            owner_cmake = owner_cmake.replace(
-                NATIVE_GUARD_MARKER,
-                owner_before_guard + NATIVE_GUARD_MARKER,
-                1,
-            )
-        else:
-            owner_cmake += owner_before_guard
-    write_portfolio_owner(root, owner_before_target + owner_cmake)
+    write_portfolio_owner(root, owner_before_target + owner_cmake + owner_before_guard)
     (root / "core/CMakeLists.txt").write_text(
         core_before_owner + "add_subdirectory(portfolio)\n",
         encoding="utf-8",
@@ -93,7 +84,8 @@ def write_native_cmake_project(
         "add_library(chronos_warnings INTERFACE)\n"
         + root_before_core
         + "add_subdirectory(core)\n"
-        + root_after_core,
+        + root_after_core
+        + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -266,13 +258,198 @@ def test_external_module_cannot_inject_sources_or_consumer_direct_links(
         assert configured_properties(root, configure_directly=True) == {expected_property}
 
 
-def test_deleting_native_guard_is_a_structural_violation(tmp_path: Path) -> None:
-    write_native_cmake_project(tmp_path)
-    owner = tmp_path / "core/portfolio/CMakeLists.txt"
-    owner.write_text(
-        owner.read_text(encoding="utf-8").partition(NATIVE_GUARD_MARKER)[0],
+def test_after_core_dynamic_target_link_mutation_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    late_subdirectory = root / "late"
+    late_subdirectory.mkdir(parents=True)
+    (late_subdirectory / "CMakeLists.txt").write_text(
+        "function(attach_dependency target dependency)\n"
+        "  target_link_libraries(${target} PRIVATE ${dependency})\n"
+        "endfunction()\n"
+        "set(portfolio_target chronos_portfolio)\n"
+        "attach_dependency(${portfolio_target} chronos_risk)\n",
         encoding="utf-8",
     )
+    write_native_cmake_project(
+        root,
+        root_before_core="add_library(chronos_risk INTERFACE)\n",
+        root_after_core="add_subdirectory(late)\n",
+    )
+
+    assert configured_properties(root, configure_directly=True) == {"LINK_LIBRARIES"}
+
+
+def test_source_file_compile_definition_mutation_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    source = root / "core/portfolio/src/portfolio_construction.cpp"
+    write_native_cmake_project(
+        root,
+        root_after_core=(
+            f'set_source_files_properties("{source}"\n'
+            "  TARGET_DIRECTORY chronos_portfolio\n"
+            "  PROPERTIES COMPILE_DEFINITIONS REVIEWER_BYPASS)\n"
+        ),
+    )
+
+    assert configured_properties(root, configure_directly=True) == {"SOURCE_COMPILE_DEFINITIONS"}
+
+
+def test_message_override_cannot_swallow_boundary_failure(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    external = tmp_path / "external"
+    external.mkdir()
+    module = external / "MessageOverride.cmake"
+    module.write_text(
+        "function(message)\nendfunction()\nlink_libraries(chronos_risk)\n",
+        encoding="utf-8",
+    )
+    write_native_cmake_project(
+        root,
+        root_before_core=(f'add_library(chronos_risk INTERFACE)\ninclude("{module}")\n'),
+    )
+
+    assert configured_properties(root, configure_directly=True) == {"COMMAND_OVERRIDE"}
+
+
+def test_double_message_override_cannot_swallow_boundary_failure(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    external = tmp_path / "external"
+    external.mkdir()
+    module = external / "MessageOverride.cmake"
+    module.write_text(
+        "function(message)\nendfunction()\n"
+        "function(_message)\nendfunction()\n"
+        "link_libraries(chronos_risk)\n",
+        encoding="utf-8",
+    )
+    write_native_cmake_project(
+        root,
+        root_before_core=(f'add_library(chronos_risk INTERFACE)\ninclude("{module}")\n'),
+    )
+
+    assert configured_properties(root, configure_directly=True) == {"COMMAND_OVERRIDE"}
+
+
+def test_deferred_guard_redefinition_cannot_disable_assertion(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        root_before_core="add_library(chronos_risk INTERFACE)\n",
+        root_after_core=(
+            "target_link_libraries(chronos_portfolio PRIVATE chronos_risk)\n"
+            "function(_chronos_assert_portfolio_boundary)\nendfunction()\n"
+        ),
+    )
+
+    assert configured_properties(tmp_path, configure_directly=True) == {"LINK_LIBRARIES"}
+
+
+def test_deferred_guard_cancellation_cannot_disable_assertion(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        root_before_core="add_library(chronos_risk INTERFACE)\n",
+        root_after_core=(
+            "target_link_libraries(chronos_portfolio PRIVATE chronos_risk)\n"
+            "function(cancel_portfolio_guard)\n"
+            "  cmake_language(DEFER CANCEL_CALL chronos_m6_portfolio_boundary)\n"
+            "endfunction()\n"
+            "cmake_language(DEFER CALL cancel_portfolio_guard)\n"
+        ),
+    )
+
+    assert configured_properties(tmp_path, configure_directly=True) == {"LINK_LIBRARIES"}
+
+
+def test_generator_specific_source_mutations_are_rejected(tmp_path: Path) -> None:
+    mutations = (
+        ("VS_SETTINGS", "ExcludedFromBuild=true"),
+        ("XCODE_EXPLICIT_FILE_TYPE", "sourcecode.c.c"),
+    )
+    for index, (property_name, value) in enumerate(mutations):
+        root = tmp_path / str(index)
+        source = root / "core/portfolio/src/portfolio_construction.cpp"
+        write_native_cmake_project(
+            root,
+            root_after_core=(
+                f'set_source_files_properties("{source}"\n'
+                "  TARGET_DIRECTORY chronos_portfolio\n"
+                f"  PROPERTIES {property_name} {value})\n"
+            ),
+        )
+
+        assert configured_properties(root, configure_directly=True) == {f"SOURCE_{property_name}"}
+
+
+def test_custom_configuration_source_definition_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    source = root / "core/portfolio/src/portfolio_construction.cpp"
+    write_native_cmake_project(
+        root,
+        root_before_core='set(CMAKE_BUILD_TYPE Reviewer CACHE STRING "" FORCE)\n',
+        root_after_core=(
+            f'set_source_files_properties("{source}"\n'
+            "  TARGET_DIRECTORY chronos_portfolio\n"
+            "  PROPERTIES COMPILE_DEFINITIONS_REVIEWER REVIEWER_BYPASS)\n"
+        ),
+    )
+
+    assert configured_properties(root, configure_directly=True) == {
+        "SOURCE_COMPILE_DEFINITIONS_REVIEWER"
+    }
+
+
+def test_configure_tail_registration_rejects_deletion_inert_and_reorder(
+    tmp_path: Path,
+) -> None:
+    valid = tmp_path / "valid"
+    write_native_cmake_project(valid)
+    owner_cmake = (valid / "core/portfolio/CMakeLists.txt").read_text(encoding="utf-8")
+    root_cmake = (valid / "CMakeLists.txt").read_text(encoding="utf-8")
+    guard_cmake = (valid / NATIVE_GUARD_PATH).read_text(encoding="utf-8")
+
+    assert boundary.has_native_target_guard(owner_cmake, root_cmake, guard_cmake)
+
+    invalid_roots = (
+        root_cmake.replace(NATIVE_GUARD_TAIL, "", 1),
+        root_cmake.replace(
+            NATIVE_GUARD_TAIL,
+            "if(FALSE)\n" + NATIVE_GUARD_TAIL + "endif()\n",
+            1,
+        ),
+        root_cmake.replace(NATIVE_GUARD_TAIL, "", 1).replace(
+            "add_subdirectory(core)\n",
+            NATIVE_GUARD_TAIL + "add_subdirectory(core)\n",
+            1,
+        ),
+    )
+    for invalid_root_cmake in invalid_roots:
+        assert not boundary.has_native_target_guard(owner_cmake, invalid_root_cmake, guard_cmake)
+
+
+def test_configure_tail_is_required_even_without_project_command(tmp_path: Path) -> None:
+    write_native_cmake_project(tmp_path)
+    owner_cmake = (tmp_path / "core/portfolio/CMakeLists.txt").read_text(encoding="utf-8")
+    root_cmake = (tmp_path / "CMakeLists.txt").read_text(encoding="utf-8")
+    guard_cmake = (tmp_path / NATIVE_GUARD_PATH).read_text(encoding="utf-8")
+    root_cmake = root_cmake.replace("project(M6BoundaryFixture LANGUAGES CXX)\n", "", 1)
+    root_cmake = root_cmake.replace(NATIVE_GUARD_TAIL, "", 1)
+
+    assert not boundary.has_native_target_guard(owner_cmake, root_cmake, guard_cmake)
+
+
+def test_repository_message_override_is_a_static_violation(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        root_before_core="function(message)\nendfunction()\n",
+    )
+
+    assert "fatal-command-interception" in {
+        item.dependency for item in boundary.find_violations(tmp_path)
+    }
+
+
+def test_deleting_native_guard_is_a_structural_violation(tmp_path: Path) -> None:
+    write_native_cmake_project(tmp_path)
+    (tmp_path / NATIVE_GUARD_PATH).unlink()
 
     assert {item.dependency for item in boundary.find_violations(tmp_path)} == {
         "missing-native-boundary-guard"
@@ -307,7 +484,7 @@ def test_partial_or_inert_native_guard_is_a_structural_violation(tmp_path: Path)
     for index, (original, replacement) in enumerate(transformations):
         root = tmp_path / str(index)
         write_native_cmake_project(root)
-        owner = root / "core/portfolio/CMakeLists.txt"
+        owner = root / NATIVE_GUARD_PATH
         contents = owner.read_text(encoding="utf-8")
         assert original in contents
         owner.write_text(contents.replace(original, replacement, 1), encoding="utf-8")
@@ -423,7 +600,8 @@ def test_root_ancestor_directory_scoped_link_mutations_are_rejected(
         write_portfolio_source(root)
         write_portfolio_owner(root, valid_owner_cmake())
         (root / "CMakeLists.txt").write_text(
-            mutation + "add_subdirectory(core)\n", encoding="utf-8"
+            mutation + "add_subdirectory(core)\n" + NATIVE_GUARD_TAIL,
+            encoding="utf-8",
         )
 
         violations = boundary.find_violations(root)
@@ -443,7 +621,8 @@ def test_root_ancestor_directory_scoped_link_helper_is_rejected(
         encoding="utf-8",
     )
     (tmp_path / "CMakeLists.txt").write_text(
-        "include(cmake/PortfolioLinks.cmake)\nadd_portfolio_links()\nadd_subdirectory(core)\n",
+        "include(cmake/PortfolioLinks.cmake)\nadd_portfolio_links()\nadd_subdirectory(core)\n"
+        + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -467,7 +646,8 @@ def test_portfolio_target_cannot_be_mutated_outside_owner(tmp_path: Path) -> Non
     write_portfolio_source(tmp_path)
     write_portfolio_owner(tmp_path, valid_owner_cmake())
     (tmp_path / "CMakeLists.txt").write_text(
-        "add_subdirectory(core)\ntarget_link_libraries(chronos_portfolio PRIVATE chronos_risk)\n",
+        "add_subdirectory(core)\ntarget_link_libraries(chronos_portfolio PRIVATE chronos_risk)\n"
+        + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -482,7 +662,7 @@ def test_dynamic_portfolio_target_mutation_is_rejected(tmp_path: Path) -> None:
     (tmp_path / "CMakeLists.txt").write_text(
         "add_subdirectory(core)\n"
         "set(PORTFOLIO_TARGET chronos_portfolio)\n"
-        'target_link_libraries("${PORTFOLIO_TARGET}" PRIVATE chronos_risk)\n',
+        'target_link_libraries("${PORTFOLIO_TARGET}" PRIVATE chronos_risk)\n' + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -587,7 +767,8 @@ def test_target_cannot_be_created_outside_owner(tmp_path: Path) -> None:
     write_portfolio_source(tmp_path)
     write_portfolio_owner(tmp_path, valid_owner_cmake())
     (tmp_path / "CMakeLists.txt").write_text(
-        "add_subdirectory(core)\nadd_library(chronos_portfolio STATIC elsewhere.cpp)\n",
+        "add_subdirectory(core)\nadd_library(chronos_portfolio STATIC elsewhere.cpp)\n"
+        + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -661,7 +842,7 @@ def test_composed_dynamic_external_target_mutation_is_rejected(tmp_path: Path) -
         "endfunction()\n"
         "add_subdirectory(core)\n"
         "string(CONCAT protected chronos_ portfolio)\n"
-        "add_dep(${protected} chronos_risk)\n",
+        "add_dep(${protected} chronos_risk)\n" + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -682,7 +863,7 @@ def test_helper_composed_dynamic_target_mutation_is_rejected(tmp_path: Path) -> 
         "  add_dep(${protected} chronos_risk)\n"
         "endfunction()\n"
         "add_subdirectory(core)\n"
-        "mutate_portfolio()\n",
+        "mutate_portfolio()\n" + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -699,7 +880,7 @@ def test_invoked_helper_cannot_mutate_portfolio_target(tmp_path: Path) -> None:
         "  target_link_libraries(${target} PRIVATE ${dependency})\n"
         "endfunction()\n"
         "add_subdirectory(core)\n"
-        "add_dep(chronos_portfolio chronos_risk)\n",
+        "add_dep(chronos_portfolio chronos_risk)\n" + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -719,7 +900,7 @@ def test_nested_argv_helper_cannot_mutate_portfolio_target(tmp_path: Path) -> No
         "  add_dep(${target} ${dependency})\n"
         "endfunction()\n"
         "add_subdirectory(core)\n"
-        "wrap(chronos_portfolio chronos_risk)\n",
+        "wrap(chronos_portfolio chronos_risk)\n" + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -848,7 +1029,7 @@ def test_append_composed_target_passed_to_helper_is_rejected(tmp_path: Path) -> 
         "add_subdirectory(core)\n"
         "set(protected chronos_)\n"
         "string(APPEND protected portfolio)\n"
-        "add_dep(${protected} chronos_risk)\n",
+        "add_dep(${protected} chronos_risk)\n" + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -871,7 +1052,7 @@ def test_multistep_variable_target_passed_to_transitive_helper_is_rejected(tmp_p
         "set(prefix chronos_)\n"
         "set(protected ${prefix})\n"
         "string(APPEND protected portfolio)\n"
-        "wrap_dep(${protected} chronos_risk)\n",
+        "wrap_dep(${protected} chronos_risk)\n" + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -890,7 +1071,7 @@ def test_nonleading_variable_target_passed_to_helper_is_rejected(tmp_path: Path)
         "add_subdirectory(core)\n"
         "set(protected chronos_)\n"
         "string(APPEND protected portfolio)\n"
-        "add_dep(chronos_risk ${protected})\n",
+        "add_dep(chronos_risk ${protected})\n" + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -905,7 +1086,7 @@ def test_direct_target_can_link_portfolio_as_dependency(tmp_path: Path) -> None:
     (tmp_path / "CMakeLists.txt").write_text(
         "add_subdirectory(core)\n"
         "add_library(chronos_consumer STATIC consumer.cpp)\n"
-        "target_link_libraries(chronos_consumer PRIVATE chronos_portfolio)\n",
+        "target_link_libraries(chronos_consumer PRIVATE chronos_portfolio)\n" + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -952,7 +1133,7 @@ def test_external_helper_invocation_in_conditional_is_rejected(tmp_path: Path) -
         "add_subdirectory(core)\n"
         "if(TRUE)\n"
         "  add_dep(chronos_portfolio chronos_risk)\n"
-        "endif()\n",
+        "endif()\n" + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -976,7 +1157,7 @@ def test_transitive_composed_helper_invocation_in_loop_is_rejected(tmp_path: Pat
         "string(APPEND protected portfolio)\n"
         "foreach(item IN ITEMS one)\n"
         "  wrap_dep(${protected} chronos_risk)\n"
-        "endforeach()\n",
+        "endforeach()\n" + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -993,7 +1174,7 @@ def test_fixed_unrelated_target_helper_is_accepted(tmp_path: Path) -> None:
         "  target_link_libraries(chronos_consumer PRIVATE chronos_portfolio)\n"
         "endfunction()\n"
         "add_subdirectory(core)\n"
-        "configure_consumer()\n",
+        "configure_consumer()\n" + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 
@@ -1008,7 +1189,7 @@ def test_fixed_portfolio_target_helper_is_rejected(tmp_path: Path) -> None:
         "  target_link_libraries(chronos_portfolio PRIVATE chronos_risk)\n"
         "endfunction()\n"
         "add_subdirectory(core)\n"
-        "configure_portfolio()\n",
+        "configure_portfolio()\n" + NATIVE_GUARD_TAIL,
         encoding="utf-8",
     )
 

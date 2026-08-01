@@ -2,92 +2,89 @@
 
 Date: 2026-08-01
 Branch: `feat/m6.1-target-construction`
-Starting commit: `9d457d657e0ece0602ab03eb1a94f49648861d15`
+Supersedes: `bb16584`
 Issue: `#34`
 
 ## Outcome
 
-The CMake include-graph interpreter introduced by `9d457d6` has been removed. The
-`chronos_portfolio` owner now performs a declarative, configure-time assertion over
-the target properties that CMake actually resolved.
+The M6 gate now delegates CMake semantics to CMake. The target owner contains only
+the canonical `chronos_portfolio` declaration, include directory, and dependencies.
+The root's literal final command synchronously includes
+`core/portfolio/AssertTargetBoundary.cmake`, after every root subdirectory has
+finished configuring.
 
-The assertion requires:
+The assertion reads the fully resolved target and requires:
 
-- exact `LINK_LIBRARIES` and `INTERFACE_LINK_LIBRARIES` values;
-- exact `SOURCES`, `INCLUDE_DIRECTORIES`, and `INTERFACE_INCLUDE_DIRECTORIES` values;
-- empty direct and interface link options/directories;
-- empty consumer-direct link injection/exclusion properties;
-- empty direct and interface compile definitions, features, options, precompiled
-  headers, system include directories, and interface sources.
+- exact direct and interface link libraries;
+- exact source and direct/interface include directories;
+- no link options, link directories, consumer-direct links, or unexpected direct
+  and interface compile capabilities;
+- canonical source language and generated state;
+- no source-level compile definitions/options/includes or build-changing source
+  properties, including Visual Studio and Xcode settings;
+- no `COMPILE_DEFINITIONS_<CONFIG>` for any built-in, active single-config, or
+  multi-config configuration name.
 
-Failures use the typed sentinel
-`CHRONOS_M6_BOUNDARY_VIOLATION:<PROPERTY>:` so the Python verifier can report a
-`configured-target-property:<PROPERTY>` violation.
+This synchronous tail has no callback name or defer ID, so a later subdirectory
+cannot redefine or cancel it. Typed failures use
+`CHRONOS_M6_BOUNDARY_VIOLATION:<PROPERTY>:`.
 
 ## Verifier Design
 
-`verify_m6_authority_boundaries.py` retains the static source/include/ownership and
-backward-dependency checks. When those pass for a configurable repository, it runs
-an out-of-source CMake configure in a temporary directory and removes the directory
-afterward.
+The Python verifier retains static ownership, include, source, and backward-link
+checks. It requires the final root include and the complete declarative assertion
+command sequence, so deleting, truncating, making inert, or reordering the guard is
+a structural violation even if `project()` is also removed.
 
-The structural check requires the canonical top-level property reads, comparisons,
-fatal messages, expected values, and empty-property loop in command order after the
-target configuration. Whole-guard deletion, partial deletion, inert `if(FALSE)`,
-comparison reversal, and fatal-message removal are rejected.
+For a structurally valid repository, the verifier runs a temporary out-of-source
+CMake configure with expanded JSON tracing. The trace makes executed command
+overrides visible even when they came from an external module selected through a
+callable-local `CMAKE_MODULE_PATH`. Overrides of assertion-critical commands are
+reported as `configured-target-property:COMMAND_OVERRIDE`; no Python include-graph
+interpreter remains. Temporary configure artifacts are removed automatically.
 
-The M5 verifier has a narrow compatibility rule for the two expected-link list
-declarations. It accepts each declaration exactly once with its canonical values,
-and permits subsequent variable references only from `if()` and `message()`.
+The M5 verifier has a narrow compatibility rule for the two canonical expected-link
+declarations in the assertion module. M6 remains responsible for validating the
+whole assertion.
 
 ## TDD Evidence
 
-Initial real-CMake tests failed because the Python verifier did not configure the
-fixture and the native assertion did not exist. Review regressions then failed for:
+The new tests first failed for all six reviewer categories: two-level `message`
+interception, deferred guard replacement, deferred cancellation, Visual Studio/Xcode
+source settings, custom-configuration source definitions, and simultaneous removal
+of `project()` plus tail registration.
 
-- `INTERFACE_LINK_LIBRARIES_DIRECT` and resolved source injection;
-- inert or partially deleted native assertions;
-- reassignment and opaque helper use of the M5 expected-link variables.
-
-After implementation, the focused suite passed all 72 M5/M6 tests. The fixtures
-exercise root, core, and owner includes; `cmake_language(CALL)`; callable-local
-`CMAKE_MODULE_PATH`; escaped parentheses; unquoted list expansion; resolved sources;
-consumer-direct linkage; compile/include properties; guard deletion; and a valid
-direct consumer.
+The final real-CMake fixtures also cover root/core/owner included mutations,
+`cmake_language(CALL)`, callable-local module selection, escaped parentheses,
+unquoted list expansion, after-core target mutation, canonical-source properties,
+guard deletion/inert/reorder, exact valid construction, and direct consumer linkage.
 
 ## Final Gates
 
-- `uv run ruff format --check tools/development/verify_m5_authority_boundaries.py tools/development/verify_m6_authority_boundaries.py tests/python/test_m5_authority_boundaries.py tests/python/test_m6_authority_boundaries.py`
-  - passed; 4 files already formatted
+- `uv run pytest tests/python/test_m5_authority_boundaries.py tests/python/test_m6_authority_boundaries.py -q`
+  - passed: 83 tests
+- `python3 tools/development/verify_m6_authority_boundaries.py`
+  - passed: `[OK] M6 portfolio authority has no forbidden dependencies`
+- `make m0-check`
+  - passed: native configure/build and CTest 1/1; Python distribution validation;
+    155 Python tests; repository-wide Ruff lint and format checks
+- `make cpp-profiles-check`
+  - passed: Debug, Release, Benchmark, sanitizer, and Ninja Multi-Config
+    Debug/Release/Benchmark configure, build, and CTest runs
 - `uv run ruff check tools/development/verify_m5_authority_boundaries.py tools/development/verify_m6_authority_boundaries.py tests/python/test_m5_authority_boundaries.py tests/python/test_m6_authority_boundaries.py`
   - passed
-- `uv run pytest tests/python/test_m5_authority_boundaries.py tests/python/test_m6_authority_boundaries.py -q`
-  - passed; 72 tests
-- `python3 tools/development/verify_m6_authority_boundaries.py`
-  - passed; `[OK] M6 portfolio authority has no forbidden dependencies`
-- `make m0-check`
-  - passed; CMake build and CTest 1/1, Python distribution verification, 144 Python
-    tests, Ruff lint, and Ruff formatting
-- `make cpp-profiles-check`
-  - passed; Debug, Release, Benchmark, sanitizer, and multi-config Debug/Release/
-    Benchmark builds and tests
+- `uv run ruff format --check tools/development/verify_m5_authority_boundaries.py tools/development/verify_m6_authority_boundaries.py tests/python/test_m5_authority_boundaries.py tests/python/test_m6_authority_boundaries.py`
+  - passed: 4 files already formatted
 - `git diff --check`
   - passed
 
-## Review
-
-An independent read-only review found three Important issues in the first native
-implementation: missing consumer-direct/source properties, an inert structural-guard
-bypass, and an over-broad M5 declaration exception. All three were reproduced with
-focused tests and corrected before the final gates above.
-
 ## Concerns
 
-- The gate now requires CMake to be available and permits 120 seconds for the
-  temporary configure. Configure-toolchain failures are reported as typed gate
-  failures rather than silently falling back to static analysis.
-- The structural verifier intentionally tracks the canonical owner assertion. A
-  legitimate change to the portfolio target's sources, links, includes, or allowed
-  capabilities must update the owner assertion, verifier constants, and tests in the
-  same change.
+- The gate requires CMake and allows 120 seconds for its temporary configure.
+  Toolchain or configure failures are typed gate failures.
+- The assertion intentionally treats new target or canonical-source capabilities as
+  denied by default. Legitimate graph changes must update the owner assertion,
+  verifier constants, and focused fixtures together.
+- Expanded CMake tracing adds configure output and runtime to the Python gate, but
+  avoids interpreting CMake and is removed with the temporary build directory.
 - No push or pull request was created.

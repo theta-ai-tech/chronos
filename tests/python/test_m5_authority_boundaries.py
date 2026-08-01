@@ -184,7 +184,11 @@ def test_portfolio_guard_expected_links_are_read_only_declarations(tmp_path: Pat
     portfolio = tmp_path / "core/portfolio/CMakeLists.txt"
     portfolio.parent.mkdir(parents=True)
     portfolio.write_text(
-        "target_link_libraries(chronos_portfolio PUBLIC chronos_recommendation)\n"
+        "target_link_libraries(chronos_portfolio PUBLIC chronos_recommendation)\n",
+        encoding="utf-8",
+    )
+    assertion = tmp_path / "core/portfolio/AssertTargetBoundary.cmake"
+    assertion.write_text(
         "set(_chronos_portfolio_expected_link_libraries chronos_contracts "
         "chronos_recommendation chronos_options chronos_warnings)\n"
         "set(_chronos_portfolio_expected_interface_link_libraries "
@@ -227,7 +231,9 @@ def test_portfolio_guard_expected_links_reject_reassignment_and_helper_use(
         write_other_authorities(root)
         portfolio = root / "core/portfolio/CMakeLists.txt"
         portfolio.parent.mkdir(parents=True)
-        portfolio.write_text(canonical + suffix, encoding="utf-8")
+        portfolio.write_text("", encoding="utf-8")
+        assertion = root / "core/portfolio/AssertTargetBoundary.cmake"
+        assertion.write_text(canonical + suffix, encoding="utf-8")
 
         assert "dynamic-target-mutation" in {
             item.dependency for item in boundary.find_violations(root)

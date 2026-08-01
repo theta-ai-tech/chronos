@@ -68,3 +68,7 @@ endif()
 message(STATUS
   "Chronos ${PROJECT_VERSION} | profile=${_chronos_profile} "
   "| werror=${CHRONOS_WERROR} | sanitize=${CHRONOS_SANITIZE}")
+
+# This must remain the final top-level command so it observes the fully
+# configured target graph.
+include(core/portfolio/AssertTargetBoundary.cmake)
