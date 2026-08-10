@@ -483,14 +483,13 @@ std::optional<RiskObligationUnavailableReason> run_context_unavailable(
   return std::nullopt;
 }
 
-std::optional<RiskObligationUnavailableReason>
-remaining_evidence_unavailable(const MinimalRiskPolicy &policy,
-                               const RiskEvaluationCut &cut,
-                               const RiskEvaluationEvidence &evidence) {
-  const auto &run = *evidence.run_context();
-  if (!evidence.policy_activation())
+std::optional<RiskObligationUnavailableReason> policy_activation_unavailable(
+    const MinimalRiskPolicy &policy, const RunRiskContext &run,
+    const RiskEvaluationCut &cut,
+    const std::optional<RiskPolicyActivation> &policy_activation) {
+  if (!policy_activation)
     return RiskObligationUnavailableReason::MissingRiskPolicyActivation;
-  const auto &activation = *evidence.policy_activation();
+  const auto &activation = *policy_activation;
   if (!quality_is_valid(activation.quality()))
     return RiskObligationUnavailableReason::RiskPolicyActivationQualityNotValid;
   if (activation.run_id() != policy.run_id())
@@ -510,10 +509,15 @@ remaining_evidence_unavailable(const MinimalRiskPolicy &policy,
   if (is_future(activation.effective_run_input_sequence(),
                 activation.effective_logical_time_nanoseconds(), cut))
     return RiskObligationUnavailableReason::RiskPolicyActivationFuture;
+  return std::nullopt;
+}
 
-  if (!evidence.account())
+std::optional<RiskObligationUnavailableReason> account_unavailable(
+    const MinimalRiskPolicy &policy, const RiskEvaluationCut &cut,
+    const std::optional<AccountRiskSnapshot> &account_snapshot) {
+  if (!account_snapshot)
     return RiskObligationUnavailableReason::MissingAccountRiskSnapshot;
-  const auto &account = *evidence.account();
+  const auto &account = *account_snapshot;
   if (!quality_is_valid(account.quality()))
     return RiskObligationUnavailableReason::AccountRiskSnapshotQualityNotValid;
   if (account.run_id() != policy.run_id() ||
@@ -532,10 +536,16 @@ remaining_evidence_unavailable(const MinimalRiskPolicy &policy,
     return RiskObligationUnavailableReason::ArithmeticUnrepresentable;
   if (*account_stale)
     return RiskObligationUnavailableReason::AccountRiskSnapshotStale;
+  return std::nullopt;
+}
 
-  if (!evidence.market())
+std::optional<RiskObligationUnavailableReason>
+market_unavailable(const MinimalRiskPolicy &policy,
+                   const RiskEvaluationCut &cut,
+                   const std::optional<MarketRiskSnapshot> &market_snapshot) {
+  if (!market_snapshot)
     return RiskObligationUnavailableReason::MissingMarketRiskSnapshot;
-  const auto &market = *evidence.market();
+  const auto &market = *market_snapshot;
   if (!quality_is_valid(market.quality()))
     return RiskObligationUnavailableReason::MarketRiskSnapshotQualityNotValid;
   if (market.run_id() != policy.run_id() ||
@@ -553,10 +563,15 @@ remaining_evidence_unavailable(const MinimalRiskPolicy &policy,
     return RiskObligationUnavailableReason::ArithmeticUnrepresentable;
   if (*market_stale)
     return RiskObligationUnavailableReason::MarketRiskSnapshotStale;
+  return std::nullopt;
+}
 
-  if (!evidence.projected_exposure())
+std::optional<RiskObligationUnavailableReason> projected_exposure_unavailable(
+    const MinimalRiskPolicy &policy, const RiskEvaluationCut &cut,
+    const std::optional<ProjectedExposureSnapshot> &projected_snapshot) {
+  if (!projected_snapshot)
     return RiskObligationUnavailableReason::MissingProjectedExposureSnapshot;
-  const auto &projected = *evidence.projected_exposure();
+  const auto &projected = *projected_snapshot;
   if (!quality_is_valid(projected.quality()))
     return RiskObligationUnavailableReason::
         ProjectedExposureSnapshotQualityNotValid;
@@ -577,10 +592,15 @@ remaining_evidence_unavailable(const MinimalRiskPolicy &policy,
     return RiskObligationUnavailableReason::ArithmeticUnrepresentable;
   if (*projected_stale)
     return RiskObligationUnavailableReason::ProjectedExposureSnapshotStale;
+  return std::nullopt;
+}
 
-  if (!evidence.kill_switch())
+std::optional<RiskObligationUnavailableReason> kill_switch_unavailable(
+    const MinimalRiskPolicy &policy, const RiskEvaluationCut &cut,
+    const std::optional<KillSwitchSnapshot> &kill_switch_snapshot) {
+  if (!kill_switch_snapshot)
     return RiskObligationUnavailableReason::MissingKillSwitchSnapshot;
-  const auto &kill_switch = *evidence.kill_switch();
+  const auto &kill_switch = *kill_switch_snapshot;
   if (!quality_is_valid(kill_switch.quality()))
     return RiskObligationUnavailableReason::KillSwitchSnapshotQualityNotValid;
   if (kill_switch.risk_scope_id() != policy.risk_scope_id())
@@ -596,6 +616,63 @@ remaining_evidence_unavailable(const MinimalRiskPolicy &policy,
   if (*kill_switch_stale)
     return RiskObligationUnavailableReason::KillSwitchSnapshotStale;
   return std::nullopt;
+}
+
+struct RiskArithmetic final {
+  contracts::AmountUnits requested_delta{};
+  contracts::AmountUnits requested_projected{};
+  contracts::AmountUnits requested_absolute{};
+  contracts::AmountUnits requested_delta_absolute{};
+  std::int64_t expiry{};
+};
+
+std::optional<RiskArithmetic> evaluate_arithmetic(
+    const portfolio::TargetPosition &target, const MinimalRiskPolicy &policy,
+    const RiskEvaluationCut &cut, const AccountRiskSnapshot &account,
+    const ProjectedExposureSnapshot &projected) {
+  if (!checked_absolute(target.desired_exposure_units()) ||
+      !checked_absolute(account.current_position_units()) ||
+      !checked_absolute(projected.worst_case_exposure_before_target_units()))
+    return std::nullopt;
+
+  RiskArithmetic result;
+  if (!checked_subtract(target.desired_exposure_units(),
+                        account.current_position_units(),
+                        result.requested_delta) ||
+      !checked_add(projected.worst_case_exposure_before_target_units(),
+                   result.requested_delta, result.requested_projected) ||
+      !checked_add(cut.logical_time_nanoseconds(),
+                   policy.decision_validity_duration_nanoseconds(),
+                   result.expiry))
+    return std::nullopt;
+  result.expiry =
+      std::min(result.expiry, target.valid_until_logical_time_nanoseconds());
+
+  const auto requested_absolute = checked_absolute(result.requested_projected);
+  const auto requested_delta_absolute =
+      checked_absolute(result.requested_delta);
+  if (!requested_absolute || !requested_delta_absolute)
+    return std::nullopt;
+  result.requested_absolute = *requested_absolute;
+  result.requested_delta_absolute = *requested_delta_absolute;
+  return result;
+}
+
+std::vector<RiskRuleFinding>
+semantic_findings(const AccountRiskSnapshot &account,
+                  const MarketRiskSnapshot &market,
+                  const KillSwitchSnapshot &kill_switch,
+                  contracts::AmountUnits requested_delta) {
+  std::vector<RiskRuleFinding> findings;
+  if (kill_switch.enabled())
+    findings.emplace_back(RiskDecisionReason::KillSwitchEnabled);
+  if (!account.trading_enabled())
+    findings.emplace_back(RiskDecisionReason::AccountTradingDisabled);
+  if (!market.tradeable())
+    findings.emplace_back(RiskDecisionReason::MarketNotTradeable);
+  if (requested_delta == 0)
+    findings.emplace_back(RiskDecisionReason::TargetAlreadySatisfied);
+  return findings;
 }
 
 contracts::RiskObligationId
@@ -708,7 +785,18 @@ RiskEvaluationResult MinimalRiskAuthority::evaluate(
     return admission_terminal(
         RiskAdmissionRejectionReason::InadmissibleRunMode);
 
-  if (const auto reason = remaining_evidence_unavailable(policy, cut, evidence))
+  if (const auto reason = policy_activation_unavailable(
+          policy, run, cut, evidence.policy_activation()))
+    return unavailable_terminal(*reason);
+  if (const auto reason = account_unavailable(policy, cut, evidence.account()))
+    return unavailable_terminal(*reason);
+  if (const auto reason = market_unavailable(policy, cut, evidence.market()))
+    return unavailable_terminal(*reason);
+  if (const auto reason = projected_exposure_unavailable(
+          policy, cut, evidence.projected_exposure()))
+    return unavailable_terminal(*reason);
+  if (const auto reason =
+          kill_switch_unavailable(policy, cut, evidence.kill_switch()))
     return unavailable_terminal(*reason);
 
   const auto &account = *evidence.account();
@@ -716,34 +804,19 @@ RiskEvaluationResult MinimalRiskAuthority::evaluate(
   const auto &projected = *evidence.projected_exposure();
   const auto &kill_switch = *evidence.kill_switch();
 
-  contracts::AmountUnits requested_delta{};
-  contracts::AmountUnits requested_projected{};
-  std::int64_t expiry{};
-  if (!checked_subtract(target.desired_exposure_units(),
-                        account.current_position_units(), requested_delta) ||
-      !checked_add(projected.worst_case_exposure_before_target_units(),
-                   requested_delta, requested_projected) ||
-      !checked_add(cut.logical_time_nanoseconds(),
-                   policy.decision_validity_duration_nanoseconds(), expiry))
+  const auto arithmetic =
+      evaluate_arithmetic(target, policy, cut, account, projected);
+  if (!arithmetic)
     return unavailable_terminal(
         RiskObligationUnavailableReason::ArithmeticUnrepresentable);
-  expiry = std::min(expiry, target.valid_until_logical_time_nanoseconds());
+  const auto requested_delta = arithmetic->requested_delta;
+  const auto requested_projected = arithmetic->requested_projected;
+  const auto requested_absolute = arithmetic->requested_absolute;
+  const auto requested_delta_absolute = arithmetic->requested_delta_absolute;
+  const auto expiry = arithmetic->expiry;
 
-  const auto requested_absolute = checked_absolute(requested_projected);
-  const auto requested_delta_absolute = checked_absolute(requested_delta);
-  if (!requested_absolute || !requested_delta_absolute)
-    return unavailable_terminal(
-        RiskObligationUnavailableReason::ArithmeticUnrepresentable);
-
-  std::vector<RiskRuleFinding> findings;
-  if (kill_switch.enabled())
-    findings.emplace_back(RiskDecisionReason::KillSwitchEnabled);
-  if (!account.trading_enabled())
-    findings.emplace_back(RiskDecisionReason::AccountTradingDisabled);
-  if (!market.tradeable())
-    findings.emplace_back(RiskDecisionReason::MarketNotTradeable);
-  if (requested_delta == 0)
-    findings.emplace_back(RiskDecisionReason::TargetAlreadySatisfied);
+  auto findings =
+      semantic_findings(account, market, kill_switch, requested_delta);
 
   RiskDecisionDisposition disposition{};
   RiskDecisionReason binding_reason{};
@@ -753,7 +826,7 @@ RiskEvaluationResult MinimalRiskAuthority::evaluate(
   std::optional<QuantityOnlyRiskReductionProof> proof;
 
   const bool exceeds_limit =
-      *requested_absolute > policy.maximum_absolute_projected_exposure_units();
+      requested_absolute > policy.maximum_absolute_projected_exposure_units();
   if (!findings.empty()) {
     if (exceeds_limit)
       findings.emplace_back(RiskDecisionReason::ProjectedExposureLimitExceeded);
@@ -790,9 +863,9 @@ RiskEvaluationResult MinimalRiskAuthority::evaluate(
                                 (requested_delta > 0 && solved_delta > 0) ||
                                 (requested_delta < 0 && solved_delta < 0);
     const bool reduction_proven =
-        *solved_projected_absolute < *requested_absolute &&
+        *solved_projected_absolute < requested_absolute &&
         *solved_projected_absolute <= limit &&
-        *solved_delta_absolute <= *requested_delta_absolute && same_direction &&
+        *solved_delta_absolute <= requested_delta_absolute && same_direction &&
         solved_target != account.current_position_units();
     if (!reduction_proven) {
       disposition = RiskDecisionDisposition::Rejected;
@@ -811,7 +884,7 @@ RiskEvaluationResult MinimalRiskAuthority::evaluate(
       proof.emplace(target.key(), policy.exposure_scale(),
                     policy.exposure_dimension_set(),
                     target.desired_exposure_units(), solved_target,
-                    requested_delta, solved_delta, *requested_absolute,
+                    requested_delta, solved_delta, requested_absolute,
                     *solved_projected_absolute, limit);
     }
   }
