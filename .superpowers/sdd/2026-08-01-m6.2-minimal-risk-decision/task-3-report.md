@@ -2,20 +2,24 @@
 
 ## Status
 
-DONE_WITH_CONCERNS
+DONE
 
 ## Commits
 
 - `a9fe6aa test: prove M6.2 fail-closed risk semantics (#35)`
+- `1f5755c test(risk): complete fail-closed matrix for #35`
 
 ## Changed Files
 
 - `core/risk/src/risk_decision.cpp`
+- `core/risk/src/risk_arithmetic.hpp`
+- `tests/CMakeLists.txt`
 - `tests/unit/risk_decision_test.cpp`
 - `.superpowers/sdd/2026-08-01-m6.2-minimal-risk-decision/task-3-report.md`
 
-The implementation commit changes only the evaluator and its C++ unit test.
-This report is committed separately.
+The implementation commits change the evaluator, its internal arithmetic
+kernel, private test include wiring, and the C++ unit test. This report is
+committed separately.
 
 ## Baseline Evidence
 
@@ -83,10 +87,30 @@ git diff --check
 build/tests/chronos_unit_tests
 ```
 
+The first review found that the target-minimum fixture mutated an authoritative
+recommendation after its ID had been derived, that the subtraction-overflow row
+was intercepted by the raw-minimum guard, and that target snapshot and optional
+presence identity coverage was incomplete. The correction removes the
+fabricated recommendation path, extracts the unchanged arithmetic kernel for a
+direct unreachable-boundary test, uses `INT64_MIN + 1` for genuine subtraction
+overflow, and adds the missing identity matrix and terminal goldens.
+
+Final verification executed:
+
+```sh
+cmake --build build
+build/tests/chronos_unit_tests
+ctest --test-dir build --output-on-failure
+uv run clang-format --dry-run --Werror \
+  core/risk/src/risk_arithmetic.hpp core/risk/src/risk_decision.cpp \
+  tests/unit/risk_decision_test.cpp
+git diff --check
+```
+
 Result: every command exited 0. CTest passed 1/1 with 0 failures, format and
 diff checks produced no output, and the direct suite reported
-`RESULT OK: 248 case(s), 0 failed check(s)`. Task 3 adds 13 unit-test cases to
-the 235-case baseline.
+`RESULT OK: 252 case(s), 0 failed check(s)`. The independent correction
+re-review reported no blocking or important findings and concluded `READY`.
 
 ## Coverage Matrix
 
@@ -102,9 +126,9 @@ the 235-case baseline.
 | Kill-switch snapshot | 10 unavailable variants plus exact maximum age: missing, all 5 non-valid qualities, scope, future sequence/time, one-nanosecond stale |
 | Snapshot precedence | Account, market, projected exposure, then kill switch when multiple inputs are absent |
 | Invalid policy | Invalid mode/dimension set, negative limit, each negative maximum age, and zero/negative decision duration; all return failure without a domain terminal |
-| Arithmetic | Requested subtraction overflow, projected addition overflow, raw account/target/projected `INT64_MIN`, expiry addition overflow, all 4 age-subtraction overflows, and exact positive/negative exposure limits |
+| Arithmetic | Requested subtraction overflow, projected addition overflow, raw account/projected `INT64_MIN`, direct requested-target `INT64_MIN`, expiry addition overflow, all 4 age-subtraction overflows, and exact positive/negative exposure limits |
 | Proof boundaries | Existing reviewed cases retain over-limit binding for a solved movement increase and retain exposure-limit then no-movement findings for a zero solved delta |
-| Identity | 52 one-at-a-time valid semantic mutations plus a changed target; obligation ownership sensitivity/invariance; decision/outcome sensitivity; repeated objects at different addresses; intervening call order; five all-zero SHA-256 risk-ID projections |
+| Identity | 52 one-at-a-time valid semantic mutations plus every admissible target snapshot field; obligation ownership sensitivity/invariance; decision/outcome sensitivity; repeated objects at different addresses; intervening call order; five all-zero SHA-256 risk-ID projections; approved/modified/rejected/unavailable/admission golden terminal IDs |
 
 Every admission result asserts its exact reason, deterministic nonzero outcome
 identity, non-executable state, and absence of obligation, decision, and
@@ -133,9 +157,11 @@ reason enums remain unchanged; no generic invalid-input fallback was added.
 ## Arithmetic Decisions
 
 - `INT64_MIN` is rejected before arithmetic when present as requested target,
-  authoritative account position, or projected exposure before target. This
-  prevents later arithmetic from moving the value away from the
-  unrepresentable absolute boundary.
+  authoritative account position, or projected exposure before target. The
+  requested-target value is currently unreachable through the scale-6,
+  bounded-cardinality upstream authority chain, so that primitive boundary is
+  tested directly through the risk-internal arithmetic kernel rather than by
+  fabricating an authoritative object.
 - Requested delta, requested projected exposure, evidence age, decision
   expiry, clamp solving, and proof absolutes remain checked signed arithmetic.
   Any inability to represent them returns
@@ -165,6 +191,11 @@ reason enums remain unchanged; no generic invalid-input fallback was added.
 - The shared `OpaqueId::from_sha256_digest` helper maps an all-zero digest to
   the stable nonzero fallback for `RiskScopeId`, `RiskObligationId`,
   `RiskDecisionId`, `RiskEvaluationOutcomeId`, and `ProjectedExposureId`.
+- Every admissible portfolio snapshot semantic changes target, obligation,
+  decision, and outcome identity. Non-admissible snapshot disposition and
+  paper-transition assumption values terminate in portfolio construction.
+- Golden IDs for each risk terminal shape freeze absent-versus-present optional
+  encoding for authorization fields and reduction proof.
 
 ## Self-Review
 
@@ -178,6 +209,11 @@ reason enums remain unchanged; no generic invalid-input fallback was added.
   account, market, projected exposure, then kill switch.
 - Confirmed valid forbidden modes are checked only after complete run-context
   validation and before policy activation.
+- Removed the test-only strategy friendship and synthetic scale-18 evaluation;
+  no production authority boundary is widened for arithmetic testing.
+- Confirmed the extracted arithmetic kernel preserves the original guard and
+  operation order, and the public evaluator passes the real target amount into
+  that kernel.
 - Confirmed Task 4 CMake/Python gates and Task 5 documentation were not added.
 
 ## Concerns
@@ -186,8 +222,3 @@ reason enums remain unchanged; no generic invalid-input fallback was added.
   warning for transitive portfolio/recommendation/strategy libraries. Build,
   CTest, and the direct suite all exit 0; changing that link graph is outside
   Task 3.
-- Reaching the otherwise immutable `INT64_MIN` target boundary requires a
-  test-only recommendation-payload mutation before invoking the real portfolio
-  authority. The resulting `TargetPosition`, including its target identity and
-  arithmetic, is still produced by the production authority; no production
-  constructor or test-only risk API was added.
