@@ -1,6 +1,7 @@
 #include "chronos/core/risk/risk_decision.hpp"
 
 #include "chronos/contracts/digest.hpp"
+#include "risk_arithmetic.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -12,6 +13,56 @@
 #include <vector>
 
 namespace chronos::core::risk {
+namespace {
+
+bool checked_add(std::int64_t left, std::int64_t right, std::int64_t &result) {
+  return !__builtin_add_overflow(left, right, &result);
+}
+
+bool checked_subtract(std::int64_t left, std::int64_t right,
+                      std::int64_t &result) {
+  return !__builtin_sub_overflow(left, right, &result);
+}
+
+std::optional<std::int64_t> checked_absolute(std::int64_t value) {
+  if (value == std::numeric_limits<std::int64_t>::min())
+    return std::nullopt;
+  return value < 0 ? -value : value;
+}
+
+} // namespace
+
+namespace detail {
+
+std::optional<QuantityOnlyArithmetic> evaluate_quantity_only_arithmetic(
+    std::int64_t desired_target, std::int64_t account_current,
+    std::int64_t projected_before, std::int64_t cut_time,
+    std::int64_t decision_duration, std::int64_t target_expiry) {
+  if (!checked_absolute(desired_target) || !checked_absolute(account_current) ||
+      !checked_absolute(projected_before))
+    return std::nullopt;
+
+  QuantityOnlyArithmetic result;
+  if (!checked_subtract(desired_target, account_current,
+                        result.requested_delta) ||
+      !checked_add(projected_before, result.requested_delta,
+                   result.requested_projected) ||
+      !checked_add(cut_time, decision_duration, result.expiry))
+    return std::nullopt;
+  result.expiry = std::min(result.expiry, target_expiry);
+
+  const auto requested_absolute = checked_absolute(result.requested_projected);
+  const auto requested_delta_absolute =
+      checked_absolute(result.requested_delta);
+  if (!requested_absolute || !requested_delta_absolute)
+    return std::nullopt;
+  result.requested_absolute = *requested_absolute;
+  result.requested_delta_absolute = *requested_delta_absolute;
+  return result;
+}
+
+} // namespace detail
+
 namespace {
 
 template <typename Id>
@@ -349,21 +400,6 @@ outcome_id_from_terminal(const std::vector<std::byte> &terminal_canonical) {
   return id_from_canonical<contracts::RiskEvaluationOutcomeId>(canonical);
 }
 
-bool checked_add(std::int64_t left, std::int64_t right, std::int64_t &result) {
-  return !__builtin_add_overflow(left, right, &result);
-}
-
-bool checked_subtract(std::int64_t left, std::int64_t right,
-                      std::int64_t &result) {
-  return !__builtin_sub_overflow(left, right, &result);
-}
-
-std::optional<std::int64_t> checked_absolute(std::int64_t value) {
-  if (value == std::numeric_limits<std::int64_t>::min())
-    return std::nullopt;
-  return value < 0 ? -value : value;
-}
-
 bool valid_policy(const MinimalRiskPolicy &policy) {
   return contracts::is_valid(policy.supported_run_mode()) &&
          is_valid(policy.exposure_dimension_set()) &&
@@ -618,44 +654,16 @@ std::optional<RiskObligationUnavailableReason> kill_switch_unavailable(
   return std::nullopt;
 }
 
-struct RiskArithmetic final {
-  contracts::AmountUnits requested_delta{};
-  contracts::AmountUnits requested_projected{};
-  contracts::AmountUnits requested_absolute{};
-  contracts::AmountUnits requested_delta_absolute{};
-  std::int64_t expiry{};
-};
-
-std::optional<RiskArithmetic> evaluate_arithmetic(
+std::optional<detail::QuantityOnlyArithmetic> evaluate_arithmetic(
     const portfolio::TargetPosition &target, const MinimalRiskPolicy &policy,
     const RiskEvaluationCut &cut, const AccountRiskSnapshot &account,
     const ProjectedExposureSnapshot &projected) {
-  if (!checked_absolute(target.desired_exposure_units()) ||
-      !checked_absolute(account.current_position_units()) ||
-      !checked_absolute(projected.worst_case_exposure_before_target_units()))
-    return std::nullopt;
-
-  RiskArithmetic result;
-  if (!checked_subtract(target.desired_exposure_units(),
-                        account.current_position_units(),
-                        result.requested_delta) ||
-      !checked_add(projected.worst_case_exposure_before_target_units(),
-                   result.requested_delta, result.requested_projected) ||
-      !checked_add(cut.logical_time_nanoseconds(),
-                   policy.decision_validity_duration_nanoseconds(),
-                   result.expiry))
-    return std::nullopt;
-  result.expiry =
-      std::min(result.expiry, target.valid_until_logical_time_nanoseconds());
-
-  const auto requested_absolute = checked_absolute(result.requested_projected);
-  const auto requested_delta_absolute =
-      checked_absolute(result.requested_delta);
-  if (!requested_absolute || !requested_delta_absolute)
-    return std::nullopt;
-  result.requested_absolute = *requested_absolute;
-  result.requested_delta_absolute = *requested_delta_absolute;
-  return result;
+  return detail::evaluate_quantity_only_arithmetic(
+      target.desired_exposure_units(), account.current_position_units(),
+      projected.worst_case_exposure_before_target_units(),
+      cut.logical_time_nanoseconds(),
+      policy.decision_validity_duration_nanoseconds(),
+      target.valid_until_logical_time_nanoseconds());
 }
 
 std::vector<RiskRuleFinding>

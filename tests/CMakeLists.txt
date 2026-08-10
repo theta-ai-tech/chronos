@@ -28,7 +28,8 @@ add_executable(chronos_unit_tests
 
 target_include_directories(chronos_unit_tests
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/support
-          ${PROJECT_SOURCE_DIR}/core/risk/include)
+          ${PROJECT_SOURCE_DIR}/core/risk/include
+          ${PROJECT_SOURCE_DIR}/core/risk/src)
 
 target_compile_definitions(chronos_unit_tests
   PRIVATE CHRONOS_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

@@ -3,6 +3,7 @@
 #include "chronos/contracts/digest.hpp"
 #include "microtest.hpp"
 #include "portfolio_runtime_fixture.hpp"
+#include "risk_arithmetic.hpp"
 
 #include <array>
 #include <concepts>
@@ -114,14 +115,28 @@ contracts::DataQuality non_valid_quality(contracts::QualityStatus status) {
   return contracts::DataQuality::from(status, 1).value();
 }
 
-portfolio::TargetPosition
-target_position(contracts::AmountUnits desired_exposure = 40) {
+struct TargetSnapshotSpec final {
+  contracts::PortfolioSnapshotId snapshot_id{
+      id<contracts::PortfolioSnapshotId>(73)};
+  contracts::AmountUnits current_exposure{10};
+  std::uint64_t sequence{1};
+  std::int64_t time{100};
+  std::uint64_t configuration_epoch{2};
+  portfolio::PortfolioSnapshotDisposition disposition{
+      portfolio::PortfolioSnapshotDisposition::FreshComplete};
+  bool paper_transition_assumption{true};
+};
+
+portfolio::PortfolioConstructionResult
+construct_target(const TargetSnapshotSpec &snapshot_spec,
+                 contracts::AmountUnits desired_exposure = 40) {
   const auto key = target_key();
   const portfolio::PortfolioStateSnapshot snapshot(
-      id<contracts::PortfolioSnapshotId>(73), id<contracts::RunId>(30),
-      key.portfolio_id(), key.account_id(), key.canonical_instrument_id(),
-      key.listing_id(), 10, exposure_scale(), 1, 100, 2,
-      portfolio::PortfolioSnapshotDisposition::FreshComplete, true);
+      snapshot_spec.snapshot_id, id<contracts::RunId>(30), key.portfolio_id(),
+      key.account_id(), key.canonical_instrument_id(), key.listing_id(),
+      snapshot_spec.current_exposure, exposure_scale(), snapshot_spec.sequence,
+      snapshot_spec.time, snapshot_spec.configuration_epoch,
+      snapshot_spec.disposition, snapshot_spec.paper_transition_assumption);
   const portfolio::PortfolioConstructionPolicy policy(
       version(74), version(75), version(76), version(77), key,
       id<contracts::RunId>(30), {id<contracts::StrategyInstanceId>(98)},
@@ -130,42 +145,23 @@ target_position(contracts::AmountUnits desired_exposure = 40) {
   const std::array recommendations{
       chronos::test_support::positive_portfolio_recommendation(
           desired_exposure)};
-  auto result = portfolio::PortfolioConstructionAuthority::construct(
+  return portfolio::PortfolioConstructionAuthority::construct(
       recommendations, snapshot, policy, cut);
+}
+
+portfolio::TargetPosition
+target_position(const TargetSnapshotSpec &snapshot_spec,
+                contracts::AmountUnits desired_exposure = 40) {
+  auto result = construct_target(snapshot_spec, desired_exposure);
   if (!result.completed() || !result.terminal ||
       !std::holds_alternative<portfolio::TargetPosition>(*result.terminal))
     std::abort();
   return std::get<portfolio::TargetPosition>(std::move(*result.terminal));
 }
 
-portfolio::TargetPosition minimum_target_position() {
-  auto recommendation =
-      chronos::test_support::positive_portfolio_recommendation(40);
-  auto &action =
-      const_cast<chronos::core::recommendation::ActionableRecommendation &>(
-          std::get<chronos::core::recommendation::ActionableRecommendation>(
-              recommendation.outcome()));
-  action.indicative_exposure_units =
-      std::numeric_limits<contracts::AmountUnits>::min();
-
-  const auto key = target_key();
-  const portfolio::PortfolioStateSnapshot snapshot(
-      id<contracts::PortfolioSnapshotId>(73), id<contracts::RunId>(30),
-      key.portfolio_id(), key.account_id(), key.canonical_instrument_id(),
-      key.listing_id(), 0, exposure_scale(), 1, 100, 2,
-      portfolio::PortfolioSnapshotDisposition::FreshComplete, true);
-  const portfolio::PortfolioConstructionPolicy policy(
-      version(74), version(75), version(76), version(77), key,
-      id<contracts::RunId>(30), {id<contracts::StrategyInstanceId>(98)},
-      exposure_scale(), 4, 100, 50);
-  const std::array recommendations{recommendation};
-  auto result = portfolio::PortfolioConstructionAuthority::construct(
-      recommendations, snapshot, policy,
-      portfolio::PortfolioConstructionCut(1, 100));
-  if (!result.completed() || !result.terminal ||
-      !std::holds_alternative<portfolio::TargetPosition>(*result.terminal))
-    std::abort();
-  return std::get<portfolio::TargetPosition>(std::move(*result.terminal));
+portfolio::TargetPosition
+target_position(contracts::AmountUnits desired_exposure = 40) {
+  return target_position(TargetSnapshotSpec{}, desired_exposure);
 }
 
 struct EvaluationSpec final {
@@ -1268,9 +1264,25 @@ TEST_CASE("risk arithmetic inability is unavailable without authorization") {
         CHECK(!blocked->executable());
       };
 
+  EvidenceSpec raw_account_minimum;
+  raw_account_minimum.account.current_position =
+      std::numeric_limits<contracts::AmountUnits>::min();
+  assert_arithmetic_unavailable(target, {}, raw_account_minimum);
+
   EvidenceSpec subtract_overflow;
   subtract_overflow.account.current_position =
-      std::numeric_limits<contracts::AmountUnits>::min();
+      std::numeric_limits<contracts::AmountUnits>::min() + 1;
+  CHECK(subtract_overflow.account.current_position !=
+        std::numeric_limits<contracts::AmountUnits>::min());
+  CHECK(target.desired_exposure_units() !=
+        std::numeric_limits<contracts::AmountUnits>::min());
+  CHECK(subtract_overflow.projected.before_target !=
+        std::numeric_limits<contracts::AmountUnits>::min());
+  const auto mathematical_delta =
+      static_cast<__int128>(target.desired_exposure_units()) -
+      static_cast<__int128>(subtract_overflow.account.current_position);
+  CHECK(mathematical_delta >
+        std::numeric_limits<contracts::AmountUnits>::max());
   assert_arithmetic_unavailable(target, {}, subtract_overflow);
 
   EvidenceSpec add_overflow;
@@ -1282,14 +1294,6 @@ TEST_CASE("risk arithmetic inability is unavailable without authorization") {
   projected_minimum.projected.before_target =
       std::numeric_limits<contracts::AmountUnits>::min();
   assert_arithmetic_unavailable(target, {}, projected_minimum);
-
-  const auto minimum_target = minimum_target_position();
-  CHECK(minimum_target.desired_exposure_units() ==
-        std::numeric_limits<contracts::AmountUnits>::min());
-  EvidenceSpec target_minimum;
-  target_minimum.account.current_position = 0;
-  target_minimum.projected.before_target = 1;
-  assert_arithmetic_unavailable(minimum_target, {}, target_minimum);
 
   PolicySpec expiry_overflow;
   expiry_overflow.decision_validity_duration =
@@ -1303,6 +1307,12 @@ TEST_CASE("risk arithmetic inability is unavailable without authorization") {
   age_overflow[3].kill_switch.time = std::numeric_limits<std::int64_t>::min();
   for (const auto &evidence : age_overflow)
     assert_arithmetic_unavailable(target, {}, evidence);
+}
+
+TEST_CASE("quantity-only arithmetic rejects an INT64_MIN requested target") {
+  const auto result = risk::detail::evaluate_quantity_only_arithmetic(
+      std::numeric_limits<contracts::AmountUnits>::min(), 0, 1, 100, 10, 200);
+  CHECK(!result.has_value());
 }
 
 TEST_CASE("projected exposure accepts exact positive and negative limits") {
@@ -1527,6 +1537,173 @@ TEST_CASE("risk identities are deterministic and bind semantic ownership") {
     CHECK(changed_target_decision->decision_id() != baseline->decision_id());
     CHECK(changed_target_decision->outcome_id() != baseline->outcome_id());
   }
+}
+
+TEST_CASE("risk identity binds every admissible target snapshot semantic") {
+  const auto baseline_target = target_position();
+  const auto baseline_result =
+      evaluate(baseline_target, {}, risk_cut(), {}, {});
+  const auto *baseline = decision(baseline_result);
+  CHECK(baseline != nullptr);
+  if (!baseline)
+    return;
+
+  struct TargetIdentityScenario final {
+    std::string_view name;
+    TargetSnapshotSpec snapshot;
+    EvidenceSpec evidence;
+  };
+  std::vector<TargetIdentityScenario> scenarios;
+  const auto add = [&](std::string_view name, auto mutate) {
+    TargetIdentityScenario scenario{.name = name};
+    mutate(scenario);
+    scenarios.push_back(std::move(scenario));
+  };
+  add("snapshot identity", [](auto &scenario) {
+    scenario.snapshot.snapshot_id = id<contracts::PortfolioSnapshotId>(74);
+  });
+  add("snapshot current amount",
+      [](auto &scenario) { scenario.snapshot.current_exposure = 11; });
+  add("snapshot sequence",
+      [](auto &scenario) { scenario.snapshot.sequence = 0; });
+  add("snapshot time", [](auto &scenario) { scenario.snapshot.time = 99; });
+  add("snapshot configuration epoch", [](auto &scenario) {
+    scenario.snapshot.configuration_epoch = 3;
+    scenario.evidence.run.configuration_epoch = 3;
+    scenario.evidence.activation.configuration_epoch = 3;
+  });
+
+  for (const auto &scenario : scenarios) {
+    CHECK(!scenario.name.empty());
+    const auto changed_target = target_position(scenario.snapshot);
+    CHECK(changed_target.target_position_id() !=
+          baseline_target.target_position_id());
+    CHECK(changed_target.outcome_id() != baseline_target.outcome_id());
+    const auto changed_result =
+        evaluate(changed_target, {}, risk_cut(), {}, scenario.evidence);
+    const auto *changed = decision(changed_result);
+    CHECK(changed != nullptr);
+    if (!changed)
+      continue;
+    CHECK(changed->obligation_id() != baseline->obligation_id());
+    CHECK(changed->decision_id() != baseline->decision_id());
+    CHECK(changed->outcome_id() != baseline->outcome_id());
+  }
+}
+
+TEST_CASE("non-admissible target snapshot semantics cannot reach risk") {
+  const auto assert_rejected = [&](const TargetSnapshotSpec &snapshot,
+                                   auto expected_reason) {
+    const auto result = construct_target(snapshot);
+    CHECK(result.completed());
+    CHECK(result.terminal.has_value());
+    if (!result.terminal)
+      return;
+    const auto *rejected =
+        std::get_if<portfolio::PortfolioConstructionRejected>(
+            &*result.terminal);
+    CHECK(rejected != nullptr);
+    if (rejected)
+      CHECK(rejected->reason() == expected_reason);
+  };
+
+  TargetSnapshotSpec false_assumption;
+  false_assumption.paper_transition_assumption = false;
+  assert_rejected(
+      false_assumption,
+      portfolio::PortfolioConstructionRejectionReason::InvalidSnapshot);
+
+  const std::array dispositions{
+      std::pair{portfolio::PortfolioSnapshotDisposition::Stale,
+                portfolio::PortfolioConstructionRejectionReason::StaleSnapshot},
+      std::pair{
+          portfolio::PortfolioSnapshotDisposition::Incomplete,
+          portfolio::PortfolioConstructionRejectionReason::IncompleteSnapshot},
+      std::pair{
+          portfolio::PortfolioSnapshotDisposition::Recovering,
+          portfolio::PortfolioConstructionRejectionReason::InvalidSnapshot},
+  };
+  for (const auto &[disposition, reason] : dispositions) {
+    TargetSnapshotSpec snapshot;
+    snapshot.disposition = disposition;
+    assert_rejected(snapshot, reason);
+  }
+}
+
+TEST_CASE("risk terminal golden identities freeze optional presence") {
+  const auto target = target_position();
+  const auto approved_result = evaluate(target, {}, risk_cut(), {}, {});
+
+  EvidenceSpec modified_evidence;
+  modified_evidence.projected.before_target = 90;
+  const auto modified_result =
+      evaluate(target, {}, risk_cut(), {}, modified_evidence);
+
+  EvidenceSpec rejected_evidence;
+  rejected_evidence.kill_switch.enabled = true;
+  const auto rejected_result =
+      evaluate(target, {}, risk_cut(), {}, rejected_evidence);
+
+  EvidenceSpec unavailable_evidence;
+  unavailable_evidence.account_present = false;
+  const auto unavailable_result =
+      evaluate(target, {}, risk_cut(), {}, unavailable_evidence);
+
+  AdmissionSpec admission_spec;
+  admission_spec.publication_present = false;
+  const auto admission_result =
+      evaluate(target, {}, risk_cut(), admission_spec, {});
+
+  const auto *approved = decision(approved_result);
+  const auto *modified = decision(modified_result);
+  const auto *rejected = decision(rejected_result);
+  const auto *blocked = unavailable(unavailable_result);
+  const auto *admission = admission_rejected(admission_result);
+  CHECK(approved != nullptr);
+  CHECK(modified != nullptr);
+  CHECK(rejected != nullptr);
+  CHECK(blocked != nullptr);
+  CHECK(admission != nullptr);
+  if (!approved || !modified || !rejected || !blocked || !admission)
+    return;
+
+  CHECK(approved->authorized_target_units().has_value());
+  CHECK(approved->authorized_delta_units().has_value());
+  CHECK(approved->authorized_projected_exposure_units().has_value());
+  CHECK(!approved->reduction_proof().has_value());
+  CHECK(modified->authorized_target_units().has_value());
+  CHECK(modified->authorized_delta_units().has_value());
+  CHECK(modified->authorized_projected_exposure_units().has_value());
+  CHECK(modified->reduction_proof().has_value());
+  CHECK(!rejected->authorized_target_units().has_value());
+  CHECK(!rejected->authorized_delta_units().has_value());
+  CHECK(!rejected->authorized_projected_exposure_units().has_value());
+  CHECK(!rejected->reduction_proof().has_value());
+
+  CHECK(approved->obligation_id().to_string() ==
+        "9d17b7a1-6602-f3d9-fc23-056a3073722a");
+  CHECK(approved->decision_id().to_string() ==
+        "fa0f5c4f-1127-0668-9f5a-05968f16cc39");
+  CHECK(approved->outcome_id().to_string() ==
+        "b7a5ca92-9b41-d43a-77ef-b41c7cca88ca");
+  CHECK(modified->obligation_id().to_string() ==
+        "9d17b7a1-6602-f3d9-fc23-056a3073722a");
+  CHECK(modified->decision_id().to_string() ==
+        "f8dbb7a8-504f-66c3-7d6b-9f4fa6ae6bf1");
+  CHECK(modified->outcome_id().to_string() ==
+        "22663caf-919c-f43b-27af-ea980081a333");
+  CHECK(rejected->obligation_id().to_string() ==
+        "9d17b7a1-6602-f3d9-fc23-056a3073722a");
+  CHECK(rejected->decision_id().to_string() ==
+        "a15a7855-f8e2-6de3-d836-26de71db3780");
+  CHECK(rejected->outcome_id().to_string() ==
+        "489f0ada-7005-e3f1-5810-6570d54861f1");
+  CHECK(blocked->obligation_id().to_string() ==
+        "9d17b7a1-6602-f3d9-fc23-056a3073722a");
+  CHECK(blocked->outcome_id().to_string() ==
+        "825099f7-583b-b4a5-ad7e-1443e55b6ca8");
+  CHECK(admission->outcome_id().to_string() ==
+        "8e886d84-2ec0-1966-6f7d-5e6faca62b51");
 }
 
 TEST_CASE("risk identity ignores object address and evaluation call order") {
