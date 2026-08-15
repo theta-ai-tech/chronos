@@ -419,6 +419,36 @@ def test_expanded_cxx_flags_read_and_copy_remain_allowed(tmp_path: Path) -> None
     assert boundary.configured_graph_violations(tmp_path) == []
 
 
+def test_owner_unset_cxx_flags_removes_external_initialization_and_is_rejected(
+    tmp_path: Path,
+) -> None:
+    external = tmp_path / "external"
+    external.mkdir()
+    module = external / "InitialFlags.cmake"
+    module.write_text(
+        'set(CMAKE_CXX_FLAGS "-DCHRONOS_EXTERNAL_INITIAL_FLAG")\n',
+        encoding="utf-8",
+    )
+
+    baseline = tmp_path / "baseline"
+    write_native_cmake_project(
+        baseline,
+        owner_before_guard=f'include("{module}")\n',
+    )
+    assert "-DCHRONOS_EXTERNAL_INITIAL_FLAG" in risk_compile_command(baseline)
+    assert boundary.configured_graph_violations(baseline) == []
+
+    mutated = tmp_path / "mutated"
+    write_native_cmake_project(
+        mutated,
+        owner_before_guard=f'include("{module}")\nunset(CMAKE_CXX_FLAGS)\n',
+    )
+    assert "-DCHRONOS_EXTERNAL_INITIAL_FLAG" not in risk_compile_command(mutated)
+    assert {item.dependency for item in boundary.configured_graph_violations(mutated)} == {
+        "configured-cmake-variable:CMAKE_CXX_FLAGS"
+    }
+
+
 def test_external_module_cxx_flags_output_is_excluded_by_trace_source(tmp_path: Path) -> None:
     root = tmp_path / "repository"
     external = tmp_path / "external"
