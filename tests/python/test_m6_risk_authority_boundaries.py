@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -286,6 +288,120 @@ def test_owner_directory_compile_and_include_variants_are_rejected(tmp_path: Pat
         write_native_cmake_project(root, owner_before_guard=mutation)
 
         assert configured_properties(root, configure_directly=True) == {expected_property}
+
+
+def test_owner_cxx_flags_mutation_is_rejected_after_changing_compile_commands(
+    tmp_path: Path,
+) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        owner_before_guard=(
+            'set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DCHRONOS_REVIEW_BYPASS -I/unexpected")\n'
+        ),
+    )
+    build = tmp_path / "compile-command-proof"
+    result = subprocess.run(
+        [
+            "cmake",
+            "-S",
+            str(tmp_path),
+            "-B",
+            str(build),
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            "-Wno-dev",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    compile_commands = json.loads((build / "compile_commands.json").read_text(encoding="utf-8"))
+    risk_command = next(
+        entry["command"]
+        for entry in compile_commands
+        if entry["file"].endswith("core/risk/src/risk_decision.cpp")
+    )
+    assert "-DCHRONOS_REVIEW_BYPASS" in risk_command
+    assert "-I/unexpected" in risk_command
+
+    assert {item.dependency for item in boundary.configured_graph_violations(tmp_path)} == {
+        "configured-cmake-variable:CMAKE_CXX_FLAGS"
+    }
+
+
+def test_owner_cxx_flags_configuration_variant_is_rejected(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        root_before_core="set(CMAKE_BUILD_TYPE Debug)\n",
+        owner_before_guard=(
+            'set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -DCHRONOS_DEBUG_REVIEW_BYPASS")\n'
+        ),
+    )
+
+    assert {item.dependency for item in boundary.configured_graph_violations(tmp_path)} == {
+        "configured-cmake-variable:CMAKE_CXX_FLAGS_DEBUG"
+    }
+
+
+def test_owner_indirect_cxx_flags_mutations_are_rejected(tmp_path: Path) -> None:
+    mutations = (
+        (
+            'string(APPEND CMAKE_CXX_FLAGS " -DCHRONOS_STRING_REVIEW_BYPASS")\n',
+            "CMAKE_CXX_FLAGS",
+        ),
+        (
+            "list(APPEND CMAKE_CXX_FLAGS_RELEASE -DCHRONOS_LIST_REVIEW_BYPASS)\n",
+            "CMAKE_CXX_FLAGS_RELEASE",
+        ),
+    )
+    for index, (mutation, variable) in enumerate(mutations):
+        root = tmp_path / str(index)
+        write_native_cmake_project(root, owner_before_guard=mutation)
+
+        assert {item.dependency for item in boundary.configured_graph_violations(root)} == {
+            f"configured-cmake-variable:{variable}"
+        }
+
+
+def test_executed_callable_eval_and_deferred_cxx_flags_mutations_are_rejected(
+    tmp_path: Path,
+) -> None:
+    fixtures = (
+        {
+            "owner_before_target": (
+                "function(append_risk_flags)\n"
+                '  string(APPEND CMAKE_CXX_FLAGS " -DCHRONOS_CALLABLE_REVIEW_BYPASS")\n'
+                "endfunction()\n"
+                "append_risk_flags()\n"
+            )
+        },
+        {
+            "owner_before_guard": (
+                "cmake_language(EVAL CODE [[\n"
+                '  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-DCHRONOS_EVAL_REVIEW_BYPASS")\n'
+                "]])\n"
+            )
+        },
+        {
+            "root_after_core": (
+                "cmake_language(DEFER CALL string APPEND CMAKE_CXX_FLAGS "
+                '" -DCHRONOS_DEFERRED_REVIEW_BYPASS")\n'
+            )
+        },
+    )
+    expected_variables = (
+        "CMAKE_CXX_FLAGS",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO",
+        "CMAKE_CXX_FLAGS",
+    )
+    for index, (fixture, variable) in enumerate(zip(fixtures, expected_variables)):
+        root = tmp_path / str(index)
+        write_native_cmake_project(root, **fixture)
+
+        assert {item.dependency for item in boundary.configured_graph_violations(root)} == {
+            f"configured-cmake-variable:{variable}"
+        }
 
 
 def test_target_custom_command_is_rejected(tmp_path: Path) -> None:

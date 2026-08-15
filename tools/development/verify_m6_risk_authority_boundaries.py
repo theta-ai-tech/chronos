@@ -224,6 +224,24 @@ POST_GUARD_MUTATION_COMMANDS = frozenset(
         "set_target_properties",
     }
 )
+CMAKE_VARIABLE_MUTATION_COMMANDS = frozenset({"list", "set", "string", "unset"})
+CMAKE_LIST_MUTATION_OPERATIONS = frozenset(
+    {
+        "APPEND",
+        "FILTER",
+        "INSERT",
+        "POP_BACK",
+        "POP_FRONT",
+        "PREPEND",
+        "REMOVE_AT",
+        "REMOVE_DUPLICATES",
+        "REMOVE_ITEM",
+        "REVERSE",
+        "SORT",
+        "TRANSFORM",
+    }
+)
+CMAKE_STRING_MUTATION_OPERATIONS = frozenset({"APPEND", "CONCAT", "PREPEND"})
 CANONICAL_AUTHORITY_SOURCES = (
     "src/risk_arithmetic.hpp",
     "src/risk_decision.cpp",
@@ -1206,6 +1224,42 @@ def trace_source_matches(value: str, sources: set[Path]) -> bool:
     }
 
 
+def is_project_trace(trace: dict[str, object], root: Path) -> bool:
+    source = Path(str(trace.get("file", "")))
+    if not source.is_absolute():
+        return False
+    resolved = source.resolve()
+    return resolved == root or root in resolved.parents
+
+
+def is_cxx_flags_variable(variable: str) -> bool:
+    return variable == "CMAKE_CXX_FLAGS" or variable.startswith("CMAKE_CXX_FLAGS_")
+
+
+def trace_mutated_cxx_flags_variable(trace: dict[str, object]) -> str | None:
+    command = normalize_cmake_builtin_alias(
+        str(trace.get("cmd", "")), CMAKE_VARIABLE_MUTATION_COMMANDS
+    )
+    arguments = trace_arguments(trace)
+    if command in {"set", "unset"} and arguments:
+        variable = arguments[0]
+    elif (
+        command == "list"
+        and len(arguments) > 1
+        and arguments[0].upper() in CMAKE_LIST_MUTATION_OPERATIONS
+    ):
+        variable = arguments[1]
+    elif (
+        command == "string"
+        and len(arguments) > 1
+        and arguments[0].upper() in CMAKE_STRING_MUTATION_OPERATIONS
+    ):
+        variable = arguments[1]
+    else:
+        return None
+    return variable if is_cxx_flags_variable(variable) else None
+
+
 def properties_after_marker(arguments: list[str], marker: str) -> list[str]:
     try:
         index = arguments.index(marker)
@@ -1302,6 +1356,25 @@ def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
                     result.stdout.strip(),
                 )
             ]
+
+    owner_trace_indices = [
+        index
+        for index, trace in enumerate(traces)
+        if Path(str(trace.get("file", ""))).resolve() == owner_path
+    ]
+    if owner_trace_indices:
+        cxx_flags_violations = [
+            BoundaryViolation(
+                Path(str(trace.get("file", owner_path))),
+                f"configured-cmake-variable:{variable}",
+                result.stdout.strip(),
+            )
+            for trace in traces[owner_trace_indices[0] :]
+            if is_project_trace(trace, root)
+            if (variable := trace_mutated_cxx_flags_variable(trace)) is not None
+        ]
+        if cxx_flags_violations:
+            return list(dict.fromkeys(cxx_flags_violations))
 
     sources = {
         (root / AUTHORITY_SOURCE_ROOT / "risk_decision.cpp").resolve(),
