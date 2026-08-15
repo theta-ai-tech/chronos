@@ -78,6 +78,13 @@ NATIVE_GUARD_INCLUDE = "core/risk/AssertTargetBoundary.cmake"
 PORTFOLIO_GUARD_INCLUDE = "core/portfolio/AssertTargetBoundary.cmake"
 PORTFOLIO_GUARD_CMAKE = Path(PORTFOLIO_GUARD_INCLUDE)
 NATIVE_GUARD_SYNTHETIC_FUNCTION = "_chronos_assert_risk_boundary"
+NATIVE_GUARD_DIRECTORY_PROPERTY_VARIABLE = "_chronos_risk_directory_property"
+NATIVE_GUARD_DIRECTORY_PROPERTY_LIST = "_chronos_risk_empty_directory_properties"
+NATIVE_GUARD_EMPTY_DIRECTORY_PROPERTIES = (
+    "COMPILE_DEFINITIONS",
+    "COMPILE_OPTIONS",
+    "INCLUDE_DIRECTORIES",
+)
 NATIVE_GUARD_EXACT_CHECKS = (
     (
         "LINK_LIBRARIES",
@@ -138,6 +145,11 @@ NATIVE_GUARD_PROPERTY_VARIABLE = "_chronos_risk_property"
 NATIVE_GUARD_PROPERTY_LIST = "_chronos_risk_empty_properties"
 NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE = "_chronos_risk_source_property"
 NATIVE_GUARD_SOURCE_PROPERTY_LIST = "_chronos_risk_empty_source_properties"
+NATIVE_GUARD_SOURCE_LIST = "_chronos_risk_canonical_sources"
+NATIVE_GUARD_CANONICAL_SOURCE_PATHS = (
+    "${CMAKE_CURRENT_LIST_DIR}/src/risk_decision.cpp",
+    "${CMAKE_CURRENT_LIST_DIR}/src/risk_arithmetic.hpp",
+)
 NATIVE_GUARD_TRACE_SENTINEL_VARIABLE = "_chronos_m6_risk_boundary_assertion_complete"
 NATIVE_GUARD_TRACE_SENTINEL_VALUE = "TRUE"
 NATIVE_GUARD_EMPTY_SOURCE_PROPERTIES = (
@@ -773,6 +785,61 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
         valid = valid and matches(index, "endif", [], 1)
         index += 1
 
+        directory_sequence = (
+            (
+                "set",
+                [NATIVE_GUARD_DIRECTORY_PROPERTY_LIST, *NATIVE_GUARD_EMPTY_DIRECTORY_PROPERTIES],
+                1,
+            ),
+            (
+                "foreach",
+                [
+                    NATIVE_GUARD_DIRECTORY_PROPERTY_VARIABLE,
+                    "IN",
+                    "LISTS",
+                    NATIVE_GUARD_DIRECTORY_PROPERTY_LIST,
+                ],
+                1,
+            ),
+            (
+                "get_property",
+                [
+                    "_chronos_risk_directory_property_value",
+                    "DIRECTORY",
+                    "${CMAKE_CURRENT_LIST_DIR}",
+                    "PROPERTY",
+                    "${" + NATIVE_GUARD_DIRECTORY_PROPERTY_VARIABLE + "}",
+                ],
+                2,
+            ),
+            (
+                "if",
+                ["NOT", "${_chronos_risk_directory_property_value}", "STREQUAL"],
+                2,
+            ),
+        )
+        for command, arguments, expected_depth in directory_sequence:
+            valid = valid and matches(index, command, arguments, expected_depth)
+            index += 1
+        if not valid or index >= len(entries):
+            continue
+        command, arguments, message_depth = entries[index]
+        valid = (
+            command == "message"
+            and message_depth == 3
+            and arguments[:2]
+            == [
+                "FATAL_ERROR",
+                f"{NATIVE_GUARD_SENTINEL}DIRECTORY_${{{NATIVE_GUARD_DIRECTORY_PROPERTY_VARIABLE}}}:",
+            ]
+        )
+        index += 1
+        for command, expected_depth in (("endif", 2), ("endforeach", 1)):
+            valid = valid and matches(index, command, [], expected_depth)
+            index += 1
+        if not valid:
+            continue
+
         for property_name, actual, expected, expected_values in NATIVE_GUARD_EXACT_CHECKS:
             if expected_values is not None:
                 valid = valid and matches(index, "set", [expected, *expected_values], 1)
@@ -863,72 +930,6 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
         source_sequence = (
             (
                 "set",
-                [
-                    "_chronos_risk_source",
-                    "${CMAKE_CURRENT_LIST_DIR}/src/risk_decision.cpp",
-                ],
-                1,
-            ),
-            (
-                "get_source_file_property",
-                [
-                    "_chronos_risk_source_language",
-                    "${_chronos_risk_source}",
-                    "TARGET_DIRECTORY",
-                    TARGET,
-                    "LANGUAGE",
-                ],
-                1,
-            ),
-            (
-                "if",
-                ["NOT", "${_chronos_risk_source_language}", "STREQUAL", "CXX"],
-                1,
-            ),
-            (
-                "message",
-                [
-                    "FATAL_ERROR",
-                    f"{NATIVE_GUARD_SENTINEL}SOURCE_LANGUAGE:",
-                    "expected",
-                    "CXX",
-                    "got",
-                    "${_chronos_risk_source_language}",
-                ],
-                2,
-            ),
-            ("endif", [], 1),
-            (
-                "get_source_file_property",
-                [
-                    "_chronos_risk_source_generated",
-                    "${_chronos_risk_source}",
-                    "TARGET_DIRECTORY",
-                    TARGET,
-                    "GENERATED",
-                ],
-                1,
-            ),
-            (
-                "if",
-                ["NOT", "${_chronos_risk_source_generated}", "STREQUAL", "0"],
-                1,
-            ),
-            (
-                "message",
-                [
-                    "FATAL_ERROR",
-                    f"{NATIVE_GUARD_SENTINEL}SOURCE_GENERATED:",
-                    "expected",
-                    "0",
-                    "got",
-                    "${_chronos_risk_source_generated}",
-                ],
-                2,
-            ),
-            ("endif", [], 1),
-            (
-                "set",
                 [NATIVE_GUARD_SOURCE_PROPERTY_LIST, *NATIVE_GUARD_EMPTY_SOURCE_PROPERTIES],
                 1,
             ),
@@ -978,23 +979,35 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
             ("endif", [], 2),
             ("endforeach", [], 1),
             (
-                "foreach",
-                [
-                    NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE,
-                    "IN",
-                    "LISTS",
-                    NATIVE_GUARD_SOURCE_PROPERTY_LIST,
-                ],
+                "set",
+                [NATIVE_GUARD_SOURCE_LIST, *NATIVE_GUARD_CANONICAL_SOURCE_PATHS],
                 1,
             ),
             (
+                "foreach",
+                ["_chronos_risk_source", "IN", "LISTS", NATIVE_GUARD_SOURCE_LIST],
+                1,
+            ),
+            ("set", ["_chronos_risk_expected_source_language"], 2),
+            (
+                "if",
+                [
+                    "${_chronos_risk_source}",
+                    "STREQUAL",
+                    "${CMAKE_CURRENT_LIST_DIR}/src/risk_decision.cpp",
+                ],
+                2,
+            ),
+            ("set", ["_chronos_risk_expected_source_language", "CXX"], 3),
+            ("endif", [], 2),
+            (
                 "get_source_file_property",
                 [
-                    "_chronos_risk_source_property_value",
+                    "_chronos_risk_source_language",
                     "${_chronos_risk_source}",
                     "TARGET_DIRECTORY",
                     TARGET,
-                    "${" + NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE + "}",
+                    "LANGUAGE",
                 ],
                 2,
             ),
@@ -1002,9 +1015,9 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
                 "if",
                 [
                     "NOT",
-                    "${_chronos_risk_source_property_value}",
+                    "${_chronos_risk_source_language}",
                     "STREQUAL",
-                    "NOTFOUND",
+                    "${_chronos_risk_expected_source_language}",
                 ],
                 2,
             ),
@@ -1018,6 +1031,83 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
         valid = (
             command == "message"
             and message_depth == 3
+            and arguments[:2] == ["FATAL_ERROR", f"{NATIVE_GUARD_SENTINEL}SOURCE_LANGUAGE:"]
+        )
+        index += 1
+        source_tail_sequence = (
+            ("endif", [], 2),
+            (
+                "get_source_file_property",
+                [
+                    "_chronos_risk_source_generated",
+                    "${_chronos_risk_source}",
+                    "TARGET_DIRECTORY",
+                    TARGET,
+                    "GENERATED",
+                ],
+                2,
+            ),
+            (
+                "if",
+                ["NOT", "${_chronos_risk_source_generated}", "STREQUAL", "0"],
+                2,
+            ),
+        )
+        for command, arguments, expected_depth in source_tail_sequence:
+            valid = valid and matches(index, command, arguments, expected_depth)
+            index += 1
+        if not valid or index >= len(entries):
+            continue
+        command, arguments, message_depth = entries[index]
+        valid = (
+            command == "message"
+            and message_depth == 3
+            and arguments[:2] == ["FATAL_ERROR", f"{NATIVE_GUARD_SENTINEL}SOURCE_GENERATED:"]
+        )
+        index += 1
+        source_property_sequence = (
+            ("endif", [], 2),
+            (
+                "foreach",
+                [
+                    NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE,
+                    "IN",
+                    "LISTS",
+                    NATIVE_GUARD_SOURCE_PROPERTY_LIST,
+                ],
+                2,
+            ),
+            (
+                "get_source_file_property",
+                [
+                    "_chronos_risk_source_property_value",
+                    "${_chronos_risk_source}",
+                    "TARGET_DIRECTORY",
+                    TARGET,
+                    "${" + NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE + "}",
+                ],
+                3,
+            ),
+            (
+                "if",
+                [
+                    "NOT",
+                    "${_chronos_risk_source_property_value}",
+                    "STREQUAL",
+                    "NOTFOUND",
+                ],
+                3,
+            ),
+        )
+        for command, arguments, expected_depth in source_property_sequence:
+            valid = valid and matches(index, command, arguments, expected_depth)
+            index += 1
+        if not valid or index >= len(entries):
+            continue
+        command, arguments, message_depth = entries[index]
+        valid = (
+            command == "message"
+            and message_depth == 4
             and arguments[:2]
             == [
                 "FATAL_ERROR",
@@ -1025,7 +1115,11 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
             ]
         )
         index += 1
-        for command, expected_depth in (("endif", 2), ("endforeach", 1)):
+        for command, expected_depth in (
+            ("endif", 3),
+            ("endforeach", 2),
+            ("endforeach", 1),
+        ):
             valid = valid and matches(index, command, [], expected_depth)
             index += 1
         valid = valid and matches(
@@ -1209,6 +1303,22 @@ def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
                 )
             ]
 
+    sources = {
+        (root / AUTHORITY_SOURCE_ROOT / "risk_decision.cpp").resolve(),
+        (root / AUTHORITY_SOURCE_ROOT / "risk_arithmetic.hpp").resolve(),
+    }
+    custom_command_violations = [
+        BoundaryViolation(
+            Path(str(trace.get("file", owner_path))),
+            "configured-target-property:CUSTOM_COMMAND",
+            result.stdout.strip(),
+        )
+        for trace in traces
+        if "CUSTOM_COMMAND" in post_guard_mutation_properties(trace, sources)
+    ]
+    if custom_command_violations:
+        return list(dict.fromkeys(custom_command_violations))
+
     guard_path = (root / AUTHORITY_GUARD_CMAKE).resolve()
     sentinel_indices = [
         index
@@ -1227,10 +1337,6 @@ def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
             )
         ]
     if sentinel_indices:
-        sources = {
-            (root / AUTHORITY_SOURCE_ROOT / "risk_decision.cpp").resolve(),
-            (root / AUTHORITY_SOURCE_ROOT / "risk_arithmetic.hpp").resolve(),
-        }
         post_guard_violations: list[BoundaryViolation] = []
         for trace in traces[sentinel_indices[-1] + 1 :]:
             for property_name in post_guard_mutation_properties(trace, sources):

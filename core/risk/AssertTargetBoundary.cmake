@@ -6,6 +6,24 @@ if(COMMAND _message)
   set_property(TARGET __chronos_m6_command_override_is_forbidden PROPERTY TYPE STATIC_LIBRARY)
 endif()
 
+set(_chronos_risk_empty_directory_properties
+  COMPILE_DEFINITIONS
+  COMPILE_OPTIONS
+  INCLUDE_DIRECTORIES)
+foreach(_chronos_risk_directory_property
+    IN LISTS _chronos_risk_empty_directory_properties)
+  get_property(
+    _chronos_risk_directory_property_value
+    DIRECTORY "${CMAKE_CURRENT_LIST_DIR}"
+    PROPERTY "${_chronos_risk_directory_property}")
+  if(NOT "${_chronos_risk_directory_property_value}" STREQUAL "")
+    message(FATAL_ERROR
+      "CHRONOS_M6_BOUNDARY_VIOLATION:DIRECTORY_${_chronos_risk_directory_property}: "
+      "expected an empty directory property, got "
+      "`${_chronos_risk_directory_property_value}`")
+  endif()
+endforeach()
+
 set(_chronos_risk_expected_link_libraries
   chronos_contracts
   chronos_portfolio
@@ -113,30 +131,6 @@ foreach(_chronos_risk_property IN LISTS _chronos_risk_empty_properties)
   endif()
 endforeach()
 
-set(_chronos_risk_source
-  "${CMAKE_CURRENT_LIST_DIR}/src/risk_decision.cpp")
-get_source_file_property(
-  _chronos_risk_source_language
-  "${_chronos_risk_source}"
-  TARGET_DIRECTORY chronos_risk
-  LANGUAGE)
-if(NOT "${_chronos_risk_source_language}" STREQUAL "CXX")
-  message(FATAL_ERROR
-    "CHRONOS_M6_BOUNDARY_VIOLATION:SOURCE_LANGUAGE: expected `CXX`, got "
-    "`${_chronos_risk_source_language}`")
-endif()
-
-get_source_file_property(
-  _chronos_risk_source_generated
-  "${_chronos_risk_source}"
-  TARGET_DIRECTORY chronos_risk
-  GENERATED)
-if(NOT "${_chronos_risk_source_generated}" STREQUAL "0")
-  message(FATAL_ERROR
-    "CHRONOS_M6_BOUNDARY_VIOLATION:SOURCE_GENERATED: expected `0`, got "
-    "`${_chronos_risk_source_generated}`")
-endif()
-
 set(_chronos_risk_empty_source_properties
   COMPILE_DEFINITIONS
   COMPILE_FLAGS
@@ -184,19 +178,54 @@ foreach(_chronos_risk_configuration IN LISTS _chronos_risk_configurations)
   endif()
 endforeach()
 
-foreach(_chronos_risk_source_property
-    IN LISTS _chronos_risk_empty_source_properties)
+set(_chronos_risk_canonical_sources
+  "${CMAKE_CURRENT_LIST_DIR}/src/risk_decision.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/src/risk_arithmetic.hpp")
+foreach(_chronos_risk_source IN LISTS _chronos_risk_canonical_sources)
+  set(_chronos_risk_expected_source_language "")
+  if("${_chronos_risk_source}" STREQUAL
+      "${CMAKE_CURRENT_LIST_DIR}/src/risk_decision.cpp")
+    set(_chronos_risk_expected_source_language CXX)
+  endif()
+
   get_source_file_property(
-    _chronos_risk_source_property_value
+    _chronos_risk_source_language
     "${_chronos_risk_source}"
     TARGET_DIRECTORY chronos_risk
-    "${_chronos_risk_source_property}")
-  if(NOT "${_chronos_risk_source_property_value}" STREQUAL "NOTFOUND")
+    LANGUAGE)
+  if(NOT "${_chronos_risk_source_language}" STREQUAL
+      "${_chronos_risk_expected_source_language}")
     message(FATAL_ERROR
-      "CHRONOS_M6_BOUNDARY_VIOLATION:SOURCE_${_chronos_risk_source_property}: "
-      "expected an unset source property, got "
-      "`${_chronos_risk_source_property_value}`")
+      "CHRONOS_M6_BOUNDARY_VIOLATION:SOURCE_LANGUAGE: expected "
+      "`${_chronos_risk_expected_source_language}`, got "
+      "`${_chronos_risk_source_language}` for `${_chronos_risk_source}`")
   endif()
+
+  get_source_file_property(
+    _chronos_risk_source_generated
+    "${_chronos_risk_source}"
+    TARGET_DIRECTORY chronos_risk
+    GENERATED)
+  if(NOT "${_chronos_risk_source_generated}" STREQUAL "0")
+    message(FATAL_ERROR
+      "CHRONOS_M6_BOUNDARY_VIOLATION:SOURCE_GENERATED: expected `0`, got "
+      "`${_chronos_risk_source_generated}` for `${_chronos_risk_source}`")
+  endif()
+
+  foreach(_chronos_risk_source_property
+      IN LISTS _chronos_risk_empty_source_properties)
+    get_source_file_property(
+      _chronos_risk_source_property_value
+      "${_chronos_risk_source}"
+      TARGET_DIRECTORY chronos_risk
+      "${_chronos_risk_source_property}")
+    if(NOT "${_chronos_risk_source_property_value}" STREQUAL "NOTFOUND")
+      message(FATAL_ERROR
+        "CHRONOS_M6_BOUNDARY_VIOLATION:SOURCE_${_chronos_risk_source_property}: "
+        "expected an unset source property, got "
+        "`${_chronos_risk_source_property_value}` for `${_chronos_risk_source}`")
+    endif()
+  endforeach()
 endforeach()
 
 set(_chronos_m6_risk_boundary_assertion_complete TRUE)

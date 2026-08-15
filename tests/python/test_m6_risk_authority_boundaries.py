@@ -265,6 +265,66 @@ def test_direct_include_and_compile_capabilities_are_rejected(tmp_path: Path) ->
         assert configured_properties(root, configure_directly=True) == {expected_property}
 
 
+def test_owner_directory_compile_definition_is_rejected(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        owner_before_guard="add_compile_definitions(BOUNDARY_BYPASS)\n",
+    )
+
+    assert configured_properties(tmp_path, configure_directly=True) == {
+        "DIRECTORY_COMPILE_DEFINITIONS"
+    }
+
+
+def test_owner_directory_compile_and_include_variants_are_rejected(tmp_path: Path) -> None:
+    mutations = (
+        ("add_compile_options(-fno-exceptions)\n", "DIRECTORY_COMPILE_OPTIONS"),
+        ("include_directories(/unexpected)\n", "DIRECTORY_INCLUDE_DIRECTORIES"),
+    )
+    for index, (mutation, expected_property) in enumerate(mutations):
+        root = tmp_path / str(index)
+        write_native_cmake_project(root, owner_before_guard=mutation)
+
+        assert configured_properties(root, configure_directly=True) == {expected_property}
+
+
+def test_target_custom_command_is_rejected(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        owner_before_guard=(
+            "add_custom_command(TARGET chronos_risk POST_BUILD\n"
+            "  COMMAND ${CMAKE_COMMAND} -E echo BOUNDARY_BYPASS)\n"
+        ),
+    )
+
+    assert configured_properties(tmp_path, configure_directly=True) == {"CUSTOM_COMMAND"}
+
+
+def test_dynamic_and_callable_target_custom_commands_are_rejected(tmp_path: Path) -> None:
+    mutations = (
+        (
+            "function(attach_custom_command target)\n"
+            "  add_custom_command(TARGET ${target} POST_BUILD\n"
+            "    COMMAND ${CMAKE_COMMAND} -E echo BOUNDARY_BYPASS)\n"
+            "endfunction()\n"
+            "attach_custom_command(chronos_risk)\n"
+        ),
+        (
+            "function(add_custom_command)\nendfunction()\n"
+            "set(custom_command _add_custom_command)\n"
+            "set(risk_target chronos_ris)\n"
+            "string(APPEND risk_target k)\n"
+            "cmake_language(CALL ${custom_command} TARGET ${risk_target} POST_BUILD\n"
+            "  COMMAND ${CMAKE_COMMAND} -E echo BOUNDARY_BYPASS)\n"
+        ),
+    )
+    for index, mutation in enumerate(mutations):
+        root = tmp_path / str(index)
+        write_native_cmake_project(root, owner_before_guard=mutation)
+
+        assert configured_properties(root, configure_directly=True) == {"CUSTOM_COMMAND"}
+
+
 def test_external_module_cannot_inject_sources_or_consumer_direct_links(
     tmp_path: Path,
 ) -> None:
@@ -343,6 +403,32 @@ def test_source_file_compile_definition_mutation_is_rejected(tmp_path: Path) -> 
     )
 
     assert configured_properties(root, configure_directly=True) == {"SOURCE_COMPILE_DEFINITIONS"}
+
+
+def test_header_language_mutation_is_rejected(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        owner_before_guard=(
+            "set_source_files_properties(src/risk_arithmetic.hpp\n"
+            "  TARGET_DIRECTORY chronos_risk\n"
+            "  PROPERTIES LANGUAGE CXX)\n"
+        ),
+    )
+
+    assert configured_properties(tmp_path, configure_directly=True) == {"SOURCE_LANGUAGE"}
+
+
+def test_header_compile_capability_is_rejected(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        owner_before_guard=(
+            "set_source_files_properties(src/risk_arithmetic.hpp\n"
+            "  TARGET_DIRECTORY chronos_risk\n"
+            "  PROPERTIES COMPILE_OPTIONS -fno-exceptions)\n"
+        ),
+    )
+
+    assert configured_properties(tmp_path, configure_directly=True) == {"SOURCE_COMPILE_OPTIONS"}
 
 
 def test_message_override_cannot_swallow_boundary_failure(tmp_path: Path) -> None:
