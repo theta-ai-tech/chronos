@@ -43,3 +43,4 @@ target_link_libraries(chronos_boundary
 
 add_subdirectory(features)
 add_subdirectory(portfolio)
+add_subdirectory(risk)

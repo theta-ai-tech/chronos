@@ -110,6 +110,24 @@ def test_native_guard_accepts_exact_target_and_leaves_no_build_tree(tmp_path: Pa
     assert list(tmp_path.rglob("CMakeCache.txt")) == []
 
 
+def test_portfolio_verifier_accepts_the_preceding_risk_guard(tmp_path: Path) -> None:
+    write_portfolio_source(tmp_path)
+    write_portfolio_owner(tmp_path, valid_owner_cmake())
+    risk_guard = tmp_path / "core/risk/AssertTargetBoundary.cmake"
+    risk_guard.parent.mkdir(parents=True)
+    risk_guard.write_text(
+        (REPOSITORY_ROOT / "core/risk/AssertTargetBoundary.cmake").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    (tmp_path / "CMakeLists.txt").write_text(
+        "add_subdirectory(core)\n"
+        "include(core/risk/AssertTargetBoundary.cmake)\n" + NATIVE_GUARD_TAIL,
+        encoding="utf-8",
+    )
+
+    assert boundary.find_violations(tmp_path) == []
+
+
 def test_included_directory_mutations_in_root_core_and_owner_are_rejected(
     tmp_path: Path,
 ) -> None:

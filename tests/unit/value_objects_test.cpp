@@ -9,6 +9,9 @@
 
 using namespace chronos::contracts;
 
+static_assert(!std::same_as<RiskScopeId, RiskDecisionId>);
+static_assert(!std::same_as<RiskObligationId, RiskEvaluationOutcomeId>);
+
 namespace {
 constexpr auto kIdentity = "018f1f6e-7d3a-7c4b-8a91-0123456789ab";
 constexpr auto kOtherIdentity = "018f1f6e-7d3a-7c4b-8a91-0123456789ac";
@@ -27,6 +30,11 @@ TEST_CASE("opaque IDs parse canonical UUIDs without business semantics") {
   CHECK(!EventId::parse("018f1f6e-7d3a-7c4b-8a91-0123456789a-").has_value());
   CHECK((!std::is_same_v<EventId, ListingId>));
   CHECK((!std::is_same_v<CanonicalInstrumentId, ListingId>));
+
+  const auto risk_id =
+      RiskDecisionId::parse("00000000-0000-0000-0000-000000000001");
+  CHECK(risk_id.has_value());
+  CHECK(risk_id->to_string() == "00000000-0000-0000-0000-000000000001");
 }
 
 TEST_CASE("opaque IDs derive totally from a SHA-256 digest prefix") {
