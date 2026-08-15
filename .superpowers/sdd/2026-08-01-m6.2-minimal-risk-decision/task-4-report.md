@@ -179,3 +179,82 @@ uv run ruff format --check tools/development/verify_m6_risk_authority_boundaries
 Implementation commit: `d1aa360`.
 
 Fix-round concerns: none.
+
+## Fix Round 2
+
+Scoped review found that built-in alias normalization was too broad and that a
+static prerequisite violation could suppress configured trace analysis. Both
+paths were corrected with regression-first coverage.
+
+### Exact Single-Underscore Aliases
+
+Protected CMake mutation commands now recognize only the exact built-in alias
+form with one leading underscore. For example, `_target_link_libraries` maps to
+`target_link_libraries`, while `__target_link_libraries` and names with further
+leading underscores remain arbitrary user functions.
+
+The existing real-fixture regression continues to reject the exact built-in
+alias after both guards. A new real fixture defines and defers a harmless
+`__target_link_libraries` function after both guards and verifies that it is not
+classified as a protected mutation. Before the implementation change, the new
+test failed because `lstrip("_")` normalized both forms to the built-in name.
+
+### Configure Eligibility After Missing Prerequisites
+
+A full fixture is now eligible for configured graph analysis when either
+canonical configure prerequisite remains. This preserves static-only fixtures,
+which contain neither signal, while ensuring that deleting only `project()` or
+only `cmake_minimum_required()` cannot disable expanded JSON trace checks.
+
+Configured trace analysis now examines the guard sentinel and post-guard
+mutations even when CMake ultimately returns a prerequisite-related failure.
+The regressions delete each prerequisite independently and defer a dynamically
+composed `target_link_libraries` mutation after the guards; both report the
+missing prerequisite and `configured-target-property:LINK_LIBRARIES`.
+Canonical static ownership remains fixed to `src/risk_decision.cpp` and
+`src/risk_arithmetic.hpp`. The missing-project plus extra-source fixture also
+retains its static violations and now reports configured source mutation
+evidence.
+
+Initial focused RED had three failures: the double-underscore function was
+misclassified, and neither missing-prerequisite fixture reported the configured
+post-guard link mutation. The exact single-underscore alias regression already
+passed and remained protected throughout.
+
+### Fix Verification
+
+Executed from the task worktree:
+
+```text
+four focused round-2 regressions after final formatting
+4 passed in 2.40s
+
+uv run pytest tests/python/test_m6_risk_authority_boundaries.py -q
+75 passed in 23.16s
+
+uv run pytest tests/python/test_m5_authority_boundaries.py \
+  tests/python/test_m6_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py -q
+162 passed in 36.27s
+
+python3 tools/development/verify_m6_authority_boundaries.py
+[OK] M6 portfolio authority has no forbidden dependencies
+
+python3 tools/development/verify_m6_risk_authority_boundaries.py
+[OK] M6 risk authority has no forbidden dependencies
+
+uv run ruff check tools/development/verify_m6_risk_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py
+All checks passed!
+
+uv run ruff format --check tools/development/verify_m6_risk_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py
+2 files already formatted
+
+git diff --check
+passed
+```
+
+Implementation commit: `8adb608`.
+
+Fix-round concerns: none.
