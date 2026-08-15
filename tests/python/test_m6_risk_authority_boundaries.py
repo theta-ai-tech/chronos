@@ -454,6 +454,23 @@ def test_deferred_builtin_alias_mutation_after_guards_is_rejected(tmp_path: Path
     assert configured_properties(tmp_path) == {"LINK_LIBRARIES"}
 
 
+def test_double_underscore_function_is_not_a_builtin_alias(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        root_after_core=(
+            "function(__target_link_libraries)\n"
+            "endfunction()\n"
+            "set(late_command __target_link_libraries)\n"
+            "set(late_target chronos_ris)\n"
+            "string(APPEND late_target k)\n"
+            "cmake_language(DEFER CALL ${late_command} "
+            "${late_target} PRIVATE chronos_recommendation)\n"
+        ),
+    )
+
+    assert boundary.find_violations(tmp_path) == []
+
+
 def test_successful_configure_requires_guard_execution(tmp_path: Path) -> None:
     write_native_cmake_project(
         tmp_path,
@@ -568,8 +585,61 @@ def test_missing_project_and_declared_extra_source_fail_closed(tmp_path: Path) -
     )
 
     assert {item.dependency for item in boundary.find_violations(tmp_path)} == {
+        "configured-target-property:SOURCES",
         "missing-cmake-configure-prerequisite:project",
         "noncanonical-authority-sources",
+    }
+
+
+def test_missing_project_still_checks_post_guard_trace(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        root_after_core=(
+            "set(late_target chronos_ris)\n"
+            "string(APPEND late_target k)\n"
+            "cmake_language(DEFER CALL target_link_libraries "
+            "${late_target} PRIVATE chronos_recommendation)\n"
+        ),
+    )
+    root_cmake = tmp_path / "CMakeLists.txt"
+    root_cmake.write_text(
+        root_cmake.read_text(encoding="utf-8").replace(
+            "project(M6BoundaryFixture LANGUAGES CXX)\n",
+            "",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    assert {item.dependency for item in boundary.find_violations(tmp_path)} == {
+        "configured-target-property:LINK_LIBRARIES",
+        "missing-cmake-configure-prerequisite:project",
+    }
+
+
+def test_missing_cmake_minimum_still_checks_post_guard_trace(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        root_after_core=(
+            "set(late_target chronos_ris)\n"
+            "string(APPEND late_target k)\n"
+            "cmake_language(DEFER CALL target_link_libraries "
+            "${late_target} PRIVATE chronos_recommendation)\n"
+        ),
+    )
+    root_cmake = tmp_path / "CMakeLists.txt"
+    root_cmake.write_text(
+        root_cmake.read_text(encoding="utf-8").replace(
+            "cmake_minimum_required(VERSION 3.24)\n",
+            "",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    assert {item.dependency for item in boundary.find_violations(tmp_path)} == {
+        "configured-target-property:LINK_LIBRARIES",
+        "missing-cmake-configure-prerequisite:cmake_minimum_required",
     }
 
 

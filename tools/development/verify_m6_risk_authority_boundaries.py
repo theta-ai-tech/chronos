@@ -1048,6 +1048,15 @@ def is_configurable_cmake_project(root_cmake: str | None) -> bool:
     )
 
 
+def is_configure_eligible_cmake_project(root_cmake: str | None) -> bool:
+    if root_cmake is None:
+        return False
+    return any(
+        re.search(rf"(?im)^[ \t]*{command}[ \t]*\(", root_cmake)
+        for command in ("cmake_minimum_required", "project")
+    )
+
+
 def missing_configure_prerequisites(root: Path, root_cmake: str | None) -> tuple[str, ...]:
     if root_cmake is None:
         return ()
@@ -1102,8 +1111,12 @@ def properties_after_marker(arguments: list[str], marker: str) -> list[str]:
 
 def normalize_post_guard_mutation_command(command: str) -> str:
     normalized = command.lower()
-    builtin = normalized.lstrip("_")
-    if normalized.startswith("_") and builtin in POST_GUARD_MUTATION_COMMANDS:
+    builtin = normalized[1:]
+    if (
+        normalized.startswith("_")
+        and not normalized.startswith("__")
+        and (builtin in POST_GUARD_MUTATION_COMMANDS)
+    ):
         return builtin
     return normalized
 
@@ -1193,24 +1206,24 @@ def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
                 )
             ]
 
-    if result.returncode == 0:
-        guard_path = (root / AUTHORITY_GUARD_CMAKE).resolve()
-        sentinel_indices = [
-            index
-            for index, trace in enumerate(traces)
-            if Path(str(trace.get("file", ""))).resolve() == guard_path
-            and str(trace.get("cmd", "")).lower() == "set"
-            and trace_arguments(trace)
-            == [NATIVE_GUARD_TRACE_SENTINEL_VARIABLE, NATIVE_GUARD_TRACE_SENTINEL_VALUE]
+    guard_path = (root / AUTHORITY_GUARD_CMAKE).resolve()
+    sentinel_indices = [
+        index
+        for index, trace in enumerate(traces)
+        if Path(str(trace.get("file", ""))).resolve() == guard_path
+        and str(trace.get("cmd", "")).lower() == "set"
+        and trace_arguments(trace)
+        == [NATIVE_GUARD_TRACE_SENTINEL_VARIABLE, NATIVE_GUARD_TRACE_SENTINEL_VALUE]
+    ]
+    if result.returncode == 0 and not sentinel_indices:
+        return [
+            BoundaryViolation(
+                root / AUTHORITY_GUARD_CMAKE,
+                "configured-target-property:GUARD_NOT_EXECUTED",
+                result.stdout.strip(),
+            )
         ]
-        if not sentinel_indices:
-            return [
-                BoundaryViolation(
-                    root / AUTHORITY_GUARD_CMAKE,
-                    "configured-target-property:GUARD_NOT_EXECUTED",
-                    result.stdout.strip(),
-                )
-            ]
+    if sentinel_indices:
         sources = {
             (root / AUTHORITY_SOURCE_ROOT / "risk_decision.cpp").resolve(),
             (root / AUTHORITY_SOURCE_ROOT / "risk_arithmetic.hpp").resolve(),
@@ -1225,7 +1238,8 @@ def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
                         result.stdout.strip(),
                     )
                 )
-        return list(dict.fromkeys(post_guard_violations))
+        if post_guard_violations or result.returncode == 0:
+            return list(dict.fromkeys(post_guard_violations))
 
     properties = list(
         dict.fromkeys(
@@ -1426,8 +1440,12 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
             )
         )
     violations = list(dict.fromkeys(violations))
-    if not violations and is_configurable_cmake_project(root_cmake):
-        violations.extend(configured_graph_violations(root))
+    if is_configure_eligible_cmake_project(root_cmake):
+        configured_violations = configured_graph_violations(root)
+        if not violations or any(
+            violation.dependency != "cmake-configure-failed" for violation in configured_violations
+        ):
+            violations.extend(configured_violations)
     return violations
 
 
