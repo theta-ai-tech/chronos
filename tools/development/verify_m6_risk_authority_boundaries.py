@@ -75,6 +75,7 @@ DIRECTORY_SCOPED_LINK_COMMANDS = {
 NATIVE_GUARD_SENTINEL = "CHRONOS_M6_BOUNDARY_VIOLATION:"
 NATIVE_GUARD_INCLUDE = "core/risk/AssertTargetBoundary.cmake"
 PORTFOLIO_GUARD_INCLUDE = "core/portfolio/AssertTargetBoundary.cmake"
+PORTFOLIO_GUARD_CMAKE = Path(PORTFOLIO_GUARD_INCLUDE)
 NATIVE_GUARD_SYNTHETIC_FUNCTION = "_chronos_assert_risk_boundary"
 NATIVE_GUARD_EXACT_CHECKS = (
     (
@@ -201,6 +202,19 @@ POST_GUARD_TARGET_PROPERTIES = {
     "target_precompile_headers": "PRECOMPILE_HEADERS",
     "target_sources": "SOURCES",
 }
+POST_GUARD_MUTATION_COMMANDS = frozenset(
+    set(POST_GUARD_TARGET_PROPERTIES)
+    | {
+        "add_custom_command",
+        "set_property",
+        "set_source_files_properties",
+        "set_target_properties",
+    }
+)
+CANONICAL_AUTHORITY_SOURCES = (
+    "src/risk_arithmetic.hpp",
+    "src/risk_decision.cpp",
+)
 
 
 @dataclass(frozen=True)
@@ -1034,6 +1048,18 @@ def is_configurable_cmake_project(root_cmake: str | None) -> bool:
     )
 
 
+def missing_configure_prerequisites(root: Path, root_cmake: str | None) -> tuple[str, ...]:
+    if root_cmake is None:
+        return ()
+    present = {
+        command: bool(re.search(rf"(?im)^[ \t]*{command}[ \t]*\(", root_cmake))
+        for command in ("cmake_minimum_required", "project")
+    }
+    if not any(present.values()) and not (root / PORTFOLIO_GUARD_CMAKE).is_file():
+        return ()
+    return tuple(command for command, is_present in present.items() if not is_present)
+
+
 def trace_entries(output: str) -> list[dict[str, object]]:
     entries: list[dict[str, object]] = []
     for line in output.splitlines():
@@ -1074,8 +1100,16 @@ def properties_after_marker(arguments: list[str], marker: str) -> list[str]:
     return [arguments[position].upper() for position in range(index + 1, len(arguments), 2)]
 
 
+def normalize_post_guard_mutation_command(command: str) -> str:
+    normalized = command.lower()
+    builtin = normalized.lstrip("_")
+    if normalized.startswith("_") and builtin in POST_GUARD_MUTATION_COMMANDS:
+        return builtin
+    return normalized
+
+
 def post_guard_mutation_properties(trace: dict[str, object], sources: set[Path]) -> list[str]:
-    command = str(trace.get("cmd", "")).lower()
+    command = normalize_post_guard_mutation_command(str(trace.get("cmd", "")))
     arguments = trace_arguments(trace)
     if command in POST_GUARD_TARGET_PROPERTIES and arguments and arguments[0] == TARGET:
         return [POST_GUARD_TARGET_PROPERTIES[command]]
@@ -1349,6 +1383,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
 
     source_root = (root / AUTHORITY_SOURCE_ROOT).resolve()
     declared_sources: set[Path] = set()
+    invalid_source_declaration = False
     sources = cmake_tokens(
         cmake_call_bodies(owner_cmake, "add_library", TARGET, top_level=True)
         + cmake_call_bodies(owner_cmake, "target_sources", TARGET, top_level=True)
@@ -1356,6 +1391,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     for source in sources:
         if "$" in source:
             violations.append(BoundaryViolation(owner_path, "dynamic-authority-source"))
+            invalid_source_declaration = True
             continue
         source_path = Path(source)
         if source_path.suffix.lower() not in NATIVE_SUFFIXES:
@@ -1363,6 +1399,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
         resolved_source = (owner_path.parent / source_path).resolve()
         if not within(resolved_source, source_root):
             violations.append(BoundaryViolation(owner_path, "source-outside-authority"))
+            invalid_source_declaration = True
             continue
         declared_sources.add(resolved_source)
     actual_sources = {
@@ -1374,8 +1411,20 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
             and not is_generated_path(path, root)
         )
     }
+    canonical_sources = {
+        (owner_path.parent / source).resolve() for source in CANONICAL_AUTHORITY_SOURCES
+    }
     if actual_sources != declared_sources:
         violations.append(BoundaryViolation(owner_path, "authority-source-not-declared"))
+    elif not invalid_source_declaration and declared_sources != canonical_sources:
+        violations.append(BoundaryViolation(owner_path, "noncanonical-authority-sources"))
+    for prerequisite in missing_configure_prerequisites(root, root_cmake):
+        violations.append(
+            BoundaryViolation(
+                root_path,
+                f"missing-cmake-configure-prerequisite:{prerequisite}",
+            )
+        )
     violations = list(dict.fromkeys(violations))
     if not violations and is_configurable_cmake_project(root_cmake):
         violations.extend(configured_graph_violations(root))

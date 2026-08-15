@@ -437,6 +437,23 @@ def test_deferred_mutations_after_guard_are_rejected(tmp_path: Path) -> None:
     }
 
 
+def test_deferred_builtin_alias_mutation_after_guards_is_rejected(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        root_after_core=(
+            "function(target_link_libraries)\n"
+            "endfunction()\n"
+            "set(late_command _target_link_libraries)\n"
+            "set(late_target chronos_ris)\n"
+            "string(APPEND late_target k)\n"
+            "cmake_language(DEFER CALL ${late_command} "
+            "${late_target} PRIVATE chronos_recommendation)\n"
+        ),
+    )
+
+    assert configured_properties(tmp_path) == {"LINK_LIBRARIES"}
+
+
 def test_successful_configure_requires_guard_execution(tmp_path: Path) -> None:
     write_native_cmake_project(
         tmp_path,
@@ -525,6 +542,35 @@ def test_configure_tail_is_required_even_without_project_command(tmp_path: Path)
     root_cmake = root_cmake.replace(NATIVE_GUARD_TAIL, "", 1)
 
     assert not boundary.has_native_target_guard(owner_cmake, root_cmake, guard_cmake)
+
+
+def test_missing_project_and_declared_extra_source_fail_closed(tmp_path: Path) -> None:
+    write_native_cmake_project(tmp_path)
+    extra = tmp_path / "core/risk/src/extra.cpp"
+    extra.write_text("int extra() { return 0; }\n", encoding="utf-8")
+    owner = tmp_path / "core/risk/CMakeLists.txt"
+    owner.write_text(
+        owner.read_text(encoding="utf-8").replace(
+            "src/risk_arithmetic.hpp)",
+            "src/risk_arithmetic.hpp\n  src/extra.cpp)",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    root_cmake = tmp_path / "CMakeLists.txt"
+    root_cmake.write_text(
+        root_cmake.read_text(encoding="utf-8").replace(
+            "project(M6BoundaryFixture LANGUAGES CXX)\n",
+            "",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    assert {item.dependency for item in boundary.find_violations(tmp_path)} == {
+        "missing-cmake-configure-prerequisite:project",
+        "noncanonical-authority-sources",
+    }
 
 
 def test_repository_message_override_is_a_static_violation(tmp_path: Path) -> None:
