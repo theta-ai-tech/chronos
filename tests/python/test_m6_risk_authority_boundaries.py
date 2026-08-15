@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def load_tool():
     path = (
@@ -127,6 +129,32 @@ def configured_properties(root: Path, *, configure_directly: bool = False) -> se
         for violation in violations
         if violation.dependency.startswith("configured-target-property:")
     }
+
+
+def risk_compile_command(root: Path) -> str:
+    build = root / "compile-command-proof"
+    result = subprocess.run(
+        [
+            "cmake",
+            "-S",
+            str(root),
+            "-B",
+            str(build),
+            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            "-Wno-dev",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    compile_commands = json.loads((build / "compile_commands.json").read_text(encoding="utf-8"))
+    return next(
+        entry["command"]
+        for entry in compile_commands
+        if entry["file"].endswith("core/risk/src/risk_decision.cpp")
+    )
 
 
 def test_generated_path_scan_normalizes_logical_root_alias(tmp_path: Path) -> None:
@@ -299,29 +327,7 @@ def test_owner_cxx_flags_mutation_is_rejected_after_changing_compile_commands(
             'set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DCHRONOS_REVIEW_BYPASS -I/unexpected")\n'
         ),
     )
-    build = tmp_path / "compile-command-proof"
-    result = subprocess.run(
-        [
-            "cmake",
-            "-S",
-            str(tmp_path),
-            "-B",
-            str(build),
-            "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-            "-Wno-dev",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    compile_commands = json.loads((build / "compile_commands.json").read_text(encoding="utf-8"))
-    risk_command = next(
-        entry["command"]
-        for entry in compile_commands
-        if entry["file"].endswith("core/risk/src/risk_decision.cpp")
-    )
+    risk_command = risk_compile_command(tmp_path)
     assert "-DCHRONOS_REVIEW_BYPASS" in risk_command
     assert "-I/unexpected" in risk_command
 
@@ -362,6 +368,91 @@ def test_owner_indirect_cxx_flags_mutations_are_rejected(tmp_path: Path) -> None
         assert {item.dependency for item in boundary.configured_graph_violations(root)} == {
             f"configured-cmake-variable:{variable}"
         }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "define"),
+    (
+        (
+            'string(REPLACE X "-DCHRONOS_STRING_REPLACE_BYPASS" CMAKE_CXX_FLAGS X)\n',
+            "CHRONOS_STRING_REPLACE_BYPASS",
+        ),
+        (
+            'string(REGEX REPLACE "^X$" "-DCHRONOS_REGEX_REPLACE_BYPASS" CMAKE_CXX_FLAGS X)\n',
+            "CHRONOS_REGEX_REPLACE_BYPASS",
+        ),
+        (
+            'set(_risk_flag_template "-DCHRONOS_STRING_CONFIGURE_BYPASS")\n'
+            'string(CONFIGURE "${_risk_flag_template}" CMAKE_CXX_FLAGS @ONLY)\n',
+            "CHRONOS_STRING_CONFIGURE_BYPASS",
+        ),
+        (
+            "set(_risk_flags -DCHRONOS_LIST_JOIN_BYPASS)\n"
+            'list(JOIN _risk_flags " " CMAKE_CXX_FLAGS)\n',
+            "CHRONOS_LIST_JOIN_BYPASS",
+        ),
+    ),
+    ids=("string-replace", "string-regex-replace", "string-configure", "list-join"),
+)
+def test_output_form_cxx_flags_mutations_change_compile_commands_and_are_rejected(
+    tmp_path: Path,
+    mutation: str,
+    define: str,
+) -> None:
+    write_native_cmake_project(tmp_path, owner_before_guard=mutation)
+
+    assert f"-D{define}" in risk_compile_command(tmp_path)
+    assert {item.dependency for item in boundary.configured_graph_violations(tmp_path)} == {
+        "configured-cmake-variable:CMAKE_CXX_FLAGS"
+    }
+
+
+def test_expanded_cxx_flags_read_and_copy_remain_allowed(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        owner_before_guard=(
+            'set(_risk_flags_copy "${CMAKE_CXX_FLAGS}")\n'
+            'message(VERBOSE "risk flags: ${CMAKE_CXX_FLAGS}")\n'
+        ),
+    )
+
+    assert boundary.configured_graph_violations(tmp_path) == []
+
+
+def test_external_module_cxx_flags_output_is_excluded_by_trace_source(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    external = tmp_path / "external"
+    external.mkdir()
+    module = external / "RiskFlags.cmake"
+    module.write_text(
+        'string(REPLACE X "-DCHRONOS_EXTERNAL_MODULE" CMAKE_CXX_FLAGS X)\n',
+        encoding="utf-8",
+    )
+    write_native_cmake_project(
+        root,
+        owner_before_guard=f'include("{module}")\n',
+    )
+
+    assert "-DCHRONOS_EXTERNAL_MODULE" in risk_compile_command(root)
+    assert boundary.configured_graph_violations(root) == []
+
+
+def test_external_toolchain_cxx_flags_output_is_excluded_by_trace_source(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    external = tmp_path / "external"
+    external.mkdir()
+    toolchain = external / "toolchain.cmake"
+    toolchain.write_text(
+        'set(CMAKE_CXX_FLAGS "-DCHRONOS_EXTERNAL_TOOLCHAIN" CACHE STRING "" FORCE)\n',
+        encoding="utf-8",
+    )
+    write_native_cmake_project(
+        root,
+        root_preamble=f'set(CMAKE_TOOLCHAIN_FILE "{toolchain}")\n',
+    )
+
+    assert "-DCHRONOS_EXTERNAL_TOOLCHAIN" in risk_compile_command(root)
+    assert boundary.configured_graph_violations(root) == []
 
 
 def test_executed_callable_eval_and_deferred_cxx_flags_mutations_are_rejected(

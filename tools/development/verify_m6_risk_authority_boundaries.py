@@ -224,24 +224,6 @@ POST_GUARD_MUTATION_COMMANDS = frozenset(
         "set_target_properties",
     }
 )
-CMAKE_VARIABLE_MUTATION_COMMANDS = frozenset({"list", "set", "string", "unset"})
-CMAKE_LIST_MUTATION_OPERATIONS = frozenset(
-    {
-        "APPEND",
-        "FILTER",
-        "INSERT",
-        "POP_BACK",
-        "POP_FRONT",
-        "PREPEND",
-        "REMOVE_AT",
-        "REMOVE_DUPLICATES",
-        "REMOVE_ITEM",
-        "REVERSE",
-        "SORT",
-        "TRANSFORM",
-    }
-)
-CMAKE_STRING_MUTATION_OPERATIONS = frozenset({"APPEND", "CONCAT", "PREPEND"})
 CANONICAL_AUTHORITY_SOURCES = (
     "src/risk_arithmetic.hpp",
     "src/risk_decision.cpp",
@@ -1236,28 +1218,11 @@ def is_cxx_flags_variable(variable: str) -> bool:
     return variable == "CMAKE_CXX_FLAGS" or variable.startswith("CMAKE_CXX_FLAGS_")
 
 
-def trace_mutated_cxx_flags_variable(trace: dict[str, object]) -> str | None:
-    command = normalize_cmake_builtin_alias(
-        str(trace.get("cmd", "")), CMAKE_VARIABLE_MUTATION_COMMANDS
+def trace_retained_cxx_flags_variable(trace: dict[str, object]) -> str | None:
+    return next(
+        (argument for argument in trace_arguments(trace) if is_cxx_flags_variable(argument)),
+        None,
     )
-    arguments = trace_arguments(trace)
-    if command in {"set", "unset"} and arguments:
-        variable = arguments[0]
-    elif (
-        command == "list"
-        and len(arguments) > 1
-        and arguments[0].upper() in CMAKE_LIST_MUTATION_OPERATIONS
-    ):
-        variable = arguments[1]
-    elif (
-        command == "string"
-        and len(arguments) > 1
-        and arguments[0].upper() in CMAKE_STRING_MUTATION_OPERATIONS
-    ):
-        variable = arguments[1]
-    else:
-        return None
-    return variable if is_cxx_flags_variable(variable) else None
 
 
 def properties_after_marker(arguments: list[str], marker: str) -> list[str]:
@@ -1371,7 +1336,7 @@ def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
             )
             for trace in traces[owner_trace_indices[0] :]
             if is_project_trace(trace, root)
-            if (variable := trace_mutated_cxx_flags_variable(trace)) is not None
+            if (variable := trace_retained_cxx_flags_variable(trace)) is not None
         ]
         if cxx_flags_violations:
             return list(dict.fromkeys(cxx_flags_violations))
