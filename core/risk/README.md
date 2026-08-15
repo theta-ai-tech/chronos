@@ -1,11 +1,20 @@
 # core/risk/
 
+> **Submodule owner stub (M0.1).** Implemented beginning in M6.2.
+
+- **Parent:** `core/`
+- **Owner:** Inherits `core/` ownership.
+- **Plane:** Inherits `core/` plane.
+- **Language:** Inherits `core/` language policy.
+- **Public API:** `chronos/core/risk/risk_decision.hpp`
+- **Purpose:** Deterministic risk-policy decisions over admitted portfolio targets.
+- **Accepted dependencies:** contracts and the immutable portfolio target API;
+  common build-policy targets are private.
+
 `chronos_risk` is the M6.2 deterministic, fail-closed risk-policy authority.
 It evaluates one M6.1 `portfolio::TargetPosition`; it does not reserve
 exposure, create executable work, or mutate any input.
 
-- **Parent:** `core/`
-- **Public API:** `chronos/core/risk/risk_decision.hpp`
 - **Target:** `chronos_risk`
 - **Public dependencies:** `chronos_contracts`, `chronos_portfolio`
 - **Private build dependencies:** `chronos_options`, `chronos_warnings`

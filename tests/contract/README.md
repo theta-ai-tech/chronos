@@ -1,5 +1,7 @@
 # tests/contract/
 
+> **Submodule owner stub (M0.1).** Implemented beginning in M5.6.
+
 This directory holds cross-boundary C++ contract checks. The adjacent M6.2
 risk contract proof is implemented in `tests/unit/risk_decision_test.cpp`,
 because it exercises the public C++ value contract directly; the structural
@@ -9,6 +11,8 @@ ownership proof is `tests/python/test_m6_risk_authority_boundaries.py`.
 - **Owner:** Inherits `tests/` ownership.
 - **Plane:** Inherits `tests/` plane.
 - **Language:** Inherits `tests/` language policy.
+- **Public API:** `strategy_invariants_test.cpp`; M5, M6.1, and M6.2 authority
+  boundary gates under `tests/python/`.
 - **Purpose:** Producer/consumer conformance and authority-boundary evidence.
 - **Accepted dependencies:** inherits `tests/` rules (see parent README).
 
