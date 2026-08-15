@@ -497,3 +497,99 @@ passed
 Implementation commit: `55c49ae`.
 
 Fix-round concerns: none.
+
+## Final Structural Verifier Fix Round
+
+Final verifier review found that command-specific variable-position tables
+still allowed output-producing CMake forms to mutate the risk compile command.
+The confirmed bypasses included:
+
+```cmake
+string(REPLACE X "-DCHRONOS_STRING_REPLACE_BYPASS" CMAKE_CXX_FLAGS X)
+list(JOIN _risk_flags " " CMAKE_CXX_FLAGS)
+```
+
+Regressions also cover `string(REGEX REPLACE ...)` and
+`string(CONFIGURE ...)`, exercising protected output-variable positions 4 and
+2 in the zero-based JSON argument array, in addition to the plain `REPLACE`
+and `list(JOIN)` position 3. Every case configures a real fixture, reads
+`compile_commands.json`, proves its unique
+`-DCHRONOS_*_BYPASS` flag reached `core/risk/src/risk_decision.cpp`, and only
+then asserts verifier rejection.
+
+Expanded JSON trace represents `${CMAKE_CXX_FLAGS}` reads as the expanded flag
+value, while variable names used as output arguments remain literal
+`CMAKE_CXX_FLAGS` arguments. The verifier therefore no longer classifies
+commands or output positions. From the first executed risk-owner command, it
+rejects any exact protected CXX-flags variable argument retained by an
+executed repository-owned trace entry. This covers every `string`/`list`
+output position and future output-producing commands without another command
+table.
+
+A benign read/copy fixture confirms expanded `${CMAKE_CXX_FLAGS}` values remain
+allowed. Separate real fixtures prove CMake commands sourced from an external
+module and an external toolchain can change the compile command without being
+classified as repository-owned. CMake system-module traces remain excluded by
+the same resolved source-ownership check. Repository build-profile setup that
+executes before risk ownership remains the accepted ambient baseline.
+
+The focused RED run against the previous verifier produced:
+
+```text
+4 failed, 3 passed, 88 deselected in 5.73s
+```
+
+All four output forms changed the compile command but returned no configured
+CMake-variable violation. The benign read/copy, external-module, and external-
+toolchain controls passed during RED.
+
+### Fix Verification
+
+Executed from the final formatted implementation state:
+
+```text
+focused CXX-flags invariant regressions
+11 passed, 84 deselected in 8.75s
+
+uv run --locked --group dev pytest \
+  tests/python/test_m6_risk_authority_boundaries.py -q
+95 passed in 44.61s
+
+uv run --locked --group dev pytest \
+  tests/python/test_m5_authority_boundaries.py \
+  tests/python/test_m6_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py -q
+182 passed in 57.20s
+
+python3 tools/development/verify_m6_authority_boundaries.py
+[OK] M6 portfolio authority has no forbidden dependencies
+
+python3 tools/development/verify_m6_risk_authority_boundaries.py
+[OK] M6 risk authority has no forbidden dependencies
+
+cmake -S . -B build -G Ninja
+Configuring done; Generating done
+
+cmake --build build
+[OK] strategy capability boundary checked (0 source files)
+
+uv run --locked --group dev ruff check \
+  tools/development/verify_m6_risk_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py
+All checks passed!
+
+uv run --locked --group dev ruff format --check \
+  tools/development/verify_m6_risk_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py
+2 files already formatted
+
+git diff --check
+passed
+```
+
+Implementation commit: `f9dfae7`.
+
+Fix-round concern: the requested literal-name invariant is intentionally
+conservative. A repository command executed after risk ownership that retains
+`CMAKE_CXX_FLAGS` as a literal argument for introspection will be rejected;
+ordinary `${CMAKE_CXX_FLAGS}` reads and copies are expanded and remain allowed.
