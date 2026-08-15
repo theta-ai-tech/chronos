@@ -324,3 +324,88 @@ passed
 Implementation commit: `5947415`.
 
 Fix-round concerns: none.
+
+## Final Whole-Branch Fix
+
+Final evaluation identified three owner-scope pre-guard capabilities that were
+not represented by the existing target property checks. Real temporary
+fixtures demonstrated that directory compile definitions, target custom
+commands, and header source properties all configured without a violation.
+
+The initial focused RED run produced:
+
+```text
+6 failed in 2.92s
+```
+
+The native guard now requires empty `COMPILE_DEFINITIONS`, `COMPILE_OPTIONS`,
+and `INCLUDE_DIRECTORIES` properties on the risk owner directory. These are the
+bounded directory capabilities that can be inherited by `chronos_risk`; link
+capabilities remain covered by the existing target and directory-link checks.
+
+Expanded trace analysis now rejects target-form `add_custom_command` calls
+against `chronos_risk` across the complete configure trace. Coverage includes a
+direct `POST_BUILD` command, a callable wrapper with an expanded target, and a
+dynamically dispatched exact `_add_custom_command` built-in alias. Output-form
+custom commands and commands for unrelated targets remain outside this check.
+
+The native source-property loop now covers both canonical sources. A direct
+CMake probe established these legitimate baselines:
+
+```text
+src/risk_decision.cpp: LANGUAGE=CXX, GENERATED=0
+src/risk_arithmetic.hpp: LANGUAGE="", GENERATED=0
+```
+
+All guarded source capability properties must remain unset for both files.
+Regressions cover header `LANGUAGE CXX` and header `COMPILE_OPTIONS` mutations.
+The Python guard-integrity grammar requires the exact directory property list,
+canonical source list, baseline comparison, generated check, and nested source
+capability loop.
+
+Task 5 documentation Steps 1 and 2 were marked complete in the implementation
+plan. Review, final gates, evidence/report, and publish steps remain pending.
+
+### Fix Verification
+
+Executed from the task worktree:
+
+```text
+six focused pre-guard fixture groups after final formatting
+6 passed in 3.14s
+
+uv run pytest tests/python/test_m6_risk_authority_boundaries.py -q
+84 passed in 27.57s
+
+uv run pytest tests/python/test_m5_authority_boundaries.py \
+  tests/python/test_m6_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py -q
+171 passed in 40.53s
+
+python3 tools/development/verify_m6_authority_boundaries.py
+[OK] M6 portfolio authority has no forbidden dependencies
+
+python3 tools/development/verify_m6_risk_authority_boundaries.py
+[OK] M6 risk authority has no forbidden dependencies
+
+cmake -S . -B build -G Ninja
+Configuring done; Generating done
+
+cmake --build build
+[OK] strategy capability boundary checked (0 source files)
+
+uv run ruff check tools/development/verify_m6_risk_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py
+All checks passed!
+
+uv run ruff format --check tools/development/verify_m6_risk_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py
+2 files already formatted
+
+git diff --check
+passed
+```
+
+Implementation commit: `4624f01`.
+
+Fix-round concerns: none.
