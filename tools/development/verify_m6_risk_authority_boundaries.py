@@ -13,20 +13,21 @@ SYSTEM_INCLUDE = re.compile(r"^<([^>]+)>$")
 NATIVE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
 CMAKE_TOKEN = re.compile(r"[A-Za-z0-9_./:+$<>{}-]+")
 
-AUTHORITY_PATH = Path("core/portfolio")
-AUTHORITY_SOURCE_ROOT = Path("core/portfolio/src")
-AUTHORITY_CMAKE = Path("core/portfolio/CMakeLists.txt")
-AUTHORITY_GUARD_CMAKE = Path("core/portfolio/AssertTargetBoundary.cmake")
-RISK_AUTHORITY_GUARD_CMAKE = Path("core/risk/AssertTargetBoundary.cmake")
+AUTHORITY_PATH = Path("core/risk")
+AUTHORITY_SOURCE_ROOT = Path("core/risk/src")
+AUTHORITY_CMAKE = Path("core/risk/CMakeLists.txt")
+AUTHORITY_GUARD_CMAKE = Path("core/risk/AssertTargetBoundary.cmake")
 CORE_CMAKE = Path("core/CMakeLists.txt")
 ROOT_CMAKE = Path("CMakeLists.txt")
-TARGET = "chronos_portfolio"
+TARGET = "chronos_risk"
 ALLOWED_INCLUDES = (
-    "chronos/core/portfolio/",
+    "chronos/core/risk/",
+    "chronos/core/portfolio/portfolio_construction.hpp",
     "chronos/contracts/digest.hpp",
+    "chronos/contracts/event_envelope.hpp",
     "chronos/contracts/fixed_point.hpp",
     "chronos/contracts/value_objects.hpp",
-    "chronos/core/recommendation/recommendation.hpp",
+    "risk_arithmetic.hpp",
 )
 ALLOWED_SYSTEM_INCLUDES = {
     "algorithm",
@@ -44,7 +45,7 @@ ALLOWED_SYSTEM_INCLUDES = {
 }
 ALLOWED_TARGET_DEPENDENCIES = {
     "chronos_contracts",
-    "chronos_recommendation",
+    "chronos_portfolio",
     "chronos_options",
     "chronos_warnings",
 }
@@ -72,42 +73,43 @@ DIRECTORY_SCOPED_LINK_COMMANDS = {
     "link_libraries",
 }
 NATIVE_GUARD_SENTINEL = "CHRONOS_M6_BOUNDARY_VIOLATION:"
-NATIVE_GUARD_INCLUDE = "core/portfolio/AssertTargetBoundary.cmake"
-NATIVE_GUARD_SYNTHETIC_FUNCTION = "_chronos_assert_portfolio_boundary"
+NATIVE_GUARD_INCLUDE = "core/risk/AssertTargetBoundary.cmake"
+PORTFOLIO_GUARD_INCLUDE = "core/portfolio/AssertTargetBoundary.cmake"
+NATIVE_GUARD_SYNTHETIC_FUNCTION = "_chronos_assert_risk_boundary"
 NATIVE_GUARD_EXACT_CHECKS = (
     (
         "LINK_LIBRARIES",
-        "_chronos_portfolio_link_libraries",
-        "_chronos_portfolio_expected_link_libraries",
-        ("chronos_contracts", "chronos_recommendation", "chronos_options", "chronos_warnings"),
+        "_chronos_risk_link_libraries",
+        "_chronos_risk_expected_link_libraries",
+        ("chronos_contracts", "chronos_portfolio", "chronos_options", "chronos_warnings"),
     ),
     (
         "INTERFACE_LINK_LIBRARIES",
-        "_chronos_portfolio_interface_link_libraries",
-        "_chronos_portfolio_expected_interface_link_libraries",
+        "_chronos_risk_interface_link_libraries",
+        "_chronos_risk_expected_interface_link_libraries",
         (
             "chronos_contracts",
-            "chronos_recommendation",
+            "chronos_portfolio",
             "$<LINK_ONLY:chronos_options>",
             "$<LINK_ONLY:chronos_warnings>",
         ),
     ),
     (
         "SOURCES",
-        "_chronos_portfolio_sources",
-        "_chronos_portfolio_expected_sources",
-        ("src/portfolio_construction.cpp",),
+        "_chronos_risk_sources",
+        "_chronos_risk_expected_sources",
+        ("src/risk_arithmetic.hpp", "src/risk_decision.cpp"),
     ),
     (
         "INCLUDE_DIRECTORIES",
-        "_chronos_portfolio_include_directories",
-        "_chronos_portfolio_expected_include_directories",
+        "_chronos_risk_include_directories",
+        "_chronos_risk_expected_include_directories",
         ("${CMAKE_CURRENT_LIST_DIR}/include",),
     ),
     (
         "INTERFACE_INCLUDE_DIRECTORIES",
-        "_chronos_portfolio_interface_include_directories",
-        "_chronos_portfolio_expected_include_directories",
+        "_chronos_risk_interface_include_directories",
+        "_chronos_risk_expected_include_directories",
         None,
     ),
 )
@@ -130,11 +132,11 @@ NATIVE_GUARD_EMPTY_PROPERTIES = (
     "INTERFACE_SYSTEM_INCLUDE_DIRECTORIES",
     "INTERFACE_SOURCES",
 )
-NATIVE_GUARD_PROPERTY_VARIABLE = "_chronos_portfolio_property"
-NATIVE_GUARD_PROPERTY_LIST = "_chronos_portfolio_empty_properties"
-NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE = "_chronos_portfolio_source_property"
-NATIVE_GUARD_SOURCE_PROPERTY_LIST = "_chronos_portfolio_empty_source_properties"
-NATIVE_GUARD_TRACE_SENTINEL_VARIABLE = "_chronos_m6_boundary_assertion_complete"
+NATIVE_GUARD_PROPERTY_VARIABLE = "_chronos_risk_property"
+NATIVE_GUARD_PROPERTY_LIST = "_chronos_risk_empty_properties"
+NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE = "_chronos_risk_source_property"
+NATIVE_GUARD_SOURCE_PROPERTY_LIST = "_chronos_risk_empty_source_properties"
+NATIVE_GUARD_TRACE_SENTINEL_VARIABLE = "_chronos_m6_risk_boundary_assertion_complete"
 NATIVE_GUARD_TRACE_SENTINEL_VALUE = "TRUE"
 NATIVE_GUARD_EMPTY_SOURCE_PROPERTIES = (
     "COMPILE_DEFINITIONS",
@@ -656,10 +658,13 @@ def cmake_files(root: Path) -> list[Path]:
 
 
 def is_generated_path(path: Path, root: Path) -> bool:
-    ancestor = path.parent
-    while ancestor != root:
+    resolved_root = root.resolve()
+    ancestor = path.resolve().parent
+    while ancestor != resolved_root:
         if (ancestor / "CMakeCache.txt").is_file():
             return True
+        if ancestor == ancestor.parent:
+            return False
         ancestor = ancestor.parent
     return False
 
@@ -674,7 +679,7 @@ def within(path: Path, root: Path) -> bool:
 
 def is_owner_registered(core_cmake: str) -> bool:
     return any(
-        command == "add_subdirectory" and arguments and arguments[0] == "portfolio"
+        command == "add_subdirectory" and arguments and arguments[0] == "risk"
         for command, arguments in top_level_cmake_commands(core_cmake)
     )
 
@@ -684,7 +689,8 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
         return False
     stripped_root = strip_cmake_comments(root_cmake)
     tail = re.search(
-        rf"(?is)include\s*\(\s*{re.escape(NATIVE_GUARD_INCLUDE)}\s*\)\s*\Z",
+        rf"(?is)include\s*\(\s*{re.escape(NATIVE_GUARD_INCLUDE)}\s*\)\s*"
+        rf"include\s*\(\s*{re.escape(PORTFOLIO_GUARD_INCLUDE)}\s*\)\s*\Z",
         stripped_root,
     )
     if tail is None or not re.search(
@@ -695,7 +701,7 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
         return False
 
     commands = cmake_commands(
-        f"function(_chronos_assert_portfolio_boundary)\n{guard_cmake}\nendfunction()"
+        f"function(_chronos_assert_risk_boundary)\n{guard_cmake}\nendfunction()"
     )
     block_starts = {"function", "macro", "if", "foreach", "while", "block"}
     block_ends = {"endfunction", "endmacro", "endif", "endforeach", "endwhile", "endblock"}
@@ -750,6 +756,9 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
                 index, "get_target_property", [actual, TARGET, property_name], 1
             )
             index += 1
+            if property_name == "SOURCES":
+                valid = valid and matches(index, "list", ["SORT", actual], 1)
+                index += 1
             valid = valid and matches(
                 index,
                 "if",
@@ -783,7 +792,7 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
             (
                 "get_property",
                 [
-                    "_chronos_portfolio_property_is_set",
+                    "_chronos_risk_property_is_set",
                     "TARGET",
                     TARGET,
                     "PROPERTY",
@@ -792,17 +801,17 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
                 ],
                 2,
             ),
-            ("if", ["_chronos_portfolio_property_is_set"], 2),
+            ("if", ["_chronos_risk_property_is_set"], 2),
             (
                 "get_target_property",
                 [
-                    "_chronos_portfolio_property_value",
+                    "_chronos_risk_property_value",
                     TARGET,
                     "${" + NATIVE_GUARD_PROPERTY_VARIABLE + "}",
                 ],
                 3,
             ),
-            ("if", ["NOT", "${_chronos_portfolio_property_value}", "STREQUAL"], 3),
+            ("if", ["NOT", "${_chronos_risk_property_value}", "STREQUAL"], 3),
         )
         for command, arguments, expected_depth in empty_sequence:
             valid = valid and matches(index, command, arguments, expected_depth)
@@ -830,16 +839,16 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
             (
                 "set",
                 [
-                    "_chronos_portfolio_source",
-                    "${CMAKE_CURRENT_LIST_DIR}/src/portfolio_construction.cpp",
+                    "_chronos_risk_source",
+                    "${CMAKE_CURRENT_LIST_DIR}/src/risk_decision.cpp",
                 ],
                 1,
             ),
             (
                 "get_source_file_property",
                 [
-                    "_chronos_portfolio_source_language",
-                    "${_chronos_portfolio_source}",
+                    "_chronos_risk_source_language",
+                    "${_chronos_risk_source}",
                     "TARGET_DIRECTORY",
                     TARGET,
                     "LANGUAGE",
@@ -848,7 +857,7 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
             ),
             (
                 "if",
-                ["NOT", "${_chronos_portfolio_source_language}", "STREQUAL", "CXX"],
+                ["NOT", "${_chronos_risk_source_language}", "STREQUAL", "CXX"],
                 1,
             ),
             (
@@ -859,7 +868,7 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
                     "expected",
                     "CXX",
                     "got",
-                    "${_chronos_portfolio_source_language}",
+                    "${_chronos_risk_source_language}",
                 ],
                 2,
             ),
@@ -867,8 +876,8 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
             (
                 "get_source_file_property",
                 [
-                    "_chronos_portfolio_source_generated",
-                    "${_chronos_portfolio_source}",
+                    "_chronos_risk_source_generated",
+                    "${_chronos_risk_source}",
                     "TARGET_DIRECTORY",
                     TARGET,
                     "GENERATED",
@@ -877,7 +886,7 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
             ),
             (
                 "if",
-                ["NOT", "${_chronos_portfolio_source_generated}", "STREQUAL", "0"],
+                ["NOT", "${_chronos_risk_source_generated}", "STREQUAL", "0"],
                 1,
             ),
             (
@@ -888,7 +897,7 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
                     "expected",
                     "0",
                     "got",
-                    "${_chronos_portfolio_source_generated}",
+                    "${_chronos_risk_source_generated}",
                 ],
                 2,
             ),
@@ -900,35 +909,35 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
             ),
             (
                 "set",
-                ["_chronos_portfolio_configurations", *NATIVE_GUARD_CONFIGURATIONS],
+                ["_chronos_risk_configurations", *NATIVE_GUARD_CONFIGURATIONS],
                 1,
             ),
             (
                 "list",
-                ["REMOVE_DUPLICATES", "_chronos_portfolio_configurations"],
+                ["REMOVE_DUPLICATES", "_chronos_risk_configurations"],
                 1,
             ),
             (
                 "foreach",
                 [
-                    "_chronos_portfolio_configuration",
+                    "_chronos_risk_configuration",
                     "IN",
                     "LISTS",
-                    "_chronos_portfolio_configurations",
+                    "_chronos_risk_configurations",
                 ],
                 1,
             ),
             (
                 "if",
-                ["NOT", "${_chronos_portfolio_configuration}", "STREQUAL"],
+                ["NOT", "${_chronos_risk_configuration}", "STREQUAL"],
                 2,
             ),
             (
                 "string",
                 [
                     "TOUPPER",
-                    "${_chronos_portfolio_configuration}",
-                    "_chronos_portfolio_configuration",
+                    "${_chronos_risk_configuration}",
+                    "_chronos_risk_configuration",
                 ],
                 3,
             ),
@@ -937,7 +946,7 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
                 [
                     "APPEND",
                     NATIVE_GUARD_SOURCE_PROPERTY_LIST,
-                    "COMPILE_DEFINITIONS_${_chronos_portfolio_configuration}",
+                    "COMPILE_DEFINITIONS_${_chronos_risk_configuration}",
                 ],
                 3,
             ),
@@ -956,8 +965,8 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
             (
                 "get_source_file_property",
                 [
-                    "_chronos_portfolio_source_property_value",
-                    "${_chronos_portfolio_source}",
+                    "_chronos_risk_source_property_value",
+                    "${_chronos_risk_source}",
                     "TARGET_DIRECTORY",
                     TARGET,
                     "${" + NATIVE_GUARD_SOURCE_PROPERTY_VARIABLE + "}",
@@ -968,7 +977,7 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
                 "if",
                 [
                     "NOT",
-                    "${_chronos_portfolio_source_property_value}",
+                    "${_chronos_risk_source_property_value}",
                     "STREQUAL",
                     "NOTFOUND",
                 ],
@@ -1044,14 +1053,16 @@ def trace_arguments(trace: dict[str, object]) -> list[str]:
     return [str(argument) for argument in arguments]
 
 
-def trace_source_matches(value: str, source: Path) -> bool:
+def trace_source_matches(value: str, sources: set[Path]) -> bool:
     candidate = Path(value)
     if candidate.is_absolute():
-        return candidate.resolve() == source
+        return candidate.resolve() in sources
     normalized = value.replace("\\", "/")
     return normalized in {
-        "src/portfolio_construction.cpp",
-        "core/portfolio/src/portfolio_construction.cpp",
+        "src/risk_decision.cpp",
+        "src/risk_arithmetic.hpp",
+        "core/risk/src/risk_decision.cpp",
+        "core/risk/src/risk_arithmetic.hpp",
     }
 
 
@@ -1063,7 +1074,7 @@ def properties_after_marker(arguments: list[str], marker: str) -> list[str]:
     return [arguments[position].upper() for position in range(index + 1, len(arguments), 2)]
 
 
-def post_guard_mutation_properties(trace: dict[str, object], source: Path) -> list[str]:
+def post_guard_mutation_properties(trace: dict[str, object], sources: set[Path]) -> list[str]:
     command = str(trace.get("cmd", "")).lower()
     arguments = trace_arguments(trace)
     if command in POST_GUARD_TARGET_PROPERTIES and arguments and arguments[0] == TARGET:
@@ -1087,7 +1098,7 @@ def post_guard_mutation_properties(trace: dict[str, object], source: Path) -> li
         if scope == "TARGET" and TARGET in arguments[1:marker]:
             return [arguments[marker + 1].upper()] if marker + 1 < len(arguments) else []
         if scope == "SOURCE" and any(
-            trace_source_matches(value, source)
+            trace_source_matches(value, sources)
             for value in arguments[1:marker]
             if value not in {"DIRECTORY", "TARGET_DIRECTORY", TARGET}
         ):
@@ -1101,7 +1112,7 @@ def post_guard_mutation_properties(trace: dict[str, object], source: Path) -> li
             if value in {"DIRECTORY", "TARGET_DIRECTORY", "PROPERTIES"}
         ]
         source_end = min(markers, default=len(arguments))
-        if any(trace_source_matches(value, source) for value in arguments[:source_end]):
+        if any(trace_source_matches(value, sources) for value in arguments[:source_end]):
             return [
                 f"SOURCE_{property_name}"
                 for property_name in properties_after_marker(arguments, "PROPERTIES")
@@ -1166,10 +1177,13 @@ def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
                     result.stdout.strip(),
                 )
             ]
-        source = (root / AUTHORITY_SOURCE_ROOT / "portfolio_construction.cpp").resolve()
+        sources = {
+            (root / AUTHORITY_SOURCE_ROOT / "risk_decision.cpp").resolve(),
+            (root / AUTHORITY_SOURCE_ROOT / "risk_arithmetic.hpp").resolve(),
+        }
         post_guard_violations: list[BoundaryViolation] = []
         for trace in traces[sentinel_indices[-1] + 1 :]:
-            for property_name in post_guard_mutation_properties(trace, source):
+            for property_name in post_guard_mutation_properties(trace, sources):
                 post_guard_violations.append(
                     BoundaryViolation(
                         Path(str(trace.get("file", owner_path))),
@@ -1245,7 +1259,6 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     directory_link_callables = directory_scoped_link_callables(list(all_cmake.values()))
     owner_path = root / AUTHORITY_CMAKE
     guard_path = root / AUTHORITY_GUARD_CMAKE
-    risk_guard_path = root / RISK_AUTHORITY_GUARD_CMAKE
     core_path = root / CORE_CMAKE
     root_path = root / ROOT_CMAKE
     owner_cmake = all_cmake.get(owner_path)
@@ -1318,7 +1331,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
             violations.append(BoundaryViolation(owner_path, dependency))
 
     for candidate, candidate_cmake in all_cmake.items():
-        if candidate in {owner_path, guard_path, risk_guard_path}:
+        if candidate in {owner_path, guard_path}:
             continue
         if target_declarations(candidate_cmake):
             violations.append(BoundaryViolation(candidate, "target-created-outside-owner"))
@@ -1361,7 +1374,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
             and not is_generated_path(path, root)
         )
     }
-    if not actual_sources.issubset(declared_sources):
+    if actual_sources != declared_sources:
         violations.append(BoundaryViolation(owner_path, "authority-source-not-declared"))
     violations = list(dict.fromkeys(violations))
     if not violations and is_configurable_cmake_project(root_cmake):
@@ -1378,7 +1391,7 @@ def main() -> int:
             if violation.detail:
                 print(violation.detail)
         return 1
-    print("[OK] M6 portfolio authority has no forbidden dependencies")
+    print("[OK] M6 risk authority has no forbidden dependencies")
     return 0
 
 

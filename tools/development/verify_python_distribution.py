@@ -25,6 +25,7 @@ EXPECTED_SDIST_PATHS = {
     "tests/python/test_event_envelope.py",
     "tests/python/test_m5_authority_boundaries.py",
     "tests/python/test_m6_authority_boundaries.py",
+    "tests/python/test_m6_risk_authority_boundaries.py",
     "tests/python/test_value_objects.py",
     "tests/python/test_state_lineage.py",
     "tests/python/test_serialization.py",
@@ -35,6 +36,7 @@ EXPECTED_SDIST_PATHS = {
     "tools/development/generate_strategy_definition.py",
     "tools/development/verify_m5_authority_boundaries.py",
     "tools/development/verify_m6_authority_boundaries.py",
+    "tools/development/verify_m6_risk_authority_boundaries.py",
     "tools/development/verify_strategy_capabilities.py",
     "tools/development/verify_strategy_symbols.py",
 }
