@@ -409,3 +409,91 @@ passed
 Implementation commit: `4624f01`.
 
 Fix-round concerns: none.
+
+## Final Structural Fix
+
+Fix-round escalation identified a remaining owner-scope capability: direct
+mutation of `CMAKE_CXX_FLAGS` configured successfully, changed the
+`chronos_risk` compile command, and returned no structural violations. The
+reproduction used exactly:
+
+```cmake
+set(CMAKE_CXX_FLAGS
+    "${CMAKE_CXX_FLAGS} -DCHRONOS_REVIEW_BYPASS -I/unexpected")
+```
+
+The regression independently reads `compile_commands.json` and proves both
+`-DCHRONOS_REVIEW_BYPASS` and `-I/unexpected` reached
+`core/risk/src/risk_decision.cpp` before asserting the verifier rejection.
+
+Expanded trace analysis now treats project-authored `set`/`unset`, mutating
+`list` operations, and in-place/output `string` operations as CMake variable
+mutations. From the first executed risk-owner command onward, direct and
+configuration-specific `CMAKE_CXX_FLAGS` variables are forbidden in repository
+trace sources both before and after the risk sentinel. The check classifies
+executed built-ins, so callable bodies, `cmake_language(EVAL)`, dynamic argument
+expansion, exact built-in aliases, and deferred calls use the same path.
+
+The verifier does not compare against assumed initial flag values. Project
+toolchain/profile initialization before risk ownership remains the ambient
+baseline, preserving the declared Benchmark profile, and commands traced to
+CMake/toolchain/module sources outside the repository are excluded.
+
+The corrected RED run produced:
+
+```text
+4 failed, 84 deselected in 2.17s
+```
+
+All four groups failed because the old verifier returned no CMake-variable
+violation. Together they cover seven fixtures: exact direct owner mutation,
+Debug configuration mutation, `string(APPEND)`, `list(APPEND)`, callable,
+`cmake_language(EVAL)`, and deferred post-guard execution.
+
+### Fix Verification
+
+Executed from the final formatted implementation state:
+
+```text
+focused CXX-flags regressions
+4 passed, 84 deselected in 3.68s
+
+uv run --locked --group dev pytest \
+  tests/python/test_m6_risk_authority_boundaries.py -q
+88 passed in 39.44s
+
+uv run --locked --group dev pytest \
+  tests/python/test_m5_authority_boundaries.py \
+  tests/python/test_m6_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py -q
+175 passed in 52.52s
+
+python3 tools/development/verify_m6_authority_boundaries.py
+[OK] M6 portfolio authority has no forbidden dependencies
+
+python3 tools/development/verify_m6_risk_authority_boundaries.py
+[OK] M6 risk authority has no forbidden dependencies
+
+cmake -S . -B build -G Ninja
+Configuring done; Generating done
+
+cmake --build build
+[OK] strategy capability boundary checked (0 source files)
+
+uv run --locked --group dev ruff check \
+  tools/development/verify_m6_risk_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py
+All checks passed!
+
+uv run --locked --group dev ruff format --check \
+  tools/development/verify_m6_risk_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py
+2 files already formatted
+
+git diff --check
+passed
+```
+
+Implementation commit: `55c49ae`.
+
+Fix-round concerns: none.
