@@ -102,3 +102,80 @@ Results:
 ## Concerns
 
 None.
+
+## Fix Round 1
+
+Independent review identified two fail-open paths and both were corrected with
+regression-first coverage.
+
+### Post-Sentinel Built-In Aliases
+
+The expanded CMake trace can report an overridden built-in invocation as
+`_target_link_libraries`. Post-sentinel classification previously compared the
+raw command name and missed that alias. The verifier now strips leading
+underscores only when the resulting name is one of the known protected CMake
+mutation commands. Arbitrary underscore-prefixed functions remain arbitrary
+functions rather than being promoted to built-ins.
+
+The real fixture overrides `target_link_libraries`, composes the protected
+target and alias command, and defers the expanded
+`_target_link_libraries(chronos_risk PRIVATE chronos_recommendation)` call until
+after both guards. Removing alias normalization reproduced RED:
+
+```text
+1 failed in 0.59s
+assert set() == {"LINK_LIBRARIES"}
+```
+
+### Missing Configure Prerequisites and Canonical Sources
+
+Static ownership now requires exactly these two canonical paths, independent
+of the files merely agreeing with their declarations:
+
+```text
+src/risk_arithmetic.hpp
+src/risk_decision.cpp
+```
+
+A root intended for real configuration now emits an explicit
+`missing-cmake-configure-prerequisite:<command>` violation when
+`cmake_minimum_required()` or `project()` is absent. Minimal static-only
+fixtures remain useful, while the repository and native configurable fixtures
+fail closed. The regression deleting `project()` and adding plus declaring
+`src/extra.cpp` initially returned no violations and now reports both the
+missing prerequisite and noncanonical source set.
+
+### Fix Verification
+
+Executed individually from the task worktree after the final changes:
+
+```text
+two new regressions
+2 passed in 0.58s
+
+uv run pytest tests/python/test_m6_risk_authority_boundaries.py -q
+72 passed in 14.96s
+
+uv run pytest tests/python/test_m5_authority_boundaries.py \
+  tests/python/test_m6_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py -q
+159 passed in 28.53s
+
+python3 tools/development/verify_m6_authority_boundaries.py
+[OK] M6 portfolio authority has no forbidden dependencies
+
+python3 tools/development/verify_m6_risk_authority_boundaries.py
+[OK] M6 risk authority has no forbidden dependencies
+
+uv run ruff check tools/development/verify_m6_risk_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py
+All checks passed!
+
+uv run ruff format --check tools/development/verify_m6_risk_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py
+2 files already formatted
+```
+
+Implementation commit: `d1aa360`.
+
+Fix-round concerns: none.
