@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import tempfile
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -500,11 +501,21 @@ def has_callable_definition(text: str, allowed: set[str] | None = None) -> bool:
     )
 
 
+def normalize_cmake_builtin_alias(command: str, builtins: Collection[str]) -> str:
+    normalized = command.lower()
+    if normalized.startswith("_") and not normalized.startswith("__"):
+        builtin = normalized[1:]
+        if builtin in builtins:
+            return builtin
+    return normalized
+
+
 def intercepts_guard_command(text: str) -> bool:
     return any(
         command in {"function", "macro"}
         and arguments
-        and arguments[0].lower().lstrip("_") in GUARD_CRITICAL_COMMANDS
+        and normalize_cmake_builtin_alias(arguments[0], GUARD_CRITICAL_COMMANDS)
+        in GUARD_CRITICAL_COMMANDS
         for command, arguments in cmake_commands(text)
     )
 
@@ -1109,20 +1120,8 @@ def properties_after_marker(arguments: list[str], marker: str) -> list[str]:
     return [arguments[position].upper() for position in range(index + 1, len(arguments), 2)]
 
 
-def normalize_post_guard_mutation_command(command: str) -> str:
-    normalized = command.lower()
-    builtin = normalized[1:]
-    if (
-        normalized.startswith("_")
-        and not normalized.startswith("__")
-        and (builtin in POST_GUARD_MUTATION_COMMANDS)
-    ):
-        return builtin
-    return normalized
-
-
 def post_guard_mutation_properties(trace: dict[str, object], sources: set[Path]) -> list[str]:
-    command = normalize_post_guard_mutation_command(str(trace.get("cmd", "")))
+    command = normalize_cmake_builtin_alias(str(trace.get("cmd", "")), POST_GUARD_MUTATION_COMMANDS)
     arguments = trace_arguments(trace)
     if command in POST_GUARD_TARGET_PROPERTIES and arguments and arguments[0] == TARGET:
         return [POST_GUARD_TARGET_PROPERTIES[command]]
@@ -1197,7 +1196,11 @@ def configured_graph_violations(root: Path) -> list[BoundaryViolation]:
         if trace.get("cmd") not in {"function", "macro"}:
             continue
         arguments = trace_arguments(trace)
-        if arguments and str(arguments[0]).lower().lstrip("_") in GUARD_CRITICAL_COMMANDS:
+        if (
+            arguments
+            and normalize_cmake_builtin_alias(str(arguments[0]), GUARD_CRITICAL_COMMANDS)
+            in GUARD_CRITICAL_COMMANDS
+        ):
             return [
                 BoundaryViolation(
                     Path(str(trace.get("file", owner_path))),

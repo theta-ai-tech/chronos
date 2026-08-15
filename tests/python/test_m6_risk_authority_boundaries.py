@@ -381,6 +381,39 @@ def test_double_message_override_cannot_swallow_boundary_failure(tmp_path: Path)
     assert configured_properties(root, configure_directly=True) == {"COMMAND_OVERRIDE"}
 
 
+def test_multi_underscore_guard_critical_function_is_not_interception(tmp_path: Path) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        root_before_core="function(__message)\nendfunction()\n",
+    )
+
+    assert boundary.find_violations(tmp_path) == []
+
+
+def test_multi_underscore_guard_critical_function_is_not_trace_interception(
+    tmp_path: Path,
+) -> None:
+    write_native_cmake_project(
+        tmp_path,
+        root_before_core="function(__message)\nendfunction()\n",
+    )
+
+    assert boundary.configured_graph_violations(tmp_path) == []
+
+
+def test_exact_guard_critical_builtin_aliases_are_rejected(tmp_path: Path) -> None:
+    for alias in ("_message", "_include"):
+        root = tmp_path / alias
+        write_native_cmake_project(
+            root,
+            root_before_core=f"function({alias})\nendfunction()\n",
+        )
+
+        dependencies = {item.dependency for item in boundary.find_violations(root)}
+        assert "fatal-command-interception" in dependencies
+        assert "configured-target-property:COMMAND_OVERRIDE" in dependencies
+
+
 def test_deferred_guard_redefinition_cannot_disable_assertion(tmp_path: Path) -> None:
     write_native_cmake_project(
         tmp_path,
