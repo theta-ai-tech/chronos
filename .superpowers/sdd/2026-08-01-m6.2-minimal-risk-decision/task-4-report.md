@@ -258,3 +258,69 @@ passed
 Implementation commit: `8adb608`.
 
 Fix-round concerns: none.
+
+## Fix Round 3
+
+Scoped review found two remaining broad underscore normalizations in static
+guard-command interception and expanded-trace critical-command interception.
+Both used `lstrip("_")`, so harmless user functions such as `__message` were
+classified as CMake built-in aliases.
+
+One allowlist-aware `normalize_cmake_builtin_alias` helper now handles all Task
+4 command-alias classification: static critical-command interception, trace
+critical-command interception, and post-guard target mutation classification.
+It maps only a known built-in name with exactly one leading underscore. Names
+with two or more leading underscores remain arbitrary user functions. No
+security-relevant underscore `lstrip` remains in the risk authority verifier.
+
+Real-fixture regressions cover harmless `function(__message)` definitions in
+both static and configured trace paths. Exact `_message` and `_include` aliases
+remain rejected in both paths, while the earlier `_target_link_libraries` and
+`__target_link_libraries` regressions preserve post-guard mutation behavior.
+
+The initial focused RED run produced the expected result:
+
+```text
+2 failed, 1 passed in 1.55s
+```
+
+Both harmless `__message` tests failed with command-interception violations;
+the exact single-underscore rejection test already passed.
+
+### Fix Verification
+
+Executed from the task worktree:
+
+```text
+five focused critical-command and mutation-alias regressions
+5 passed in 2.64s
+
+uv run pytest tests/python/test_m6_risk_authority_boundaries.py -q
+78 passed in 24.28s
+
+uv run pytest tests/python/test_m5_authority_boundaries.py \
+  tests/python/test_m6_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py -q
+165 passed in 37.41s
+
+python3 tools/development/verify_m6_authority_boundaries.py
+[OK] M6 portfolio authority has no forbidden dependencies
+
+python3 tools/development/verify_m6_risk_authority_boundaries.py
+[OK] M6 risk authority has no forbidden dependencies
+
+uv run ruff check tools/development/verify_m6_risk_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py
+All checks passed!
+
+uv run ruff format --check tools/development/verify_m6_risk_authority_boundaries.py \
+  tests/python/test_m6_risk_authority_boundaries.py
+2 files already formatted
+
+git diff --check
+passed
+```
+
+Implementation commit: `5947415`.
+
+Fix-round concerns: none.
