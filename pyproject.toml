@@ -36,6 +36,7 @@ include = [
   "/tools/development/generate_strategy_definition.py",
   "/tools/development/verify_m5_authority_boundaries.py",
   "/tools/development/verify_m6_authority_boundaries.py",
+  "/tools/development/verify_m6_risk_authority_boundaries.py",
   "/tools/development/verify_strategy_capabilities.py",
   "/tools/development/verify_strategy_symbols.py",
 ]

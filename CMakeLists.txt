@@ -69,6 +69,7 @@ message(STATUS
   "Chronos ${PROJECT_VERSION} | profile=${_chronos_profile} "
   "| werror=${CHRONOS_WERROR} | sanitize=${CHRONOS_SANITIZE}")
 
-# This must remain the final top-level command so it observes the fully
-# configured target graph.
+# These must remain the final top-level commands so they observe the fully
+# configured target graph. Risk must run before portfolio.
+include(core/risk/AssertTargetBoundary.cmake)
 include(core/portfolio/AssertTargetBoundary.cmake)
