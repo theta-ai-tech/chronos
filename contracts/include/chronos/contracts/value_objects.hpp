@@ -122,6 +122,17 @@ private:
   bytes_type bytes_;
 };
 
+struct ReservationRequestIdTag;
+using ReservationRequestId = OpaqueId<ReservationRequestIdTag>;
+struct ReservationIdTag;
+using ReservationId = OpaqueId<ReservationIdTag>;
+struct ExecutableOrderIntentIdTag;
+using ExecutableOrderIntentId = OpaqueId<ExecutableOrderIntentIdTag>;
+struct PaperFillIdTag;
+using PaperFillId = OpaqueId<PaperFillIdTag>;
+struct LedgerTransactionIdTag;
+using LedgerTransactionId = OpaqueId<LedgerTransactionIdTag>;
+
 struct EventIdTag;
 struct CommandIdTag;
 struct StateViewIdTag;
