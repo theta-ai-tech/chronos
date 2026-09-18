@@ -80,6 +80,9 @@ def write_native_cmake_project(
     root_after_core: str = "",
 ) -> None:
     write_risk_source(root)
+    (root / "core/risk/src/reservation.cpp").write_text(
+        "int chronos_reservation_fixture() { return 0; }\n", encoding="utf-8"
+    )
     owner_cmake = (REPOSITORY_ROOT / "core/risk/CMakeLists.txt").read_text(encoding="utf-8")
     write_risk_owner(root, owner_before_target + owner_cmake + owner_before_guard)
     portfolio_source = root / "core/portfolio/src/portfolio_construction.cpp"
