@@ -101,6 +101,9 @@ class ReservationAuthority final {
 public:
   ReservationAuthority(ReservationPolicy policy,
                        contracts::AmountUnits initial_position);
+  [[nodiscard]] contracts::VersionRef quote_currency() const noexcept {
+    return policy_.quote_currency;
+  }
   ReservationAuthority(const ReservationAuthority &) = delete;
   ReservationAuthority &operator=(const ReservationAuthority &) = delete;
   [[nodiscard]] ProjectedExposureSnapshot
