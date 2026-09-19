@@ -1,0 +1,3 @@
+add_library(chronos_paper_broker STATIC src/paper_broker.cpp)
+target_include_directories(chronos_paper_broker PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(chronos_paper_broker PUBLIC chronos_contracts chronos_options PRIVATE chronos_warnings)
