@@ -118,3 +118,35 @@ has already checked target/delta arithmetic, and reservation requires the exact
 same position, projected snapshot, delta and target. Behavioral tests therefore
 exercise the reachable boundary failures and verify no state change rather than
 forging a private decision to force the defensive overflow branch.
+
+## Post-review allocation atomicity fix
+
+Review identified that successful transitions still copied nested
+`RiskDecision` findings after mutation. An allocation failure in the successful
+`reserve` return or request-cache copy could therefore leave held capacity
+without the cached successful result.
+
+The corrected commit protocol stages the complete `ReservationResult`,
+`Request`, `Record`, lifecycle fact and settlement evidence before changing
+authority state. `reserve` also reserves both outer containers before staging.
+After staging succeeds, the commit uses only moves whose `noexcept` properties
+are enforced with `static_assert`, scalar assignments, and a statically checked
+no-throw cut assignment. `consume`, `release`, and `reconcile` use the same
+pattern, so an exception cannot escape after an unreported successful
+transition.
+
+A runtime allocation-failure test would require replacing global allocation or
+adding a general fault-injection framework. The compile-time move assertions
+prove the narrow commit property without introducing that infrastructure.
+
+Fresh post-review verification:
+
+```text
+cmake --build build --target chronos_unit_tests -j4
+./build/tests/chronos_unit_tests
+RESULT OK: 256 case(s), 0 failed check(s)
+
+uv run --locked --group dev clang-format --dry-run --Werror \
+  core/risk/src/reservation.cpp
+exit 0
+```

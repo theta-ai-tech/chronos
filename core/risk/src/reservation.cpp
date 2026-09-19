@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <type_traits>
 namespace chronos::core::risk {
 namespace {
 using contracts::AmountUnits;
@@ -96,10 +97,16 @@ ReservationResult
 ReservationAuthority::reserve(contracts::ReservationRequestId request,
                               const RiskDecision &d,
                               const RiskEvaluationCut &cut) {
+  static_assert(std::is_nothrow_move_constructible_v<Request>);
+  static_assert(std::is_nothrow_move_constructible_v<Record>);
+  static_assert(std::is_nothrow_move_constructible_v<ReservationResult>);
+  static_assert(
+      std::is_nothrow_copy_assignable_v<std::optional<RiskEvaluationCut>>);
   for (const auto &old : requests_)
     if (old.id == request)
       return old.decision == d ? old.result
                                : reject(ReservationFailure::RequestConflict);
+  AmountUnits accepted_projected{};
   auto evaluate = [&]() -> ReservationResult {
     if (!valid_)
       return reject(ReservationFailure::InvalidPolicy);
@@ -156,23 +163,35 @@ ReservationAuthority::reserve(contracts::ReservationRequestId request,
     append_id(bytes, d.decision_id());
     append_id(bytes, p.run_id());
     Reservation fact(identity<contracts::ReservationId>(bytes), request, d);
-    // Allocate both caches before committing numeric capacity state.
-    records_.push_back({fact, {}});
-    projected_ = next;
-    ++sequence_;
-    last_cut_ = cut;
+    accepted_projected = next;
     return accept(fact);
   };
-  // Reserve allocation before mutation; subsequent insertion cannot reallocate.
+  // Every allocation-prone copy and both outer allocations complete before an
+  // accepted transition changes observable authority state.
+  records_.reserve(records_.size() + 1);
   requests_.reserve(requests_.size() + 1);
   auto result = evaluate();
-  requests_.push_back({request, d, result});
+  Request staged_request{request, d, result};
+  if (result.accepted()) {
+    Record staged_record{*result.reservation(), {}};
+    records_.push_back(std::move(staged_record));
+    requests_.push_back(std::move(staged_request));
+    projected_ = accepted_projected;
+    ++sequence_;
+    last_cut_ = cut;
+    return result;
+  }
+  requests_.push_back(std::move(staged_request));
   return result;
 }
 ReservationResult
 ReservationAuthority::consume(contracts::ReservationId reservation,
                               contracts::ExecutableOrderIntentId intent,
                               const RiskEvaluationCut &cut) {
+  static_assert(std::is_nothrow_move_assignable_v<Reservation>);
+  static_assert(std::is_nothrow_move_constructible_v<ReservationResult>);
+  static_assert(
+      std::is_nothrow_copy_assignable_v<std::optional<RiskEvaluationCut>>);
   for (auto &record : records_)
     if (record.fact.id_ == reservation) {
       auto &fact = record.fact;
@@ -192,17 +211,24 @@ ReservationAuthority::consume(contracts::ReservationId reservation,
       for (const auto &old : records_)
         if (old.fact.intent_ == intent)
           return reject(ReservationFailure::IntentConflict);
-      fact.intent_ = intent;
-      fact.state_ = ReservationState::Consumed;
+      Reservation staged_fact = fact;
+      staged_fact.intent_ = intent;
+      staged_fact.state_ = ReservationState::Consumed;
+      auto result = accept(staged_fact);
+      fact = std::move(staged_fact);
       ++sequence_;
       last_cut_ = cut;
-      return accept(fact);
+      return result;
     }
   return reject(ReservationFailure::UnknownReservation);
 }
 ReservationResult
 ReservationAuthority::release(contracts::ReservationId reservation,
                               const RiskEvaluationCut &cut) {
+  static_assert(std::is_nothrow_move_assignable_v<Reservation>);
+  static_assert(std::is_nothrow_move_constructible_v<ReservationResult>);
+  static_assert(
+      std::is_nothrow_copy_assignable_v<std::optional<RiskEvaluationCut>>);
   for (auto &record : records_)
     if (record.fact.id_ == reservation) {
       auto &fact = record.fact;
@@ -216,17 +242,26 @@ ReservationAuthority::release(contracts::ReservationId reservation,
         return reject(ReservationFailure::InvalidCut);
       if (sequence_ == std::numeric_limits<std::uint64_t>::max())
         return reject(ReservationFailure::ArithmeticOverflow);
+      Reservation staged_fact = fact;
+      staged_fact.state_ = ReservationState::Released;
+      auto result = accept(staged_fact);
+      fact = std::move(staged_fact);
       projected_ = position_;
-      fact.state_ = ReservationState::Released;
       ++sequence_;
       last_cut_ = cut;
-      return accept(fact);
+      return result;
     }
   return reject(ReservationFailure::UnknownReservation);
 }
 ReservationResult
 ReservationAuthority::reconcile(contracts::ReservationId reservation,
                                 const contracts::SettledExposureEvidence &e) {
+  static_assert(std::is_nothrow_move_assignable_v<Reservation>);
+  static_assert(std::is_nothrow_move_assignable_v<
+                std::optional<contracts::SettledExposureEvidence>>);
+  static_assert(std::is_nothrow_move_constructible_v<ReservationResult>);
+  static_assert(
+      std::is_nothrow_move_assignable_v<std::optional<RiskEvaluationCut>>);
   for (auto &record : records_)
     if (record.fact.id_ == reservation) {
       auto &fact = record.fact;
@@ -266,15 +301,20 @@ ReservationAuthority::reconcile(contracts::ReservationId reservation,
           !within_cap(expected,
                       policy_.maximum_absolute_projected_exposure_units))
         return reject(ReservationFailure::InvalidSettlement);
-      record.settled = e;
-      fact.state_ = ReservationState::Settled;
+      Reservation staged_fact = fact;
+      staged_fact.state_ = ReservationState::Settled;
+      std::optional<contracts::SettledExposureEvidence> staged_settled{e};
+      auto result = accept(staged_fact);
+      auto staged_cut = std::optional<RiskEvaluationCut>{
+          RiskEvaluationCut(e.run_input_sequence, e.logical_time_nanoseconds)};
+      record.settled = std::move(staged_settled);
+      fact = std::move(staged_fact);
       position_ = expected;
       projected_ = expected;
       ledger_sequence_ = *e.ledger_cursor.last_consumed_sequence();
       ++sequence_;
-      last_cut_ =
-          RiskEvaluationCut(e.run_input_sequence, e.logical_time_nanoseconds);
-      return accept(fact);
+      last_cut_ = std::move(staged_cut);
+      return result;
     }
   return reject(ReservationFailure::UnknownReservation);
 }
