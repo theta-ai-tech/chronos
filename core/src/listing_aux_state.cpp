@@ -319,6 +319,18 @@ ListingAuxState::apply_quality_input(const ListingQualityInput &input,
   bool clear_trades = false;
 
   switch (input.kind) {
+  case ListingQualityInputKind::TradeObservationUnadmitted:
+    if (trade == TradeContinuity::Continuous ||
+        trade == TradeContinuity::Closed || !input.event_cursor ||
+        !valid_next_cursor(trade_cursor, *input.event_cursor) ||
+        input.book_proof || input.trade_proof)
+      return {.failure = ListingAuxFailure::InvalidTransition};
+    trade_cursor = *input.event_cursor;
+    break;
+  case ListingQualityInputKind::SourceObservation:
+    if (input.event_cursor || input.book_proof || input.trade_proof)
+      return {.failure = ListingAuxFailure::InvalidTransition};
+    break;
   case ListingQualityInputKind::BookSynchronized:
     if (book != BookSynchronization::Starting &&
         book != BookSynchronization::Recovering)
