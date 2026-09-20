@@ -1,0 +1,3 @@
+add_library(chronos_ledger STATIC src/ledger.cpp)
+target_include_directories(chronos_ledger PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(chronos_ledger PUBLIC chronos_contracts PRIVATE chronos_options chronos_warnings)
