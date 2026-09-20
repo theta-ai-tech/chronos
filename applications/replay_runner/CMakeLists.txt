@@ -1,7 +1,8 @@
 add_library(chronos_market_replay STATIC src/market_replay.cpp)
 
 target_include_directories(chronos_market_replay
-  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+  PRIVATE ${PROJECT_SOURCE_DIR}/adapters/market_data/src)
 
 target_link_libraries(chronos_market_replay
   PUBLIC chronos_replay_providers

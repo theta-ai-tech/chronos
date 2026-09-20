@@ -199,6 +199,19 @@ TEST_CASE("market replay rejects malformed relevant data and missing datasets "
   CHECK(!stopped.completed);
   CHECK(stopped.error == "downstream callback rejected market cut");
 }
+TEST_CASE("market replay rejects malformed relevant data with escaped topics") {
+  for (
+      const auto malformed :
+      {R"({"topic":"order\u0062ook.50.BTCUSDT","type":"delta","data":{}})",
+       R"({"topic":"public\u0054rade.BTCUSDT","type":"snapshot","data":{}})"}) {
+    CapturedFixture data({kSnapshot, malformed});
+    const auto result = app::run_market_replay(data.path, {});
+    CHECK(!result.completed);
+    CHECK(!result.error.empty());
+    CHECK(result.capture_records == 2);
+    CHECK(result.unsupported_frames == 0);
+  }
+}
 TEST_CASE("unadmitted observation consumes cursor without minting continuity "
           "or freshness") {
   auto aux = market::ListingAuxState::create(auxiliary_config()).value();

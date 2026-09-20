@@ -6,6 +6,7 @@
 #include "chronos/normalization/market_data/trade_normalizer.hpp"
 #include "chronos/runtime/datasets/replay.hpp"
 
+#include "bybit_decode_support.hpp"
 #include "chronos/applications/replay_runner/market_replay.hpp"
 #include "chronos/core/features/feature_runtime.hpp"
 #include "chronos/runtime/strategies/strategy_evaluation.hpp"
@@ -29,6 +30,26 @@ namespace state = chronos::core::market_state;
 namespace reference = chronos::core::reference_data;
 namespace market = chronos::normalization::market_data;
 namespace replay = chronos::runtime::datasets;
+
+enum class SourceTopicClass : std::uint8_t { Other, Relevant, InvalidJson };
+
+SourceTopicClass classify_source_topic(std::string_view payload) {
+  const adapter::detail::JsonLimits limits{.maximum_json_depth = 16,
+                                           .maximum_json_nodes = 16384,
+                                           .maximum_object_members = 64,
+                                           .maximum_string_bytes = 128,
+                                           .maximum_number_bytes = 32};
+  adapter::detail::BoundedJsonParser parser(payload, limits);
+  const auto root = parser.parse();
+  if (!root || root->kind != adapter::detail::JsonKind::Object)
+    return SourceTopicClass::InvalidJson;
+  const auto topic =
+      adapter::detail::string_value(adapter::detail::member(*root, "topic"));
+  if (topic &&
+      (topic->starts_with("orderbook.") || topic->starts_with("publicTrade.")))
+    return SourceTopicClass::Relevant;
+  return SourceTopicClass::Other;
+}
 
 template <typename Id> Id id(std::uint8_t seed) {
   typename Id::bytes_type value{};
@@ -1217,8 +1238,9 @@ public:
     const std::string raw(
         reinterpret_cast<const char *>(record.raw_payload.data()),
         record.raw_payload.size());
-    if (raw.find("orderbook") != std::string::npos ||
-        raw.find("publicTrade") != std::string::npos ||
+    const auto topic_class = classify_source_topic(raw);
+    if (topic_class == SourceTopicClass::Relevant ||
+        topic_class == SourceTopicClass::InvalidJson ||
         book.failure == market::BookNormalizationFailure::MalformedPayload)
       throw std::runtime_error(
           "malformed or unsupported relevant source data at capture " +
