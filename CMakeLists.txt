@@ -54,7 +54,9 @@ add_subdirectory(core)
 add_subdirectory(strategies)
 add_subdirectory(normalization)
 add_subdirectory(runtime)
+add_subdirectory(accounting)
 add_subdirectory(core/recommendation)
+add_subdirectory(applications/replay_runner)
 add_subdirectory(tests)
 
 # CMAKE_BUILD_TYPE is empty for multi-config generators (the profile is chosen

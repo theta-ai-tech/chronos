@@ -613,10 +613,9 @@ ListingViewPublisher::create(ListingViewPublisherConfig config) {
       config.initial_effective_control_position ||
       config.initial_lineage.run_input_sequence() != 0 ||
       !complete_lineage(config, config.initial_lineage) ||
-      std::any_of(
-          config.initial_lineage.cursors().begin(),
-          config.initial_lineage.cursors().end(),
-          [](const auto &cursor) { return !cursor.is_origin(); }) ||
+      std::any_of(config.initial_lineage.cursors().begin(),
+                  config.initial_lineage.cursors().end(),
+                  [](const auto &cursor) { return !cursor.is_origin(); }) ||
       config.dispatcher_config.run_id != config.run_id ||
       config.dispatcher_config.merge_policy_version !=
           config.merge_policy_version ||

@@ -132,6 +132,8 @@ struct PaperFillIdTag;
 using PaperFillId = OpaqueId<PaperFillIdTag>;
 struct LedgerTransactionIdTag;
 using LedgerTransactionId = OpaqueId<LedgerTransactionIdTag>;
+struct LedgerCorrectionIdTag;
+using LedgerCorrectionId = OpaqueId<LedgerCorrectionIdTag>;
 
 struct EventIdTag;
 struct CommandIdTag;
