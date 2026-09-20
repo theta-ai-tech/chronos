@@ -1,5 +1,14 @@
 # D0 paper execution planning
 
+> **Submodule owner stub (M0.1).** Implemented beginning in M6.4.
+
+- **Owner:** Inherits `core/` ownership.
+- **Plane:** Inherits `core/` plane.
+- **Language:** C++20.
+- **Purpose:** Mint immutable paper order intents from approved, reserved risk.
+- **Accepted dependencies:** Contracts and the risk reservation authority.
+- **Public API:** `chronos/core/execution_planning/paper_intent.hpp`
+
 `chronos_execution` consumes immutable risk decisions and the current reservation
 writer. `PaperIntentAuthority::create` accepts an intent ID, decision, reservation
 authority, reservation ID, optional `PaperExecutionEvidence`, and evaluation cut.
