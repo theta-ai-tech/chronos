@@ -336,6 +336,14 @@ bool selected_event_was_applied(
   if (quality.last_applied_event_id != event_id ||
       quality.last_applied_input_semantic_checksum != semantic_checksum)
     return false;
+  if (event_type == "market.trade.observation.unadmitted")
+    return !quality.last_applied_input_was_trade &&
+           quality.last_quality_input_kind ==
+               ListingQualityInputKind::TradeObservationUnadmitted;
+  if (event_type == "market.control.source.observed")
+    return !quality.last_applied_input_was_trade &&
+           quality.last_quality_input_kind ==
+               ListingQualityInputKind::SourceObservation;
   if (event_type.starts_with("market.trade.observation."))
     return quality.last_applied_input_was_trade;
   if (quality.last_applied_input_was_trade ||
@@ -605,9 +613,10 @@ ListingViewPublisher::create(ListingViewPublisherConfig config) {
       config.initial_effective_control_position ||
       config.initial_lineage.run_input_sequence() != 0 ||
       !complete_lineage(config, config.initial_lineage) ||
-      std::any_of(config.initial_lineage.cursors().begin(),
-                  config.initial_lineage.cursors().end(),
-                  [](const auto &cursor) { return !cursor.is_origin(); }) ||
+      std::any_of(
+          config.initial_lineage.cursors().begin(),
+          config.initial_lineage.cursors().end(),
+          [](const auto &cursor) { return !cursor.is_origin(); }) ||
       config.dispatcher_config.run_id != config.run_id ||
       config.dispatcher_config.merge_policy_version !=
           config.merge_policy_version ||
