@@ -1,0 +1,3 @@
+add_library(chronos_valuation STATIC src/valuation.cpp)
+target_include_directories(chronos_valuation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(chronos_valuation PUBLIC chronos_ledger chronos_contracts PRIVATE chronos_options chronos_warnings)

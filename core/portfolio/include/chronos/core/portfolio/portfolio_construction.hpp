@@ -24,6 +24,7 @@ enum class PortfolioSnapshotDisposition : std::uint8_t {
 enum class PortfolioNoChangeReason : std::uint8_t {
   NoActionableRecommendations,
   ContributionsCancelled,
+  QuantizedToCurrentExposure,
   AlreadyAtDesiredExposure,
 };
 
@@ -179,6 +180,7 @@ public:
       contracts::RunId run_id,
       std::vector<contracts::StrategyInstanceId> assigned_strategy_ids,
       contracts::DecimalScale exposure_scale,
+      contracts::AmountUnits quantity_step_units,
       std::size_t maximum_selected_recommendations,
       std::int64_t recommendation_maximum_logical_age_nanoseconds,
       std::int64_t target_validity_duration_nanoseconds)
@@ -189,6 +191,7 @@ public:
         target_key_(std::move(target_key)), run_id_(run_id),
         assigned_strategy_ids_(std::move(assigned_strategy_ids)),
         exposure_scale_(exposure_scale),
+        quantity_step_units_(quantity_step_units),
         maximum_selected_recommendations_(maximum_selected_recommendations),
         recommendation_maximum_logical_age_nanoseconds_(
             recommendation_maximum_logical_age_nanoseconds),
@@ -219,6 +222,9 @@ public:
   [[nodiscard]] contracts::DecimalScale exposure_scale() const noexcept {
     return exposure_scale_;
   }
+  [[nodiscard]] contracts::AmountUnits quantity_step_units() const noexcept {
+    return quantity_step_units_;
+  }
   [[nodiscard]] std::size_t maximum_selected_recommendations() const noexcept {
     return maximum_selected_recommendations_;
   }
@@ -242,6 +248,7 @@ private:
   contracts::RunId run_id_;
   std::vector<contracts::StrategyInstanceId> assigned_strategy_ids_;
   contracts::DecimalScale exposure_scale_;
+  contracts::AmountUnits quantity_step_units_{};
   std::size_t maximum_selected_recommendations_{};
   std::int64_t recommendation_maximum_logical_age_nanoseconds_{};
   std::int64_t target_validity_duration_nanoseconds_{};
