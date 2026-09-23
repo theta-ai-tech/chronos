@@ -140,7 +140,7 @@ construct_target(const TargetSnapshotSpec &snapshot_spec,
   const portfolio::PortfolioConstructionPolicy policy(
       version(74), version(75), version(76), version(77), key,
       id<contracts::RunId>(30), {id<contracts::StrategyInstanceId>(98)},
-      exposure_scale(), 4, 100, 50);
+      exposure_scale(), 1, 4, 100, 50);
   const portfolio::PortfolioConstructionCut cut(1, 100);
   const std::array recommendations{
       chronos::test_support::positive_portfolio_recommendation(
@@ -1681,29 +1681,29 @@ TEST_CASE("risk terminal golden identities freeze optional presence") {
   CHECK(!rejected->reduction_proof().has_value());
 
   CHECK(approved->obligation_id().to_string() ==
-        "9d17b7a1-6602-f3d9-fc23-056a3073722a");
+        "585de131-27fc-69ac-463f-5d8d3d7b5231");
   CHECK(approved->decision_id().to_string() ==
-        "fa0f5c4f-1127-0668-9f5a-05968f16cc39");
+        "18fe5586-4ca3-7302-8702-b120b78f5f13");
   CHECK(approved->outcome_id().to_string() ==
-        "b7a5ca92-9b41-d43a-77ef-b41c7cca88ca");
+        "4a24545f-4436-218f-7e89-20d9f9402cf4");
   CHECK(modified->obligation_id().to_string() ==
-        "9d17b7a1-6602-f3d9-fc23-056a3073722a");
+        "585de131-27fc-69ac-463f-5d8d3d7b5231");
   CHECK(modified->decision_id().to_string() ==
-        "f8dbb7a8-504f-66c3-7d6b-9f4fa6ae6bf1");
+        "bf827699-2e35-fb71-2656-b4190a05aaa9");
   CHECK(modified->outcome_id().to_string() ==
-        "22663caf-919c-f43b-27af-ea980081a333");
+        "2108f5b2-7191-cb62-93d9-85bcb7ccce42");
   CHECK(rejected->obligation_id().to_string() ==
-        "9d17b7a1-6602-f3d9-fc23-056a3073722a");
+        "585de131-27fc-69ac-463f-5d8d3d7b5231");
   CHECK(rejected->decision_id().to_string() ==
-        "a15a7855-f8e2-6de3-d836-26de71db3780");
+        "6d305be3-44f0-bba8-53c3-ae02ece7032a");
   CHECK(rejected->outcome_id().to_string() ==
-        "489f0ada-7005-e3f1-5810-6570d54861f1");
+        "e5af59ab-570d-d079-733b-107af4e5e385");
   CHECK(blocked->obligation_id().to_string() ==
-        "9d17b7a1-6602-f3d9-fc23-056a3073722a");
+        "585de131-27fc-69ac-463f-5d8d3d7b5231");
   CHECK(blocked->outcome_id().to_string() ==
-        "825099f7-583b-b4a5-ad7e-1443e55b6ca8");
+        "0a6c5445-cee7-2eb1-ba92-4fc64c48ee01");
   CHECK(admission->outcome_id().to_string() ==
-        "8e886d84-2ec0-1966-6f7d-5e6faca62b51");
+        "5e073454-575b-df1e-e66c-076e84d91fdb");
 }
 
 TEST_CASE("risk identity ignores object address and evaluation call order") {

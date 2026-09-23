@@ -947,6 +947,7 @@ struct PortfolioPolicySpec final {
       id<contracts::StrategyInstanceId>(98)};
   contracts::DecimalScale exposure_scale{
       *contracts::DecimalScale::from_exponent(6)};
+  contracts::AmountUnits quantity_step_units{1};
   std::size_t maximum_selected_recommendations{4};
   std::int64_t recommendation_maximum_logical_age_nanoseconds{100};
   std::int64_t target_validity_duration_nanoseconds{50};
@@ -971,6 +972,7 @@ portfolio_policy(PortfolioPolicySpec spec) {
                            spec.canonical_instrument_id, spec.listing_id,
                            spec.target_policy_version),
       spec.run_id, std::move(spec.assigned_strategy_ids), spec.exposure_scale,
+      spec.quantity_step_units,
       spec.maximum_selected_recommendations,
       spec.recommendation_maximum_logical_age_nanoseconds,
       spec.target_validity_duration_nanoseconds);
@@ -2400,6 +2402,54 @@ TEST_CASE("portfolio construction creates a negative absolute target") {
   CHECK(target.source_signal_ids()[0] == recommendation.signal_id());
   CHECK(target.downstream_risk_eligible());
   CHECK(!target.executable());
+}
+
+TEST_CASE("portfolio quantizes target exposure before minting executable work") {
+  auto positive = recommendation_for({.bid_quantity = 3, .ask_quantity = 1});
+  corrupt_indicative_exposure(positive, 5'999);
+  const std::array selected{positive};
+  auto stepped = PortfolioPolicySpec{};
+  stepped.quantity_step_units = 1'000;
+  const auto result = portfolio::PortfolioConstructionAuthority::construct(
+      selected, portfolio_snapshot(1'000), portfolio_policy(stepped),
+      portfolio_cut());
+  const auto *target = result.terminal
+                           ? std::get_if<portfolio::TargetPosition>(&*result.terminal)
+                           : nullptr;
+  CHECK(target != nullptr);
+  if (target) {
+    CHECK(target->desired_exposure_units() == 5'000);
+    CHECK(target->explanatory_delta_units() == 4'000);
+  }
+
+  auto tiny_recommendation =
+      recommendation_for({.bid_quantity = 3, .ask_quantity = 1});
+  corrupt_indicative_exposure(tiny_recommendation, 999);
+  const std::array tiny_selected{tiny_recommendation};
+  const auto tiny = portfolio::PortfolioConstructionAuthority::construct(
+      tiny_selected, portfolio_snapshot(0), portfolio_policy(stepped),
+      portfolio_cut());
+  const auto *no_change = tiny.terminal
+                              ? std::get_if<portfolio::PortfolioNoChange>(&*tiny.terminal)
+                              : nullptr;
+  CHECK(no_change != nullptr);
+  if (no_change) {
+    CHECK(no_change->reason() ==
+          portfolio::PortfolioNoChangeReason::QuantizedToCurrentExposure);
+    CHECK(no_change->desired_exposure_units() == 0);
+  }
+
+  const auto off_grid = portfolio::PortfolioConstructionAuthority::construct(
+      selected, portfolio_snapshot(1), portfolio_policy(stepped),
+      portfolio_cut());
+  const auto *rejected = off_grid.terminal
+                             ? std::get_if<portfolio::PortfolioConstructionRejected>(
+                                   &*off_grid.terminal)
+                             : nullptr;
+  CHECK(rejected != nullptr);
+  if (rejected)
+    CHECK(rejected->reason() ==
+          portfolio::PortfolioConstructionRejectionReason::InvalidSnapshot);
 }
 
 TEST_CASE("portfolio construction reports an already-held desired exposure") {
