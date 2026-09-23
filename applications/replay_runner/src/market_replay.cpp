@@ -1238,7 +1238,9 @@ public:
     const std::string raw(
         reinterpret_cast<const char *>(record.raw_payload.data()),
         record.raw_payload.size());
-    const auto topic_class = classify_source_topic(raw);
+    const auto topic_class = record.frame_kind == sdk::SourceFrameKind::Text
+                                 ? classify_source_topic(raw)
+                                 : SourceTopicClass::Other;
     if (topic_class == SourceTopicClass::Relevant ||
         topic_class == SourceTopicClass::InvalidJson ||
         book.failure == market::BookNormalizationFailure::MalformedPayload)

@@ -82,7 +82,19 @@ sdk::SourceCaptureContext capture_context() {
 
 struct CapturedFixture {
   std::filesystem::path path;
-  explicit CapturedFixture(std::vector<std::string_view> payloads) {
+  struct Frame final {
+    std::string_view payload;
+    sdk::SourceFrameKind kind{sdk::SourceFrameKind::Text};
+
+    Frame(std::string_view payload) : payload(payload) {}
+    Frame(std::string_view payload, sdk::SourceFrameKind kind)
+        : payload(payload), kind(kind) {}
+  };
+
+  explicit CapturedFixture(std::vector<std::string_view> payloads)
+      : CapturedFixture(text_frames(payloads)) {}
+
+  explicit CapturedFixture(std::vector<Frame> frames) {
     static std::uint64_t sequence{};
     path = std::filesystem::temp_directory_path() /
            ("chronos-market-replay-regression-" + std::to_string(++sequence));
@@ -91,8 +103,8 @@ struct CapturedFixture {
     const auto context = capture_context();
     auto recorder = sdk::SourceCaptureRecorder::create(context).value();
     auto writer = adapter::CaptureDatasetWriter::create(path, context).value();
-    for (std::size_t i = 0; i < payloads.size(); ++i) {
-      const auto payload = bytes(payloads[i]);
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+      const auto payload = bytes(frames[i].payload);
       auto captured = recorder.capture(
           {.source_event_id =
                id<contracts::SourceEventId>(static_cast<std::uint8_t>(20 + i)),
@@ -104,10 +116,12 @@ struct CapturedFixture {
                    .value(),
            .raw_payload = payload,
            .framing_protocol = sdk::FramingProtocol::WebSocket,
-           .frame_kind = sdk::SourceFrameKind::Text,
+           .frame_kind = frames[i].kind,
            .framing_status = sdk::FramingStatus::Complete,
            .integrity_status = sdk::CaptureIntegrityStatus::Complete,
-           .content_encoding = sdk::ContentEncoding::Utf8Text,
+           .content_encoding = frames[i].kind == sdk::SourceFrameKind::Text
+                                   ? sdk::ContentEncoding::Utf8Text
+                                   : sdk::ContentEncoding::OpaqueBinary,
            .compression_disposition =
                sdk::CompressionDisposition::NotCompressed});
       if (!captured.ok() ||
@@ -118,6 +132,16 @@ struct CapturedFixture {
       throw std::runtime_error("capture fixture seal failed");
   }
   ~CapturedFixture() { std::filesystem::remove_all(path); }
+
+private:
+  static std::vector<Frame>
+  text_frames(const std::vector<std::string_view> &payloads) {
+    std::vector<Frame> frames;
+    frames.reserve(payloads.size());
+    for (const auto payload : payloads)
+      frames.emplace_back(payload);
+    return frames;
+  }
 };
 market::ListingAuxConfig auxiliary_config() {
   return {.listing_id = id<contracts::ListingId>(1),
@@ -211,6 +235,18 @@ TEST_CASE("market replay rejects malformed relevant data with escaped topics") {
     CHECK(result.capture_records == 2);
     CHECK(result.unsupported_frames == 0);
   }
+}
+TEST_CASE("market replay preserves captured WebSocket ping and pong controls") {
+  CapturedFixture data({kSnapshot,
+                        {"", sdk::SourceFrameKind::Ping},
+                        {"keepalive", sdk::SourceFrameKind::Pong},
+                        kDelta});
+  const auto result = app::run_market_replay(data.path, {});
+  CHECK(result.completed);
+  CHECK(result.error.empty());
+  CHECK(result.capture_records == 4);
+  CHECK(result.control_frames == 2);
+  CHECK(result.unsupported_frames == 0);
 }
 TEST_CASE("unadmitted observation consumes cursor without minting continuity "
           "or freshness") {
