@@ -1,4 +1,5 @@
 """Paper simulation depends only on neutral contracts."""
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]

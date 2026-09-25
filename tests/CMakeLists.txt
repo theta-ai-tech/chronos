@@ -1,5 +1,6 @@
 # tests/ — C++ test targets (M0.2 adds the first unit-test executable).
 add_executable(chronos_unit_tests
+  end_to_end/paper_loop_test.cpp
   contract/strategy_invariants_test.cpp
   unit/adapter_sdk_test.cpp
   unit/bybit_websocket_test.cpp
@@ -43,6 +44,7 @@ target_compile_definitions(chronos_unit_tests
 target_link_libraries(chronos_unit_tests
   PRIVATE chronos_boundary chronos_market_data_normalization chronos_options
           chronos_market_replay
+          chronos_paper_loop
           chronos_features
           chronos_portfolio
           chronos_recommendation

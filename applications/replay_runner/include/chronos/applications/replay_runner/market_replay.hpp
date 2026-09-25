@@ -13,6 +13,8 @@ namespace chronos::applications::replay_runner {
 struct MarketReplayProfile final {
   contracts::VersionRef profile_version;
   contracts::RunId run_id;
+  contracts::IntegrityId run_manifest_integrity_id;
+  contracts::IntegrityId replay_evidence_id;
   contracts::PortfolioId portfolio_id;
   contracts::AccountId account_id;
   contracts::ListingId listing_id;
@@ -26,6 +28,7 @@ struct MarketReplayProfile final {
   contracts::DecimalScale exposure_scale;
   contracts::AmountUnits price_tick_units;
   contracts::AmountUnits quantity_step_units;
+  bool synthetic_fixture{};
 };
 struct MarketReplayCut final {
   const MarketReplayProfile &profile;

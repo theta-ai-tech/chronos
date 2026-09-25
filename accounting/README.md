@@ -1,16 +1,14 @@
 # accounting/
 
-> **Module owner stub (M0.1).** Public API, failure semantics, and reconstruction
-> source are filled in as the owning issues land. Scaffold only — no logic yet.
-
 - **Owner / plane:** Hot/data plane
-- **Language:** C++ (hot postings) / shared
+- **Language:** C++20
 - **Purpose:** Immutable balanced ledger, derived positions and P&L, marks, and reconciliation.
 - **Accepted dependencies:** contracts/ and narrow persistence ports.
 - **Must not depend on:** Market-state, strategy, or UI logic; manual mutation of economic facts.
-- **Public API:** _TBD_
-- **Failure semantics:** _TBD_
-- **Reconstruction source:** _TBD_
+- **Public API:** `LedgerAuthority`, `derive_position`, and `value_position`.
+- **Failure semantics:** Posting and valuation fail atomically with typed
+  outcomes; unavailable evidence never becomes an invented economic value.
+- **Reconstruction source:** Immutable balanced ledger transactions.
 
 See `planning/01-architecture/architecture.md` (Repository and module structure,
 Dependency direction) and `planning/01-architecture/domain-model.md` for the
