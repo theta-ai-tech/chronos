@@ -972,8 +972,7 @@ portfolio_policy(PortfolioPolicySpec spec) {
                            spec.canonical_instrument_id, spec.listing_id,
                            spec.target_policy_version),
       spec.run_id, std::move(spec.assigned_strategy_ids), spec.exposure_scale,
-      spec.quantity_step_units,
-      spec.maximum_selected_recommendations,
+      spec.quantity_step_units, spec.maximum_selected_recommendations,
       spec.recommendation_maximum_logical_age_nanoseconds,
       spec.target_validity_duration_nanoseconds);
 }
@@ -2404,7 +2403,8 @@ TEST_CASE("portfolio construction creates a negative absolute target") {
   CHECK(!target.executable());
 }
 
-TEST_CASE("portfolio quantizes target exposure before minting executable work") {
+TEST_CASE(
+    "portfolio quantizes target exposure before minting executable work") {
   auto positive = recommendation_for({.bid_quantity = 3, .ask_quantity = 1});
   corrupt_indicative_exposure(positive, 5'999);
   const std::array selected{positive};
@@ -2413,9 +2413,10 @@ TEST_CASE("portfolio quantizes target exposure before minting executable work") 
   const auto result = portfolio::PortfolioConstructionAuthority::construct(
       selected, portfolio_snapshot(1'000), portfolio_policy(stepped),
       portfolio_cut());
-  const auto *target = result.terminal
-                           ? std::get_if<portfolio::TargetPosition>(&*result.terminal)
-                           : nullptr;
+  const auto *target =
+      result.terminal
+          ? std::get_if<portfolio::TargetPosition>(&*result.terminal)
+          : nullptr;
   CHECK(target != nullptr);
   if (target) {
     CHECK(target->desired_exposure_units() == 5'000);
@@ -2429,9 +2430,9 @@ TEST_CASE("portfolio quantizes target exposure before minting executable work") 
   const auto tiny = portfolio::PortfolioConstructionAuthority::construct(
       tiny_selected, portfolio_snapshot(0), portfolio_policy(stepped),
       portfolio_cut());
-  const auto *no_change = tiny.terminal
-                              ? std::get_if<portfolio::PortfolioNoChange>(&*tiny.terminal)
-                              : nullptr;
+  const auto *no_change =
+      tiny.terminal ? std::get_if<portfolio::PortfolioNoChange>(&*tiny.terminal)
+                    : nullptr;
   CHECK(no_change != nullptr);
   if (no_change) {
     CHECK(no_change->reason() ==
@@ -2442,10 +2443,10 @@ TEST_CASE("portfolio quantizes target exposure before minting executable work") 
   const auto off_grid = portfolio::PortfolioConstructionAuthority::construct(
       selected, portfolio_snapshot(1), portfolio_policy(stepped),
       portfolio_cut());
-  const auto *rejected = off_grid.terminal
-                             ? std::get_if<portfolio::PortfolioConstructionRejected>(
-                                   &*off_grid.terminal)
-                             : nullptr;
+  const auto *rejected =
+      off_grid.terminal ? std::get_if<portfolio::PortfolioConstructionRejected>(
+                              &*off_grid.terminal)
+                        : nullptr;
   CHECK(rejected != nullptr);
   if (rejected)
     CHECK(rejected->reason() ==

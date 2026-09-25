@@ -540,9 +540,9 @@ PortfolioConstructionResult PortfolioConstructionAuthority::construct(
   // Execution consumes exposure in fixed increments.  Quantize the desired
   // target toward zero before authority minting; an existing position must
   // already be executable and is never silently adjusted.
-  const auto desired_exposure_units =
-      raw_desired_exposure_units / policy.quantity_step_units() *
-      policy.quantity_step_units();
+  const auto desired_exposure_units = raw_desired_exposure_units /
+                                      policy.quantity_step_units() *
+                                      policy.quantity_step_units();
 
   if (raw_desired_exposure_units != desired_exposure_units &&
       desired_exposure_units == snapshot.current_exposure_units())

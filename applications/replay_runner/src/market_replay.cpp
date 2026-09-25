@@ -1017,8 +1017,9 @@ private:
     ++result_.recommendations;
     if (accepted_recommendation.recommendation->hold())
       ++result_.holds;
-    for (auto byte :
-         accepted_recommendation.recommendation->recommendation_id().bytes())
+    const auto recommendation_id =
+        accepted_recommendation.recommendation->recommendation_id();
+    for (auto byte : recommendation_id.bytes())
       semantic_output_.push_back(static_cast<std::byte>(byte));
     for (auto byte : accepted.view->semantic_checksum.bytes)
       semantic_output_.push_back(static_cast<std::byte>(byte));
@@ -1153,6 +1154,10 @@ public:
       result_.profile = MarketReplayProfile{
           .profile_version = version(150, 1),
           .run_id = id<contracts::RunId>(30),
+          .run_manifest_integrity_id =
+              digest_id<contracts::IntegrityId>(result_.manifest->identity()),
+          .replay_evidence_id = digest_id<contracts::IntegrityId>(
+              digest(dataset_.manifest()->records_sha256)),
           .portfolio_id = id<contracts::PortfolioId>(140),
           .account_id = id<contracts::AccountId>(141),
           .listing_id = normalized.fact->listing_id,
@@ -1164,7 +1169,12 @@ public:
           .quantity_scale = *contracts::DecimalScale::from_exponent(3),
           .exposure_scale = *contracts::DecimalScale::from_exponent(6),
           .price_tick_units = 1,
-          .quantity_step_units = 1};
+          .quantity_step_units = 1,
+          .synthetic_fixture =
+              dataset_.manifest()->adapter_version == "m6.7-fixture" &&
+              dataset_.manifest()->build_version == "m6.7-fixture" &&
+              dataset_.manifest()->static_configuration_version ==
+                  "m6.7-synthetic-v1"};
       pipeline_ = std::make_unique<MarketStatePipeline>(
           *normalized.fact, id<contracts::RunId>(30), result_, callback_);
       break;
