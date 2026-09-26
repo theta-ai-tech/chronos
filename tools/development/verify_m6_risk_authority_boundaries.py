@@ -25,6 +25,7 @@ ALLOWED_INCLUDES = (
     "chronos/core/risk/",
     "chronos/core/portfolio/portfolio_construction.hpp",
     "chronos/contracts/digest.hpp",
+    "chronos/contracts/accounting.hpp",
     "chronos/contracts/event_envelope.hpp",
     "chronos/contracts/fixed_point.hpp",
     "chronos/contracts/value_objects.hpp",
@@ -228,6 +229,8 @@ CANONICAL_AUTHORITY_SOURCES = (
     "src/risk_arithmetic.hpp",
     "src/risk_decision.cpp",
 )
+RESERVATION_TARGET = "chronos_reservation"
+CANONICAL_RESERVATION_SOURCES = ("src/reservation.cpp",)
 
 
 @dataclass(frozen=True)
@@ -734,6 +737,41 @@ def has_native_target_guard(owner_cmake: str, root_cmake: str, guard_cmake: str 
         r"(?im)^\s*add_subdirectory\s*\(\s*core\s*\)", stripped_root[: tail.start()]
     ):
         return False
+    reservation_guard = re.search(
+        r"(?s)# CHRONOS_RESERVATION_GUARD_BEGIN.*?# CHRONOS_RESERVATION_GUARD_END\s*",
+        guard_cmake,
+    )
+    if reservation_guard is None:
+        return False
+    reservation_commands = cmake_commands(reservation_guard.group(0))
+    if not (
+        len(reservation_commands) == 12
+        and reservation_commands[0] == ("if", ["NOT", "TARGET", RESERVATION_TARGET])
+        and reservation_commands[1][0] == "message"
+        and reservation_commands[2] == ("endif", [])
+        and reservation_commands[3][0] == "get_target_property"
+        and reservation_commands[3][1]
+        == ["_chronos_reservation_sources", RESERVATION_TARGET, "SOURCES"]
+        and reservation_commands[4][0] == "if"
+        and reservation_commands[5][0] == "message"
+        and reservation_commands[6] == ("endif", [])
+        and reservation_commands[7][0] == "get_target_property"
+        and reservation_commands[7][1]
+        == ["_chronos_reservation_links", RESERVATION_TARGET, "LINK_LIBRARIES"]
+        and reservation_commands[8][0] == "set"
+        and reservation_commands[9][0] == "if"
+        and reservation_commands[10][0] == "message"
+        and reservation_commands[11] == ("endif", [])
+    ):
+        return False
+    # The remaining message/endif pair is retained after the set/if in the
+    # exact block; ensure its fail-closed tokens exist before removing the
+    # separately validated reservation consumer from the legacy risk parser.
+    if "CHRONOS_M6_BOUNDARY_VIOLATION:RESERVATION_LINK_LIBRARIES:" not in reservation_guard.group(
+        0
+    ):
+        return False
+    guard_cmake = guard_cmake[: reservation_guard.start()] + guard_cmake[reservation_guard.end() :]
     if has_callable_definition(guard_cmake):
         return False
 
@@ -1457,7 +1495,7 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     core_path = root / CORE_CMAKE
     root_path = root / ROOT_CMAKE
     owner_cmake = all_cmake.get(owner_path)
-    guard_cmake = all_cmake.get(guard_path)
+    guard_cmake = guard_path.read_text(encoding="utf-8") if guard_path.is_file() else None
     core_cmake = all_cmake.get(core_path)
     root_cmake = all_cmake.get(root_path)
     if owner_cmake is None:
@@ -1575,7 +1613,21 @@ def find_violations(root: Path) -> list[BoundaryViolation]:
     canonical_sources = {
         (owner_path.parent / source).resolve() for source in CANONICAL_AUTHORITY_SOURCES
     }
-    if actual_sources != declared_sources:
+    reservation_sources = cmake_tokens(
+        cmake_call_bodies(owner_cmake, "add_library", RESERVATION_TARGET, top_level=True)
+        + cmake_call_bodies(owner_cmake, "target_sources", RESERVATION_TARGET, top_level=True)
+    )
+    declared_reservation_sources = {
+        (owner_path.parent / source).resolve()
+        for source in reservation_sources
+        if "$" not in source and Path(source).suffix.lower() in NATIVE_SUFFIXES
+    }
+    canonical_reservation_sources = {
+        (owner_path.parent / source).resolve() for source in CANONICAL_RESERVATION_SOURCES
+    }
+    if reservation_sources and declared_reservation_sources != canonical_reservation_sources:
+        violations.append(BoundaryViolation(owner_path, "invalid-reservation-source-declaration"))
+    if actual_sources != declared_sources | declared_reservation_sources:
         violations.append(BoundaryViolation(owner_path, "authority-source-not-declared"))
     elif not invalid_source_declaration and declared_sources != canonical_sources:
         violations.append(BoundaryViolation(owner_path, "noncanonical-authority-sources"))

@@ -990,6 +990,7 @@ private:
 
 class RiskDecision final {
 public:
+  [[nodiscard]] contracts::RunId run_id() const noexcept { return run_id_; }
   [[nodiscard]] contracts::RiskDecisionId decision_id() const noexcept {
     return decision_id_;
   }
@@ -1059,6 +1060,9 @@ public:
   }
   [[nodiscard]] contracts::VersionRef target_schema_version() const noexcept {
     return target_schema_version_;
+  }
+  [[nodiscard]] contracts::DecimalScale exposure_scale() const noexcept {
+    return exposure_scale_;
   }
   [[nodiscard]] contracts::IntegrityId
   run_manifest_integrity_id() const noexcept {
@@ -1158,13 +1162,14 @@ private:
         authorized_delta_units_(authorized_delta_units),
         authorized_projected_exposure_units_(
             authorized_projected_exposure_units),
-        risk_scope_id_(policy.risk_scope_id()),
+        run_id_(policy.run_id()), risk_scope_id_(policy.risk_scope_id()),
         risk_policy_version_(policy.risk_policy_version()),
         limit_set_version_(policy.limit_set_version()),
         exposure_model_version_(policy.exposure_model_version()),
         arithmetic_version_(policy.arithmetic_version()),
         authority_version_(policy.authority_version()),
         target_schema_version_(policy.target_schema_version()),
+        exposure_scale_(policy.exposure_scale()),
         run_manifest_integrity_id_(run_manifest_integrity_id),
         replay_evidence_id_(replay_evidence_id),
         policy_activation_event_id_(policy_activation_event_id),
@@ -1192,6 +1197,7 @@ private:
   std::optional<contracts::AmountUnits> authorized_target_units_;
   std::optional<contracts::AmountUnits> authorized_delta_units_;
   std::optional<contracts::AmountUnits> authorized_projected_exposure_units_;
+  contracts::RunId run_id_;
   contracts::RiskScopeId risk_scope_id_;
   contracts::VersionRef risk_policy_version_;
   contracts::VersionRef limit_set_version_;
@@ -1199,6 +1205,7 @@ private:
   contracts::VersionRef arithmetic_version_;
   contracts::VersionRef authority_version_;
   contracts::VersionRef target_schema_version_;
+  contracts::DecimalScale exposure_scale_;
   contracts::IntegrityId run_manifest_integrity_id_;
   contracts::IntegrityId replay_evidence_id_;
   contracts::EventId policy_activation_event_id_;

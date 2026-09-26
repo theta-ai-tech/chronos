@@ -23,6 +23,7 @@ add_executable(chronos_unit_tests
   unit/state_lineage_test.cpp
   unit/serialization_test.cpp
   unit/value_objects_test.cpp
+  unit/reservation_test.cpp
   unit/risk_decision_test.cpp
   unit/version_test.cpp)
 
@@ -39,7 +40,7 @@ target_link_libraries(chronos_unit_tests
           chronos_features
           chronos_portfolio
           chronos_recommendation
-          chronos_risk
+          chronos_risk chronos_reservation
           chronos_reference_strategies chronos_replay_providers
           chronos_strategy_runtime chronos_strategy_conformance_pack
           chronos_strategy_sdk

@@ -228,4 +228,31 @@ foreach(_chronos_risk_source IN LISTS _chronos_risk_canonical_sources)
   endforeach()
 endforeach()
 
+# CHRONOS_RESERVATION_GUARD_BEGIN
+# Reservation is the sole downstream core owner allowed to consume the private
+# risk mint. Keep its target shape exact so adding this consumer cannot become a
+# general escape hatch from the risk authority boundary.
+if(NOT TARGET chronos_reservation)
+  message(FATAL_ERROR
+    "CHRONOS_M6_BOUNDARY_VIOLATION:RESERVATION_TARGET: missing chronos_reservation")
+endif()
+get_target_property(
+  _chronos_reservation_sources chronos_reservation SOURCES)
+if(NOT "${_chronos_reservation_sources}" STREQUAL "src/reservation.cpp")
+  message(FATAL_ERROR
+    "CHRONOS_M6_BOUNDARY_VIOLATION:RESERVATION_SOURCES: expected "
+    "`src/reservation.cpp`, got `${_chronos_reservation_sources}`")
+endif()
+get_target_property(
+  _chronos_reservation_links chronos_reservation LINK_LIBRARIES)
+set(_chronos_reservation_expected_links
+  chronos_risk chronos_contracts chronos_options chronos_warnings)
+if(NOT "${_chronos_reservation_links}" STREQUAL
+    "${_chronos_reservation_expected_links}")
+  message(FATAL_ERROR
+    "CHRONOS_M6_BOUNDARY_VIOLATION:RESERVATION_LINK_LIBRARIES: expected "
+    "`${_chronos_reservation_expected_links}`, got `${_chronos_reservation_links}`")
+endif()
+# CHRONOS_RESERVATION_GUARD_END
+
 set(_chronos_m6_risk_boundary_assertion_complete TRUE)
