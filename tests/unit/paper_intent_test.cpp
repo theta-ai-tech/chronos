@@ -103,6 +103,37 @@ TEST_CASE(
           risk::ReservationState::Held);
   }
 }
+TEST_CASE("paper intent freezes rejected request retries") {
+  risk::ReservationAuthority reservations(reservation_policy(), 0);
+  auto approved = decision(reservations.snapshot(risk_cut()));
+  auto held = reservations.reserve(id<contracts::ReservationRequestId>(122),
+                                   approved, risk_cut());
+  execution::PaperIntentAuthority authority;
+  auto invalid = execution_evidence();
+  invalid.market_tradeable = false;
+  const auto request = id<contracts::ExecutableOrderIntentId>(160);
+
+  const auto rejected = authority.create(request, approved, reservations,
+                                         held.reservation()->reservation_id(),
+                                         invalid, risk_cut());
+  CHECK(rejected.failure == execution::PaperIntentFailure::InvalidEvidence);
+  CHECK(authority.create(request, approved, reservations,
+                         held.reservation()->reservation_id(), invalid,
+                         risk_cut()) == rejected);
+
+  const auto conflict = authority.create(request, approved, reservations,
+                                         held.reservation()->reservation_id(),
+                                         execution_evidence(), risk_cut());
+  CHECK(conflict.failure == execution::PaperIntentFailure::RequestConflict);
+  CHECK(reservations.find(held.reservation()->reservation_id())->state() ==
+        risk::ReservationState::Held);
+
+  CHECK(authority
+            .create(id<contracts::ExecutableOrderIntentId>(161), approved,
+                    reservations, held.reservation()->reservation_id(),
+                    execution_evidence(), risk_cut())
+            .accepted());
+}
 TEST_CASE("paper intent checks signed magnitude without overflowing") {
   CHECK(!execution::paper_quantity(
       std::numeric_limits<contracts::AmountUnits>::min()));

@@ -25,16 +25,22 @@ PaperIntentResult PaperIntentAuthority::create(
       return {PaperIntentFailure::RequestConflict, {}};
     }
   }
+  requests_.reserve(requests_.size() + 1);
+  const auto remember = [&](PaperIntentResult result) {
+    requests_.push_back({request_id, decision, &reservations, reservation_id,
+                         evidence, cut, result});
+    return result;
+  };
   if (!decision.authorizes_target() || !decision.authorized_delta_units() ||
       decision.run_mode() != contracts::RunMode::backtest)
-    return {PaperIntentFailure::RiskRejected, {}};
+    return remember({PaperIntentFailure::RiskRejected, {}});
   const auto reservation = reservations.find(reservation_id);
   if (!reservation || reservation->state() != risk::ReservationState::Held ||
       reservation->decision() != decision)
-    return {PaperIntentFailure::InvalidReservation, {}};
+    return remember({PaperIntentFailure::InvalidReservation, {}});
   const auto quantity = paper_quantity(*decision.authorized_delta_units());
   if (!evidence || !quantity)
-    return {PaperIntentFailure::InvalidEvidence, {}};
+    return remember({PaperIntentFailure::InvalidEvidence, {}});
   const auto &e = *evidence;
   const auto &key = decision.target_key();
   if (e.run_mode != contracts::RunMode::backtest ||
@@ -60,7 +66,7 @@ PaperIntentResult PaperIntentAuthority::create(
       e.bid_price_units % e.price_tick_units != 0 ||
       e.ask_price_units % e.price_tick_units != 0 ||
       *quantity % e.quantity_step_units != 0)
-    return {PaperIntentFailure::InvalidEvidence, {}};
+    return remember({PaperIntentFailure::InvalidEvidence, {}});
   PaperIntentResult result{
       PaperIntentFailure::None,
       contracts::PaperIntent({request_id,
@@ -97,14 +103,16 @@ PaperIntentResult PaperIntentAuthority::create(
   // Allocate all copies/cache capacity before the reservation commit. Only
   // no-throw moves remain after successful consume; failed consume publishes no
   // intent.
-  requests_.reserve(requests_.size() + 1);
   Request staged{request_id, decision, &reservations, reservation_id,
                  evidence,   cut,      result};
   static_assert(std::is_nothrow_move_constructible_v<Request>);
   static_assert(std::is_nothrow_move_constructible_v<PaperIntentResult>);
   const auto consumed = reservations.consume(reservation_id, request_id, cut);
-  if (!consumed.accepted())
-    return {PaperIntentFailure::ConsumeRejected, {}};
+  if (!consumed.accepted()) {
+    staged.result = {PaperIntentFailure::ConsumeRejected, {}};
+    requests_.push_back(std::move(staged));
+    return requests_.back().result;
+  }
   requests_.push_back(std::move(staged));
   return result;
 }
