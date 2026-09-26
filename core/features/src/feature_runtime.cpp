@@ -382,7 +382,7 @@ FeatureRuntimeFailure validate_cut(const FeatureRuntimeConfig &config,
           view.quality.logical_time_nanoseconds ||
       view.bids.empty() != !view.top.best_bid.has_value() ||
       view.asks.empty() != !view.top.best_ask.has_value() ||
-      (view.top.best_bid && view.bids.front() != *view.top.best_bid) ||
+      (view.top.best_bid && view.bids.back() != *view.top.best_bid) ||
       (view.top.best_ask && view.asks.front() != *view.top.best_ask)) {
     return FeatureRuntimeFailure::CutMismatch;
   }

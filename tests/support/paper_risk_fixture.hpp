@@ -63,7 +63,7 @@ construct_target(const TargetSnapshotSpec &snapshot_spec,
   const portfolio::PortfolioConstructionPolicy policy(
       version(74), version(75), version(76), version(77), key,
       id<contracts::RunId>(30), {id<contracts::StrategyInstanceId>(98)},
-      exposure_scale(), 4, 100, 50);
+      exposure_scale(), 1, 4, 100, 50);
   const portfolio::PortfolioConstructionCut cut(1, 100);
   const std::array recommendations{
       chronos::test_support::positive_portfolio_recommendation(

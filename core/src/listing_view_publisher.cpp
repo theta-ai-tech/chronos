@@ -336,6 +336,14 @@ bool selected_event_was_applied(
   if (quality.last_applied_event_id != event_id ||
       quality.last_applied_input_semantic_checksum != semantic_checksum)
     return false;
+  if (event_type == "market.trade.observation.unadmitted")
+    return !quality.last_applied_input_was_trade &&
+           quality.last_quality_input_kind ==
+               ListingQualityInputKind::TradeObservationUnadmitted;
+  if (event_type == "market.control.source.observed")
+    return !quality.last_applied_input_was_trade &&
+           quality.last_quality_input_kind ==
+               ListingQualityInputKind::SourceObservation;
   if (event_type.starts_with("market.trade.observation."))
     return quality.last_applied_input_was_trade;
   if (quality.last_applied_input_was_trade ||

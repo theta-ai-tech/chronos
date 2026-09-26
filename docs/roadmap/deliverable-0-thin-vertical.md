@@ -154,6 +154,13 @@ mark/currency/policy provenance; `recommendation→target→risk→reservation�
 ledger` chain auditable end-to-end; no UI/manual mutation of derived facts.
 **Labels:** `deliverable-0`, `area:paper-execution`, `type:feature`
 
+**Completion evidence (2026-09-26):** M6.1-M6.7 are delivered by PRs #90-#96.
+`make m0-check` and `make cpp-profiles-check` pass, including ASan/UBSan; the
+Release paper-replay CLI produces byte-identical summaries across repeated runs
+of the deterministic synthetic captured fixture. This proves the composed D0
+paper path and ledger-derived accounting, but does not claim a live-market paper
+session or M7 latency/benchmark completion.
+
 ### M7 — Latency instrumentation & benchmark harness
 **Goal:** A reproducible hot-path latency distribution, recorded with its reference
 environment.

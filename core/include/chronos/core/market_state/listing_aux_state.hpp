@@ -61,6 +61,10 @@ enum class ListingQualityInputKind : std::uint8_t {
   LogicalTimerAdvanced,
   ListingUnavailable,
   ListingClosed,
+  // Consume an observed fact without asserting trade completeness.
+  TradeObservationUnadmitted,
+  // Non-behavioral source evidence; does not refresh market evidence.
+  SourceObservation,
 };
 
 enum class ListingAuxFailure : std::uint8_t {

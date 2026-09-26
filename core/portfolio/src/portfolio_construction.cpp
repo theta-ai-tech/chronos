@@ -93,6 +93,7 @@ void append_policy(std::vector<std::byte> &output,
   for (const auto assignment : assignments)
     append_id(output, assignment);
   append_integer(output, policy.exposure_scale().exponent());
+  append_integer(output, policy.quantity_step_units());
   append_integer(output, static_cast<std::uint64_t>(
                              policy.maximum_selected_recommendations()));
   append_integer(output,
@@ -164,6 +165,7 @@ bool valid_policy(const PortfolioConstructionPolicy &policy) {
       assignments.empty() ||
       assignments.size() >
           PortfolioConstructionAuthority::kMaximumAssignedStrategies ||
+      policy.quantity_step_units() <= 0 ||
       policy.recommendation_maximum_logical_age_nanoseconds() < 0 ||
       policy.target_validity_duration_nanoseconds() <= 0)
     return false;
@@ -180,7 +182,8 @@ snapshot_rejection(const PortfolioStateSnapshot &snapshot,
                    const PortfolioConstructionCut &cut) {
   if (snapshot.configuration_epoch() == 0 ||
       !snapshot.paper_transition_assumption() ||
-      snapshot.exposure_scale() != policy.exposure_scale())
+      snapshot.exposure_scale() != policy.exposure_scale() ||
+      snapshot.current_exposure_units() % policy.quantity_step_units() != 0)
     return PortfolioConstructionRejectionReason::InvalidSnapshot;
   if (snapshot.run_id() != policy.run_id() ||
       snapshot.portfolio_id() != policy.target_key().portfolio_id() ||
@@ -532,8 +535,19 @@ PortfolioConstructionResult PortfolioConstructionAuthority::construct(
       aggregate_exposure_units >
           std::numeric_limits<contracts::AmountUnits>::max())
     return rejected(PortfolioConstructionRejectionReason::ArithmeticOverflow);
-  const auto desired_exposure_units =
+  const auto raw_desired_exposure_units =
       static_cast<contracts::AmountUnits>(aggregate_exposure_units);
+  // Execution consumes exposure in fixed increments.  Quantize the desired
+  // target toward zero before authority minting; an existing position must
+  // already be executable and is never silently adjusted.
+  const auto desired_exposure_units = raw_desired_exposure_units /
+                                      policy.quantity_step_units() *
+                                      policy.quantity_step_units();
+
+  if (raw_desired_exposure_units != desired_exposure_units &&
+      desired_exposure_units == snapshot.current_exposure_units())
+    return no_change(PortfolioNoChangeReason::QuantizedToCurrentExposure,
+                     desired_exposure_units);
 
   contracts::AmountUnits delta{};
   if (__builtin_sub_overflow(desired_exposure_units,
