@@ -1,0 +1,3 @@
+add_library(chronos_execution STATIC src/paper_intent.cpp)
+target_include_directories(chronos_execution PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(chronos_execution PUBLIC chronos_reservation chronos_contracts PRIVATE chronos_options chronos_warnings)
