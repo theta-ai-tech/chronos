@@ -10,6 +10,8 @@ struct ValuationCut {
 struct ValuationPolicy {
   LedgerPolicy scope;
   contracts::VersionRef valuation_policy_version;
+  contracts::VersionRef price_definition;
+  contracts::DecimalScale price_scale;
   contracts::VersionRef mark_policy_version;
   std::int64_t maximum_mark_age_nanoseconds;
 };

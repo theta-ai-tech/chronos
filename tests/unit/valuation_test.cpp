@@ -70,6 +70,7 @@ contracts::PositionMark mark(std::int64_t price) {
           s.run_mode,
           id<contracts::StateViewId>(201),
           intent.facts().execution.market_lineage,
+          version(204),
           price,
           contracts::DecimalScale::from_exponent(0).value(),
           s.quantity_scale,
@@ -80,7 +81,9 @@ contracts::PositionMark mark(std::int64_t price) {
           version(202)};
 }
 accounting::ValuationPolicy policy() {
-  return {scope(), version(203), version(202), 10};
+  return {scope(),      version(203),
+          version(204), contracts::DecimalScale::from_exponent(0).value(),
+          version(202), 10};
 }
 TEST_CASE("valuation independent long short cross-zero fee vectors") {
   std::vector history{tx(1, 10, 1000, 2), tx(2, -4, 440, 1)};
@@ -147,7 +150,7 @@ TEST_CASE("valuation rebuild excludes compensated economics and fees") {
 TEST_CASE(
     "valuation unavailable marks and arithmetic never masquerade as zero") {
   const std::vector history{tx(1, 10, 1000, 2)};
-  for (int i = 0; i < 7; ++i) {
+  for (int i = 0; i < 11; ++i) {
     auto m = mark(120);
     if (i == 0)
       m.logical_time_nanoseconds = 100;
@@ -163,6 +166,19 @@ TEST_CASE(
       m.mark_policy_version = version(231);
     if (i == 6)
       m.run_input_sequence = 6;
+    if (i == 7)
+      m.price_definition = version(232);
+    if (i == 8)
+      m.price_scale = contracts::DecimalScale::from_exponent(1).value();
+    if (i == 9 || i == 10) {
+      const std::array streams{id<contracts::StreamId>(150)};
+      const std::array cursors{
+          *contracts::StreamCursor::at_sequence(streams[0], 1, 5)};
+      m.source_lineage = *contracts::StateLineage::from(
+          i == 9 ? id<contracts::RunId>(231) : m.run_id,
+          i == 10 ? m.run_input_sequence - 1 : m.run_input_sequence, streams,
+          cursors);
+    }
     auto v = accounting::value_position(history, m, policy(), {5, 120});
     CHECK(!v.available());
     CHECK(!v.unrealized_gross_units);

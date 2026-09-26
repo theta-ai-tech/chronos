@@ -13,6 +13,15 @@ struct PaperReplayOptions final {
   // Used by fail-closed integration tests. The CLI always uses complete risk
   // evidence.
   bool provide_market_risk_evidence{true};
+  // Test-only fault injection proving divergent settlement evidence cannot
+  // advance reconciliation or any later market cut.
+  bool corrupt_settlement_evidence_for_test{};
+};
+
+enum class PaperValuationStatus : std::uint8_t {
+  NotEvaluated,
+  Available,
+  Unavailable
 };
 
 struct PaperReplayResult final {
@@ -30,11 +39,13 @@ struct PaperReplayResult final {
   bool ledger_balanced{};
   bool ledger_idempotent{};
   bool reservation_capacity_reconciled{};
-  contracts::AmountUnits position_units{};
-  contracts::AmountUnits realized_gross_units{};
-  contracts::AmountUnits unrealized_gross_units{};
-  contracts::AmountUnits fees_units{};
-  contracts::AmountUnits total_net_units{};
+  bool chain_linked{};
+  PaperValuationStatus valuation_status{PaperValuationStatus::NotEvaluated};
+  std::optional<contracts::AmountUnits> position_units;
+  std::optional<contracts::AmountUnits> realized_gross_units;
+  std::optional<contracts::AmountUnits> unrealized_gross_units;
+  std::optional<contracts::AmountUnits> fees_units;
+  std::optional<contracts::AmountUnits> total_net_units;
   std::optional<std::uint64_t> profitable_closing_events;
   std::optional<std::uint64_t> closing_events;
   std::optional<contracts::TargetPositionId> last_target_id;

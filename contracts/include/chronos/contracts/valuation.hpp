@@ -17,6 +17,7 @@ struct PositionMark final {
   RunMode run_mode;
   StateViewId source_view_id;
   StateLineage source_lineage;
+  VersionRef price_definition;
   AmountUnits price_units;
   DecimalScale price_scale;
   DecimalScale quantity_scale;
