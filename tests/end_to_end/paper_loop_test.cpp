@@ -2,6 +2,7 @@
 #include "microtest.hpp"
 
 #include <filesystem>
+#include <string>
 
 namespace {
 namespace app = chronos::applications::replay_runner;
@@ -44,12 +45,15 @@ TEST_CASE(
   CHECK(first.intents == first.reservations);
   CHECK(first.fills == first.intents);
   CHECK(first.ledger_transactions == first.fills);
+  CHECK(first.chain_linked);
   CHECK(first.ledger_balanced);
   CHECK(first.ledger_idempotent);
   CHECK(first.reservation_capacity_reconciled);
   CHECK(first.position_units == -750000);
-  CHECK(first.realized_gross_units != 0);
-  CHECK(first.total_net_units != 0);
+  CHECK(first.realized_gross_units == -750000);
+  CHECK(first.unrealized_gross_units == -150000);
+  CHECK(first.fees_units == 47249813);
+  CHECK(first.total_net_units == -48149813);
   CHECK(first.last_target_id.has_value());
   CHECK(first.last_risk_decision_id.has_value());
   CHECK(first.last_reservation_id.has_value());
@@ -61,7 +65,8 @@ TEST_CASE(
   CHECK(first.valuation_policy_version.has_value());
   CHECK(first.closing_events.has_value());
   CHECK(*first.closing_events > 0);
-  CHECK(first.fees_units > 0);
+  CHECK(*first.closing_events == 1);
+  CHECK(*first.profitable_closing_events == 0);
   CHECK(first.semantic_checksum == second.semantic_checksum);
   CHECK(app::paper_replay_json(first) == app::paper_replay_json(second));
 }
@@ -80,4 +85,35 @@ TEST_CASE("missing market risk evidence cannot reach broker or ledger") {
   CHECK(result.fills == 0);
   CHECK(result.ledger_transactions == 0);
   CHECK(result.position_units == 0);
+}
+
+TEST_CASE("paper replay terminally stops on divergent ledger settlement") {
+  Fixture fixture;
+  const auto result = app::run_paper_replay(
+      fixture.path(), {.corrupt_settlement_evidence_for_test = true});
+
+  CHECK(!result.completed);
+  CHECK(result.error == "ledger settlement did not match owned ledger tail");
+  CHECK(result.market.capture_records == 1);
+  CHECK(result.fills == 1);
+  CHECK(result.ledger_transactions == 1);
+  CHECK(result.valuation_status == app::PaperValuationStatus::NotEvaluated);
+  CHECK(!result.position_units);
+  CHECK(!result.realized_gross_units);
+  CHECK(!result.unrealized_gross_units);
+  CHECK(!result.fees_units);
+  CHECK(!result.total_net_units);
+}
+
+TEST_CASE("paper replay unavailable valuation serializes null economics") {
+  app::PaperReplayResult result;
+  result.valuation_status = app::PaperValuationStatus::Unavailable;
+  const auto json = app::paper_replay_json(result);
+
+  CHECK(json.find("\"valuation_status\":\"unavailable\"") != std::string::npos);
+  CHECK(json.find("\"position_units\":null") != std::string::npos);
+  CHECK(json.find("\"realized_gross_units\":null") != std::string::npos);
+  CHECK(json.find("\"unrealized_gross_units\":null") != std::string::npos);
+  CHECK(json.find("\"fees_units\":null") != std::string::npos);
+  CHECK(json.find("\"total_net_units\":null") != std::string::npos);
 }

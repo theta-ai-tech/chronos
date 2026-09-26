@@ -142,6 +142,40 @@ bool balanced(const accounting::LedgerTransaction &transaction) {
   return quantity == 0 && money == 0;
 }
 
+bool settlement_matches_ledger_tail(
+    const contracts::SettledExposureEvidence &settlement,
+    const accounting::LedgerAuthority &ledger,
+    const contracts::PaperFill &fill) {
+  if (ledger.transactions().empty())
+    return false;
+  const auto &tail = ledger.transactions().back();
+  const auto &policy = tail.policy;
+  const auto &facts = fill.facts();
+  return tail.kind == accounting::LedgerTransactionKind::Fill &&
+         tail.source_fill == facts && settlement.run_id == policy.run_id &&
+         settlement.portfolio_id == policy.portfolio_id &&
+         settlement.account_id == policy.account_id &&
+         settlement.canonical_instrument_id == policy.canonical_instrument_id &&
+         settlement.listing_id == policy.listing_id &&
+         settlement.quote_currency == policy.quote_currency &&
+         settlement.run_mode == policy.run_mode &&
+         settlement.reservation_id == facts.intent.reservation_id &&
+         settlement.intent_id == facts.intent.intent_id &&
+         settlement.fill_id == facts.fill_id &&
+         settlement.transaction_id == tail.transaction_id &&
+         settlement.ledger_cursor == tail.cursor &&
+         settlement.ledger_cursor == ledger.cursor() &&
+         settlement.ledger_checksum == tail.checksum &&
+         settlement.ledger_checksum == ledger.checksum() &&
+         settlement.posted_delta_units == tail.signed_fill_quantity_units &&
+         settlement.position_units == ledger.position_units() &&
+         settlement.exposure_scale == policy.quantity_scale &&
+         settlement.quality == facts.intent.execution.quality &&
+         settlement.run_input_sequence ==
+             facts.intent.execution.run_input_sequence &&
+         settlement.logical_time_nanoseconds == facts.fill_time_nanoseconds;
+}
+
 class PaperReplaySession final {
 public:
   PaperReplaySession(const MarketReplayProfile &profile,
@@ -327,8 +361,28 @@ public:
     result_.ledger_idempotent = true;
     ++result_.ledger_transactions;
     result_.last_transaction_id = posted.transaction_id;
+    auto settlement = *posted.settlement;
+    if (options_.corrupt_settlement_evidence_for_test)
+      settlement.ledger_checksum = {};
+    if (!settlement_matches_ledger_tail(settlement, *ledger_, *fill.fill))
+      return fail("ledger settlement did not match owned ledger tail");
+    const auto &tail = ledger_->transactions().back();
+    result_.chain_linked =
+        decision.target_position_id() == target.target_position_id() &&
+        reserved.reservation()->decision().decision_id() ==
+            decision.decision_id() &&
+        intent.intent->facts().target_position_id ==
+            target.target_position_id() &&
+        intent.intent->facts().risk_decision_id == decision.decision_id() &&
+        intent.intent->facts().reservation_id ==
+            reserved.reservation()->reservation_id() &&
+        fill.fill->facts().intent == intent.intent->facts() &&
+        tail.source_fill == fill.fill->facts() &&
+        settlement.transaction_id == *posted.transaction_id;
+    if (!result_.chain_linked)
+      return fail("paper authority chain linkage failed");
     auto reconciled = reservations_->reconcile(
-        reserved.reservation()->reservation_id(), *posted.settlement);
+        reserved.reservation()->reservation_id(), settlement);
     if (!reconciled.accepted())
       return fail("reservation reconciliation rejected ledger settlement");
     const auto projected = reservations_->snapshot(risk_cut);
@@ -358,6 +412,7 @@ public:
         contracts::RunMode::backtest,
         market_result.final_view->view_id,
         market_result.final_view->lineage,
+        profile_.price_definition,
         *mark_price,
         profile_.price_scale,
         profile_.exposure_scale,
@@ -367,13 +422,16 @@ public:
         market_result.final_bundle->logical_time_nanoseconds,
         version(179)};
     const accounting::ValuationPolicy valuation_policy{
-        ledger_policy(profile_), version(180), version(179), 1000000000};
+        ledger_policy(profile_), version(180), profile_.price_definition,
+        profile_.price_scale,    version(179), 1000000000};
     const auto valued = accounting::value_position(
         ledger_->transactions(), mark, valuation_policy,
         {market_result.final_bundle->run_input_sequence,
          market_result.final_bundle->logical_time_nanoseconds});
-    if (!valued.available())
+    if (!valued.available()) {
+      result_.valuation_status = PaperValuationStatus::Unavailable;
       return fail("ledger-derived valuation unavailable");
+    }
     result_.ledger_balanced =
         std::all_of(ledger_->transactions().begin(),
                     ledger_->transactions().end(), balanced);
@@ -384,6 +442,7 @@ public:
     result_.unrealized_gross_units = *valued.unrealized_gross_units;
     result_.fees_units = valued.position->fees_units;
     result_.total_net_units = *valued.total_net_units;
+    result_.valuation_status = PaperValuationStatus::Available;
     if (valued.position->closing_events != 0) {
       result_.profitable_closing_events =
           valued.position->profitable_gross_closing_events;
@@ -418,6 +477,14 @@ void append_u64(std::vector<std::byte> &bytes, std::uint64_t value) {
     bytes.push_back(static_cast<std::byte>((value >> shift) & 0xffU));
 }
 
+void append_optional_amount(
+    std::vector<std::byte> &bytes,
+    const std::optional<contracts::AmountUnits> &value) {
+  append_u64(bytes, value.has_value());
+  if (value)
+    append_u64(bytes, static_cast<std::uint64_t>(*value));
+}
+
 template <typename Id>
 void append_optional_id(std::vector<std::byte> &bytes,
                         const std::optional<Id> &value) {
@@ -438,16 +505,18 @@ void finalize_checksum(PaperReplayResult &result) {
   for (const auto value :
        {result.targets, result.no_change_targets, result.risk_decisions,
         result.risk_unavailable, result.reservations, result.intents,
-        result.fills, result.ledger_transactions,
-        static_cast<std::uint64_t>(result.position_units),
-        static_cast<std::uint64_t>(result.realized_gross_units),
-        static_cast<std::uint64_t>(result.unrealized_gross_units),
-        static_cast<std::uint64_t>(result.fees_units),
-        static_cast<std::uint64_t>(result.total_net_units)})
+        result.fills, result.ledger_transactions})
     append_u64(bytes, value);
   append_u64(bytes, result.ledger_balanced);
   append_u64(bytes, result.ledger_idempotent);
   append_u64(bytes, result.reservation_capacity_reconciled);
+  append_u64(bytes, result.chain_linked);
+  append_u64(bytes, static_cast<std::uint64_t>(result.valuation_status));
+  append_optional_amount(bytes, result.position_units);
+  append_optional_amount(bytes, result.realized_gross_units);
+  append_optional_amount(bytes, result.unrealized_gross_units);
+  append_optional_amount(bytes, result.fees_units);
+  append_optional_amount(bytes, result.total_net_units);
   append_optional_id(bytes, result.last_target_id);
   append_optional_id(bytes, result.last_risk_decision_id);
   append_optional_id(bytes, result.last_reservation_id);
@@ -611,6 +680,20 @@ std::string paper_replay_json(const PaperReplayResult &result) {
     return "{\"definition_id\":\"" + value->definition_id().to_string() +
            "\",\"version\":" + std::to_string(value->version()) + "}";
   };
+  const auto optional_amount = [](const auto &value) {
+    return value ? std::to_string(*value) : std::string("null");
+  };
+  const auto valuation_status = [&] {
+    switch (result.valuation_status) {
+    case PaperValuationStatus::Available:
+      return "available";
+    case PaperValuationStatus::Unavailable:
+      return "unavailable";
+    case PaperValuationStatus::NotEvaluated:
+      return "not_evaluated";
+    }
+    return "not_evaluated";
+  };
   std::ostringstream output;
   output << "{\"schema\":\"chronos.paper-replay-summary.v1\""
          << ",\"accounting_model\":\"quantity/quote paper accounting\""
@@ -636,11 +719,15 @@ std::string paper_replay_json(const PaperReplayResult &result) {
          << (result.ledger_idempotent ? "true" : "false")
          << ",\"reservation_capacity_reconciled\":"
          << (result.reservation_capacity_reconciled ? "true" : "false")
-         << ",\"position_units\":" << result.position_units
-         << ",\"realized_gross_units\":" << result.realized_gross_units
-         << ",\"unrealized_gross_units\":" << result.unrealized_gross_units
-         << ",\"fees_units\":" << result.fees_units
-         << ",\"total_net_units\":" << result.total_net_units
+         << ",\"chain_linked\":" << (result.chain_linked ? "true" : "false")
+         << ",\"valuation_status\":\"" << valuation_status() << "\""
+         << ",\"position_units\":" << optional_amount(result.position_units)
+         << ",\"realized_gross_units\":"
+         << optional_amount(result.realized_gross_units)
+         << ",\"unrealized_gross_units\":"
+         << optional_amount(result.unrealized_gross_units)
+         << ",\"fees_units\":" << optional_amount(result.fees_units)
+         << ",\"total_net_units\":" << optional_amount(result.total_net_units)
          << ",\"hit_rate_numerator\":";
   if (result.profitable_closing_events)
     output << *result.profitable_closing_events;

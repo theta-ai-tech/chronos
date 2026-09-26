@@ -169,7 +169,11 @@ value_position(std::span<const LedgerTransaction> history,
       m.listing_id != s.listing_id || m.quote_currency != s.quote_currency ||
       m.run_mode != s.run_mode || m.quantity_scale != s.quantity_scale ||
       m.money_scale != s.money_scale ||
+      m.price_definition != policy.price_definition ||
+      m.price_scale != policy.price_scale ||
       m.mark_policy_version != policy.mark_policy_version ||
+      m.source_lineage.run_id() != m.run_id ||
+      m.source_lineage.run_input_sequence() != m.run_input_sequence ||
       m.price_units <= 0 ||
       m.quality.status() != contracts::QualityStatus::valid ||
       m.run_input_sequence > cut.run_input_sequence || age < 0 ||
