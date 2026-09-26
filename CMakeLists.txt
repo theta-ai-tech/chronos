@@ -54,6 +54,7 @@ add_subdirectory(core)
 add_subdirectory(strategies)
 add_subdirectory(normalization)
 add_subdirectory(runtime)
+add_subdirectory(accounting)
 add_subdirectory(core/recommendation)
 add_subdirectory(tests)
 

@@ -16,6 +16,7 @@ add_executable(chronos_unit_tests
   unit/l2_book_test.cpp
   unit/listing_aux_state_test.cpp
   unit/listing_view_publisher_test.cpp
+  unit/ledger_test.cpp
   replay/normalized_stream_golden_test.cpp
   unit/boundary_test.cpp
   unit/event_envelope_test.cpp
@@ -42,6 +43,7 @@ target_link_libraries(chronos_unit_tests
           chronos_features
           chronos_portfolio
           chronos_recommendation
+          chronos_ledger
           chronos_risk chronos_reservation chronos_execution chronos_paper_broker
           chronos_reference_strategies chronos_replay_providers
           chronos_strategy_runtime chronos_strategy_conformance_pack
