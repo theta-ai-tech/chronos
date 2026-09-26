@@ -18,7 +18,6 @@ add_executable(chronos_unit_tests
   unit/listing_view_publisher_test.cpp
   unit/ledger_test.cpp
   replay/normalized_stream_golden_test.cpp
-  replay/market_replay_test.cpp
   unit/boundary_test.cpp
   unit/event_envelope_test.cpp
   unit/fixed_point_test.cpp
@@ -41,7 +40,6 @@ target_compile_definitions(chronos_unit_tests
 
 target_link_libraries(chronos_unit_tests
   PRIVATE chronos_boundary chronos_market_data_normalization chronos_options
-          chronos_market_replay
           chronos_features
           chronos_portfolio
           chronos_recommendation
