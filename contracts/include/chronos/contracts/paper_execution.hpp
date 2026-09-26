@@ -5,6 +5,9 @@
 namespace chronos::core::execution_planning {
 class PaperIntentAuthority;
 }
+namespace chronos::adapters::paper {
+class PaperBroker;
+}
 namespace chronos::contracts {
 enum class PaperSide : std::uint8_t { Buy, Sell };
 // D0 evidence is a current synchronous cut, not a cached risk market snapshot.
@@ -78,5 +81,54 @@ private:
   explicit PaperIntent(PaperIntentFacts facts) : facts_(std::move(facts)) {}
   PaperIntentFacts facts_;
   friend class chronos::core::execution_planning::PaperIntentAuthority;
+};
+// Fee is ceil(notional * fee_basis_points / 10000); notional is rounded
+// toward positive in quote money_scale exactly once after price * quantity.
+struct PaperBrokerPolicy final {
+  VersionRef model_version;
+  AmountUnits slippage_ticks;
+  AmountUnits fee_basis_points;
+  std::int64_t acknowledgement_latency_nanoseconds;
+  std::int64_t fill_latency_nanoseconds;
+  bool operator==(const PaperBrokerPolicy &) const = default;
+};
+using PaperOrderId = OpaqueId<struct PaperOrderIdTag>;
+struct PaperFillFacts final {
+  PaperOrderId order_id;
+  PaperFillId fill_id;
+  PaperIntentFacts intent;
+  PaperBrokerPolicy model_policy;
+  AmountUnits price_units;
+  AmountUnits notional_units;
+  AmountUnits fee_units;
+  std::int64_t acknowledgement_time_nanoseconds;
+  std::int64_t fill_time_nanoseconds;
+  bool operator==(const PaperFillFacts &) const = default;
+};
+class PaperFill final {
+public:
+  [[nodiscard]] const PaperFillFacts &facts() const noexcept { return facts_; }
+  bool operator==(const PaperFill &) const = default;
+
+private:
+  explicit PaperFill(PaperFillFacts facts) : facts_(std::move(facts)) {}
+  PaperFillFacts facts_;
+  friend class chronos::adapters::paper::PaperBroker;
+};
+enum class PaperBrokerFailure : std::uint8_t {
+  None,
+  IntentConflict,
+  InvalidEvidence,
+  InvalidPolicy,
+  ArithmeticOverflow,
+  Expired
+};
+struct PaperBrokerResult final {
+  PaperBrokerFailure failure;
+  std::optional<PaperFill> fill;
+  [[nodiscard]] bool accepted() const noexcept {
+    return failure == PaperBrokerFailure::None && fill.has_value();
+  }
+  bool operator==(const PaperBrokerResult &) const = default;
 };
 } // namespace chronos::contracts

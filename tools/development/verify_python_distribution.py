@@ -27,6 +27,7 @@ EXPECTED_SDIST_PATHS = {
     "tests/python/test_m6_authority_boundaries.py",
     "tests/python/test_m6_risk_authority_boundaries.py",
     "tests/python/test_m6_execution_boundaries.py",
+    "tests/python/test_m6_broker_boundaries.py",
     "tests/python/test_value_objects.py",
     "tests/python/test_state_lineage.py",
     "tests/python/test_serialization.py",

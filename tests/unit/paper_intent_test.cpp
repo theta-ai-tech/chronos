@@ -195,6 +195,12 @@ TEST_CASE("paper intent rejects missing released mismatched expired and "
       cut = risk::RiskEvaluationCut(6, 200);
       current->run_input_sequence = 6;
       current->logical_time_nanoseconds = 200;
+      current->logical_expiry_nanoseconds = 250;
+      const std::array streams{id<contracts::StreamId>(150)};
+      const std::array cursors{
+          *contracts::StreamCursor::at_sequence(streams[0], 1, 6)};
+      current->market_lineage = *contracts::StateLineage::from(
+          id<contracts::RunId>(30), 6, streams, cursors);
     }
     if (scenario == 4)
       current.reset();

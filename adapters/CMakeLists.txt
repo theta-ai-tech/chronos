@@ -45,3 +45,5 @@ target_link_libraries(chronos_bybit_reconnect_probe
 
 target_link_libraries(chronos_capture_dataset_probe
   PRIVATE chronos_bybit_adapter chronos_options chronos_warnings)
+
+add_subdirectory(paper)
