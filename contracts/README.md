@@ -22,7 +22,5 @@ authoritative ownership and dependency rules.
 ## Submodules
 
 - **`domain/`** — Canonical envelopes, identities, and value-object semantics.
-- **`commands/`** — Command contracts (intended transitions).
 - **`events/`** — Event contracts (immutable accepted/observed facts).
-- **`views/`** — Immutable view/snapshot contracts.
 - **`conformance/`** — Fixtures and cross-boundary compatibility tests.

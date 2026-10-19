@@ -26,4 +26,3 @@ authoritative ownership and dependency rules.
 
 - **`sdk/`** — C++ strategy SDK interface (deterministic, resource/deadline hooks).
 - **`reference/`** — Reference strategies used as conformance examples.
-- **`fixtures/`** — Strategy test fixtures.

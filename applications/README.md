@@ -1,7 +1,7 @@
 # applications/
 
 > **Module owner stub (M0.1).** Public API, failure semantics, and reconstruction
-> source are filled in as the owning issues land. Scaffold only — no logic yet.
+> source are filled in as the owning issues land.
 
 - **Owner / plane:** Applications
 - **Language:** Python / web
@@ -18,8 +18,4 @@ authoritative ownership and dependency rules.
 
 ## Submodules
 
-- **`local_api/`** — Local commands/queries/subscriptions for the console.
-- **`console/`** — Operator web console (non-authoritative).
-- **`cli/`** — Command-line entrypoints.
 - **`replay_runner/`** — Deterministic replay entrypoint.
-- **`benchmark_runner/`** — Benchmark profile runner (ADR-0002).

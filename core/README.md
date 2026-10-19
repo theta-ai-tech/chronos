@@ -1,7 +1,7 @@
 # core/
 
 > **Module owner stub (M0.1).** Public API, failure semantics, and reconstruction
-> source are filled in as the owning issues land. Scaffold only — no logic yet.
+> source are filled in as the owning issues land.
 
 - **Owner / plane:** Hot plane
 - **Language:** Optimized C++ (ADR-0001)
@@ -23,7 +23,6 @@ authoritative ownership and dependency rules.
 - **`dispatch/`** — Run-input dispatch: single monotonic run_input_sequence and merge policy.
 - **`market_state/`** — Listing-scoped L2 state, StateLineage cuts, immutable view publication.
 - **`features/`** — Deterministic, versioned feature observations.
-- **`strategy_runtime/`** — Strategy-instance lifecycle and StrategyEvaluation outcomes.
 - **`recommendation/`** — Exactly one actionable/hold TradeRecommendation per valid signal.
 - **`portfolio/`** — Portfolio aggregation and absolute target construction.
 - **`risk/`** — Risk-policy decisions and serialized exposure/reservation.

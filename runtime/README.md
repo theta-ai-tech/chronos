@@ -1,7 +1,7 @@
 # runtime/
 
 > **Module owner stub (M0.1).** Public API, failure semantics, and reconstruction
-> source are filled in as the owning issues land. Scaffold only — no logic yet.
+> source are filled in as the owning issues land.
 
 - **Owner / plane:** Control / data plane
 - **Language:** Python (control) + storage adapters
@@ -18,9 +18,4 @@ authoritative ownership and dependency rules.
 
 ## Submodules
 
-- **`run_control/`** — Run lifecycle, manifests, ordered control events, reset lineage.
-- **`configuration/`** — Versioned config schemas, resolver, precedence, redaction.
 - **`datasets/`** — Capture/dataset/replay manifests and ordered reconstruction.
-- **`persistence/`** — Narrow persistence ports for owning authorities.
-- **`observability/`** — Metric/trace/log/health schemas and evidence export.
-- **`audit/`** — Causal-graph retention and actor/configuration attribution.

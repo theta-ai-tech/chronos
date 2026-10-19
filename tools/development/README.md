@@ -1,6 +1,6 @@
 # tools/development/
 
-> **Submodule owner stub (M0.1).** Scaffold only — no logic yet.
+> **Submodule owner stub (M0.1).**
 
 - **Parent:** `tools/`
 - **Owner:** Inherits `tools/` ownership.

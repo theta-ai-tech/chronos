@@ -1,7 +1,7 @@
 # tools/
 
 > **Module owner stub (M0.1).** Public API, failure semantics, and reconstruction
-> source are filled in as the owning issues land. Scaffold only — no logic yet.
+> source are filled in as the owning issues land.
 
 - **Owner / plane:** Tooling
 - **Language:** Mixed
@@ -19,6 +19,3 @@ authoritative ownership and dependency rules.
 ## Submodules
 
 - **`development/`** — Local development helpers.
-- **`schema/`** — Schema/code generation and drift detection.
-- **`profiling/`** — Profiling helpers.
-- **`release/`** — Release and packaging tooling.

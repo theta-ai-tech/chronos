@@ -1,4 +1,4 @@
-#include "chronos/adapters/market_data/bybit_adapter.hpp"
+#include "chronos/adapters/market_data/bybit/adapter.hpp"
 #include "chronos/adapters/sdk/adapter.hpp"
 
 #include "microtest.hpp"

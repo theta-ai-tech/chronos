@@ -47,10 +47,12 @@ enrichment passed to normalization.
 - **Owner:** Inherits `adapters/` ownership.
 - **Plane:** Inherits `adapters/` plane.
 - **Language:** Inherits `adapters/` language policy.
-- **Public API:** `bybit_adapter.hpp`, `bybit_websocket.hpp`, and
-  `websocket_transport.hpp`, `source_capture.hpp`, `reconnect.hpp`, and
-  `capture_dataset.hpp`, plus the M3 source decoders
-  `bybit_book_decoder.hpp` and `bybit_trade_decoder.hpp`, under
-  `chronos/adapters/market_data/`
+- **Public API:** Shared `websocket_transport.hpp`, `source_capture.hpp`, and
+  `capture_dataset.hpp` live under `chronos/adapters/market_data/`.
+  Bybit `adapter.hpp`, `websocket.hpp`, `reconnect.hpp`, `book_decoder.hpp`,
+  and `trade_decoder.hpp` live under `chronos/adapters/market_data/bybit/`.
+- **Implementation:** Bybit sources and probes live in `src/bybit/`; shared
+  transport and capture sources remain in `src/`. `src/bybit/decode_support.hpp`
+  is private. Existing C++ names and CMake target ownership are unchanged.
 - **Purpose:** Venue market-data adapters (Bybit first) and capture.
 - **Accepted dependencies:** inherits `adapters/` rules (see parent README).

@@ -1,5 +1,5 @@
-#include "chronos/adapters/market_data/bybit_book_decoder.hpp"
-#include "chronos/adapters/market_data/bybit_trade_decoder.hpp"
+#include "chronos/adapters/market_data/bybit/book_decoder.hpp"
+#include "chronos/adapters/market_data/bybit/trade_decoder.hpp"
 #include "chronos/core/dispatch/run_input_dispatcher.hpp"
 #include "chronos/core/market_state/listing_view_publisher.hpp"
 #include "chronos/normalization/market_data/book_normalizer.hpp"

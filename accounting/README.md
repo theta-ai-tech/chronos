@@ -2,7 +2,7 @@
 
 - **Owner / plane:** Hot/data plane
 - **Language:** C++20
-- **Purpose:** Immutable balanced ledger, derived positions and P&L, marks, and reconciliation.
+- **Purpose:** Immutable balanced ledger, derived positions and P&L and marks. Reconciliation against the venue lives in Archeion.
 - **Accepted dependencies:** contracts/ and narrow persistence ports.
 - **Must not depend on:** Market-state, strategy, or UI logic; manual mutation of economic facts.
 - **Public API:** `LedgerAuthority`, `derive_position`, and `value_position`.
@@ -18,4 +18,3 @@ authoritative ownership and dependency rules.
 
 - **`ledger/`** — Immutable balanced, idempotent postings.
 - **`valuation/`** — Mark policy and unrealized valuation, separate from the ledger.
-- **`reconciliation/`** — Comparison with paper/venue evidence and discrepancy lifecycle.

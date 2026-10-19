@@ -1,4 +1,4 @@
-#include "chronos/adapters/market_data/bybit_websocket.hpp"
+#include "chronos/adapters/market_data/bybit/websocket.hpp"
 #include "chronos/adapters/market_data/websocket_framer.hpp"
 
 #include "microtest.hpp"

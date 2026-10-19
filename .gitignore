@@ -1,6 +1,5 @@
 .DS_Store
 /journal.html
-/.claude/worktrees/
 
 # C++ build output
 /build/
@@ -18,3 +17,9 @@ __pycache__/
 .ruff_cache/
 /dist/
 *.py[cod]
+
+# Local agent and editor state
+/.claude/
+/.codex/
+/.agent/
+/.vscode/

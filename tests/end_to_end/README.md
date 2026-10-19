@@ -1,6 +1,6 @@
 # tests/end_to_end/
 
-> **Submodule owner stub (M0.1).** Scaffold only — no logic yet.
+> **Submodule owner stub (M0.1).**
 
 - **Parent:** `tests/`
 - **Owner:** Inherits `tests/` ownership.
