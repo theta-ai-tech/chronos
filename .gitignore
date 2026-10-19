@@ -23,3 +23,8 @@ __pycache__/
 /.codex/
 /.agent/
 /.vscode/
+
+# share Claude Code hooks, keep local settings private
+!.claude/
+.claude/*
+!.claude/settings.json
