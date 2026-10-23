@@ -1,7 +1,7 @@
 # tests/
 
 > **Module owner stub (M0.1).** Public API, failure semantics, and reconstruction
-> source are filled in as the owning issues land. Scaffold only — no logic yet.
+> source are filled in as the owning issues land.
 
 - **Owner / plane:** Verification
 - **Language:** Mixed
@@ -19,8 +19,5 @@ authoritative ownership and dependency rules.
 ## Submodules
 
 - **`contract/`** — Producer/consumer conformance tests.
-- **`integration/`** — Module integration tests.
 - **`replay/`** — Deterministic replay and golden tests.
-- **`recovery/`** — Failure, crash, and recovery tests.
-- **`performance/`** — Benchmark correctness and soak tests.
 - **`end_to_end/`** — Operator scenario tests.

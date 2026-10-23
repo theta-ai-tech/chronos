@@ -1,6 +1,6 @@
 # adapters/paper/
 
-> **Submodule owner stub (M0.1).** Scaffold only — no logic yet.
+> **Submodule owner stub (M0.1).**
 
 - **Parent:** `adapters/`
 - **Owner:** Inherits `adapters/` ownership.

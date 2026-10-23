@@ -1,4 +1,4 @@
-#include "chronos/adapters/market_data/bybit_book_decoder.hpp"
+#include "chronos/adapters/market_data/bybit/book_decoder.hpp"
 #include "chronos/normalization/market_data/book_normalizer.hpp"
 
 #include "microtest.hpp"

@@ -1,6 +1,6 @@
 # accounting/ledger/
 
-> **Submodule owner stub (M0.1).** Scaffold only — no logic yet.
+> **Submodule owner stub (M0.1).**
 
 - **Parent:** `accounting/`
 - **Owner:** Inherits `accounting/` ownership.
